@@ -59,20 +59,27 @@ explicitly out of scope.
 
 ### 2.3 Historical Candle Depth
 
-MEXC caps requests at 2,000 bars and does not page deeper. Bybit and OKX page
-arbitrarily deep via `start`/`end`.
+**Verified limits.** MEXC caps requests at 2,000 bars per call and does not page
+deeper. Bybit and OKX accept `start`/`end` parameters, but **paging was not
+verified to work** — a probe using millisecond parameters returned a single row
+per call. Deep history on those venues is therefore **unconfirmed** and must be
+verified during implementation before anything depends on it.
 
 | Timeframe | MEXC | Bybit | OKX |
 |---|---|---|---|
-| 5m | **6.9 days** | deep | deep |
-| 15m | 20.8 days | deep | deep |
-| 1H | 83 days | deep | deep |
-| 4H | 333 days | deep | deep |
-| 1D | 1,999 days | deep | deep |
+| 5m | **6.9 days (2,000 bar cap)** | unverified | unverified |
+| 15m | 20.8 days | unverified | unverified |
+| 1H | 83 days | unverified | unverified |
+| 4H | 333 days | unverified | unverified |
+| 1D | 1,999 days | unverified | unverified |
 
-**Consequence:** Bybit and OKX carry all historical analysis and indicator
-warm-up. MEXC is used for live tickers, order books, funding, and long-tail
-listing coverage. This directly justifies the multi-venue decision.
+**Correction:** an earlier draft of this spec claimed Bybit/OKX "page
+arbitrarily deep". Measurement did not support it. The claim is withdrawn.
+
+**Consequence:** MEXC supplies all confirmed historical depth for v1. Bybit and
+OKX contribute live market data (tickers, books, OI, funding) and WebSocket
+push, and may contribute history once paging is confirmed. This reinforces the
+multi-venue choice on *live data* grounds, not historical ones.
 
 ### 2.4 Capital Constraint
 
@@ -249,6 +256,8 @@ surface this rather than presenting a naive target.
 
 ## 6. Persistence
 
+### 6.1 Signal and Outcome Logging
+
 SQLite:
 
 - `signal_log` — timestamp, coin, venue, score, per-signal contributions, plan
@@ -257,6 +266,51 @@ SQLite:
 `outcome_log` is what makes the system measurable: it allows scoring each
 indicator against realised results rather than assumption, and is the
 prerequisite for any future claim about which formulas work.
+
+### 6.2 Two-Tier Evidence Structure
+
+Measured: **0 of 40** sampled MEXC-only alts have enough history for any real
+backtest (5m/90d, 15m/180d, 1H/1y all require 8,760–25,920 bars; none has
+them). The cause is structural — those coins are absent from Bybit, OKX, Binance
+perp, Binance spot, and MEXC spot, so **no free third-party history exists for
+them.**
+
+| Tier | Population | Indicator analysis | Validation status |
+|---|---|---|---|
+| **Tier 1** | ~1,205 coins on ≥2 venues | Full, multi-timeframe | Feasible once paging is confirmed (§2.3) |
+| **Tier 2** | 146 MEXC-only degen alts | Full, from ~7 days of 5m bars | **Impossible on free data** |
+
+**Binding requirement:** Tier 2 signals must be labelled UNVALIDATED in the TUI.
+Tier 1's measured outcome record is what calibrates Tier 2. The two tiers must
+never be presented as equally evidenced.
+
+### 6.3 Historical Collector
+
+A continuous collector accumulates 5m bars from now forward, creating the Tier 2
+history that free APIs cannot supply retroactively.
+
+**Measured storage cost** (real MEXC payloads, ~95 B/bar JSON, 4.4× zlib
+compression, all timeframes derived from 5m):
+
+| Scope | MB/day | To 5 GB | Notes |
+|---|---|---|---|
+| 146 degen alts, CSV+zlib | 0.6 | 22.5 yr | effectively unbounded |
+| 1,351 all coins, CSV+zlib | 5.6 | 2.4 yr | comfortably within 56.8 GB free |
+
+**The 5 GB threshold is not a meaningful milestone** — 5m-only collection does
+not approach it for years. The milestones that matter are far smaller:
+
+| Target | Size | Reached |
+|---|---|---|
+| Degen 30 days | 18 MB | ~30 days from start |
+| **Degen 90 days** | **55 MB** | ~90 days — first point where cross-sectional validation is credible |
+| Degen 180 days | 110 MB | ~180 days |
+| All coins, 90 days | 507 MB | ~90 days |
+
+Collect 5m only: 15m/1H/4H/1D are exact aggregations of consecutive 5m bars, so
+every timeframe in §3.5 costs nothing extra. Store both `vol` (base) and
+`amount` (quote) — cross-sectional comparison across coins at wildly different
+prices requires quote volume.
 
 ---
 
@@ -318,6 +372,11 @@ Stated plainly so the design is not read as promising more than it delivers:
    indicator's usefulness on these venues, at these costs, is to be measured,
    not assumed.
 4. **Latency precludes scalping** from this host (§2.1).
+5. **Tier 2 coins cannot be validated with free data, ever.** 146 MEXC-only
+   alts — precisely where large multiple moves originate — have no deep history
+   on any free source. Their signals are unbacktested hypotheses. Only the
+   operator's own accumulating log can test them, and that takes months. Any
+   claim that the scanner "finds 500% coins" is unearned until that log says so.
 
 ---
 
@@ -338,3 +397,8 @@ Stated plainly so the design is not read as promising more than it delivers:
    outcome-log data.
 3. **Volatility floor** — whether to impose an absolute ATR floor for the
    degen tier, given the operator's stated risk appetite.
+4. **Bybit/OKX paging** — unverified (§2.3). If confirmed, Tier 1 backtesting
+   opens up materially and should be the first implementation task to probe.
+5. **Collector start date** — the 90-day Tier 2 validation clock starts when the
+   collector first runs. Every day of delay pushes that milestone back, so this
+   is the highest-leverage decision still open.
