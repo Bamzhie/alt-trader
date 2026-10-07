@@ -8,13 +8,40 @@
 
 ## 1. Purpose
 
-A local Linux application that scans 1,351 crypto USDT perpetual futures across
-Bybit, OKX, and MEXC for coins showing early momentum driven by real buyer/seller
-activity. For qualifying coins it emits a complete trade plan — entry, stop loss,
-take profit, leverage, position size, and expected costs — for the operator to
-review and execute manually.
+A local Linux application that scans crypto USDT perpetual futures across
+Bybit, OKX, and MEXC for coins showing **early** evidence of buyer or seller
+activity — before that activity is obvious in price. For qualifying coins it
+emits a complete trade plan — direction, entry, stop loss, take profit,
+leverage, position size, and expected costs — for the operator to review and
+execute manually.
 
 **It never places orders and never holds API keys.**
+
+### 1.1 Primary Objective
+
+**Surface early, directional signals on alt perpetuals that carry profit
+potential.** The objective is timely, asymmetric detection — noticing abnormal
+buyer/seller activity while it is still actionable, and acting on it correctly
+in either direction.
+
+**Direction-symmetry is a first-class requirement.** Short setups are as
+legitimate as long setups. The scanner must not be structurally biased toward
+either. This is a correctness property of the scoring design (§3.3), not a
+feature.
+
+### 1.2 What Is Explicitly Not an Objective
+
+- **No hard-coded return target.** There is no 500% figure, no target multiple,
+  no "big mover" filter, and no code path tuned to find a specific outcome.
+  Move magnitude is an *emergent property* of surfacing activity early — never
+  an input to scoring.
+- **No ranking by expected return.** Coins rank by *signal quality* (evidence
+  of early activity), not by predicted upside.
+
+The scanner finds things worth trading. Whether a given signal becomes +5% or
++500% is determined by the market afterwards, not by the software. A large
+move is a lucky outcome of a correct early read; hard-coding the magnitude
+would invert evidence and turn a detection tool into a slot machine.
 
 ### Non-goals (v1)
 
@@ -141,7 +168,9 @@ Cheap disqualifying filters first, before any expensive computation:
 - Non-empty order book, spread below threshold
 - Not a synthetic equity/commodity contract
 - Min notional ≤ current stake (else WATCH-ONLY)
-- **Not already vertical** — e.g. +80% in 1h is an untradeable chase, not an entry
+- **Not already vertical** — a coin that has already run substantially is no
+  longer an early signal, and may be an untradeable chase. This veto rejects
+  *late* signals; it does not reward move size.
 
 **Denominators.** The universe figure (1,082) counts USDT-quoted MEXC perps.
 The min-notional figure (1,101 of 1,183) was measured across *all* MEXC
@@ -150,18 +179,41 @@ are correct within their own scope; the screener filters on USDT perps only.
 
 ### 3.3 Scorer
 
-Weighted composite of three signals, each scored 0–100:
+Scores **signal quality** — the strength of evidence that unusual buyer/seller
+activity is present *and early*. It never scores predicted return.
 
-| Signal | Weight | Components |
-|---|---|---|
-| Volume / price expansion | 40% | Volume vs own trailing median, price position in range, breakout confirmation, multi-timeframe alignment |
-| Order-book imbalance | 30% | Bid/ask notional skew, thin asks (squeeze fuel), walls |
-| OI / funding divergence | 30% | OI rising with price = new longs; OI rising while price stalls = trapped shorts; extreme funding = crowded |
+Each of three signals produces two values: a **magnitude** (how strong is the
+abnormality) and a **directional lean** (−1 bearish … +1 bullish). Direction is
+derived from evidence, then the components are combined.
 
-Weights sum to 100. Score = weighted sum, then **hard vetoes** applied (§3.2).
-Every contribution is retained for display so the operator can see *why* a coin
-flagged and disagree. Weights are configuration, not code constants, and are
-revisable against outcome-log data (§6).
+| Signal | Weight | Magnitude components | Directional lean from |
+|---|---|---|---|
+| Volume / price expansion | 40% | Volume vs own trailing median, price position in range, breakout confirmation, multi-timeframe alignment | Price and volume expansion direction; which side the volume supports |
+| Order-book imbalance | 30% | Depth magnitude, thin asks/bids, walls | Bid vs ask notional skew (bid-heavy → bullish, ask-heavy → bearish) |
+| OI / funding divergence | 30% | OI change magnitude, funding extremeness | OI+price agreement (new longs vs new shorts), crowding side, funding sign |
+
+**Symmetry requirement.** Every directional input must be evaluated so that
+mirrored conditions produce mirrored scores. A configuration where bid-heavy
+books and ask-heavy books both score high bullish is a bug, not a tuning
+choice. Test §9 asserts this explicitly with mirrored fixtures.
+
+**Early-ness is a first-class input.** A setup that has already moved
+substantially has, by definition, stopped being early. So each signal
+contributes an *early-ness* factor: how far price has moved relative to its own
+recent range and relative to its own volume baseline. A coin that already ran
+scores lower on quality even if its raw abnormality is high. This is what
+distinguishes detection from chasing.
+
+**Independent of magnitude.** None of these components reference a target
+return, a percentage-of-price move threshold as an *outcome*, or a desired
+multiple. The screener's veto on vertical moves (§3.2) exists to avoid
+untradeable entries, not to select for big moves — it rejects late signals, it
+does not reward size.
+
+Weights sum to 100. Score = weighted magnitude composite, then **hard vetoes**
+applied (§3.2). Every contribution is retained for display so the operator can
+see *why* a coin flagged and disagree. Weights are configuration, not code
+constants, and are revisable against outcome-log data (§6).
 
 ### 3.4 Indicator Set
 
@@ -202,20 +254,34 @@ elevated risk in the output.
 
 ## 4. Trade Plan Output
 
-For each coin above threshold:
+For each coin above threshold. **The plan mirrors the detected direction; it
+never defaults to LONG.**
 
-- **Direction** — LONG/SHORT with the supporting rationale
+- **Direction** — LONG or SHORT, from the scorer's directional lean (§3.3),
+  with the evidence that drove it stated in words
 - **Entry** — limit band inside the spread, not market
-- **Stop loss** — below/above structure (swing low/high), never a fixed %
-- **TP1 / TP2** — at 2R and 5R, with partial-close and trailing guidance
+- **Stop loss** — beyond structure in the *opposing* direction (below a swing
+  low for LONG, above a swing high for SHORT), never a fixed %
+- **TP1 / TP2** — at 2R and 5R **along the trade direction**, with partial-close
+  and trailing guidance; for SHORTs, targets sit below entry
 - **Leverage** — computed from stake and stop distance (§4 leverage safety rule),
   bounded by the operator's 20x–50x band
 - **Position size** — derived from current stake and max-loss-per-trade
-- **Costs** — taker fees both sides + estimated funding drag to target
-- **Break-even move %** — the price change needed to cover costs
+- **Costs** — taker fees both sides + estimated funding drag to target; for
+  SHORTs, note when funding pays the position rather than costing it
+- **Break-even move %** — the price change needed to cover costs, signed by
+  direction
 - **R:R** and **max loss** in stake currency
 - **Warnings** — counter-trend alignment, min-notional block, insufficient
-  stake for the stop distance, wide spread
+  stake for the stop distance, wide spread, conflicting directional evidence
+  (e.g. book bid-heavy while OI shows new shorts — state which signal leads and
+  why, rather than silently averaging them away)
+
+**Short-specific considerations.** A SHORT on a perp carries funding and
+borrow-side risks that a LONG does not: persistent positive funding costs the
+short, and rising OI with falling price indicates shorts still being added.
+The planner surfaces the funding sign for the proposed direction so a
+structurally sound short is not entered into a persistent funding bleed.
 
 **Leverage safety rule.** Leverage is **computed, never defaulted**, and then
 clamped to the operator's stated band of 20x–50x. At $0.10 stake a 6% stop at
@@ -319,14 +385,19 @@ prices requires quote volume.
 Local terminal UI, stdlib only:
 
 - Live ranked table, updates in place
-- Columns: rank, coin, price, 24h %, volume, funding, OI trend, spread,
-  VOL/BOOK/OI subscores, total score
+- Columns: rank, coin, **direction arrow (▲/▼)**, price, 24h %, volume, funding,
+  OI trend, spread, VOL/BOOK/OI subscores, total score
+- Coins are not sorted into separate long/short lists — a single ranked table
+  with an explicit direction column, so both directions compete on signal
+  quality alone
 - **Vetoed-this-scan section** — rejections shown with reasons, so filtering is
   inspectable rather than invisible
 - Detail view on Enter: full indicator breakdown with weights and contributions,
-  trade plan, warnings
-- Keys: `↑↓` select, `f` filter, `s` sort, `p` pause, `q` quit
+  directional evidence from each signal, trade plan, warnings
+- Keys: `↑↓` select, `f` filter, `s` sort, `d` toggle long-only/short-only/both,
+  `p` pause, `q` quit
 - Header shows feed health, coin count, scan cadence, stake, compounding state
+- Tier 2 rows carry an explicit UNVALIDATED marker (§6.2)
 
 ---
 
@@ -349,8 +420,16 @@ Local terminal UI, stdlib only:
   unit normalization, schema rejection
 - **Indicator tests** — each indicator against hand-computed reference values
 - **Scorer tests** — known setups produce expected score ranges; vetoes fire
+- **Symmetry tests** — mirrored fixtures (bid-heavy vs ask-heavy books, OI+price
+  up vs OI+price down) must produce mirrored directional leans and equal
+  magnitude scores. Asymmetric results fail the build.
+- **Early-ness tests** — an identical abnormality occurring later in the move
+  scores lower on quality than the same abnormality at onset
+- **No-magnitude-leakage test** — assert no scoring constant encodes a target
+  return or move multiple; guard against regressions that reintroduce it
 - **Planner tests** — leverage never exceeds the computed safe bound; size never
-  exceeds stake; costs always reported
+  exceeds stake; costs always reported; LONG and SHORT plans mirror correctly
+  (stops and targets on opposite sides of entry)
 - **Integration** — live smoke test against all three venues, read-only
 - **Regression** — signal/outcome logs replayed to confirm scoring stability
 
@@ -362,21 +441,21 @@ Stated plainly so the design is not read as promising more than it delivers:
 
 1. **The scanner does not predict price.** It surfaces coins with unusual,
    measurable buyer/seller activity and structures a trade plan.
-2. **"+500% coins" is a discovery target, not an expected outcome per trade.**
-   Large multiple moves on low-liquidity alts do occur. Their frequency is low,
-   and losing signals frequently draw down substantially first. The system's
-   value is in separating the rare strong setup from the frequent noise — which
-   is an empirical question the outcome log is designed to answer, not something
-   this document asserts.
+2. **No move magnitude is targeted or promised.** The objective (§1.1) is
+   early, directional signal detection. Whether any signal becomes +5% or +500%
+   is the market's outcome, not the software's target. Nothing in the scoring
+   path encodes a desired return (§1.2, tested in §9).
 3. **No backtest has been run.** Validation is §9 and the outcome log. Any
    indicator's usefulness on these venues, at these costs, is to be measured,
    not assumed.
 4. **Latency precludes scalping** from this host (§2.1).
 5. **Tier 2 coins cannot be validated with free data, ever.** 146 MEXC-only
-   alts — precisely where large multiple moves originate — have no deep history
-   on any free source. Their signals are unbacktested hypotheses. Only the
-   operator's own accumulating log can test them, and that takes months. Any
-   claim that the scanner "finds 500% coins" is unearned until that log says so.
+   alts have no deep history on any free source, so their signals are
+   unbacktested hypotheses. Only the operator's own accumulating log can test
+   them, and that takes months.
+6. **Signal quality ≠ profitability.** The score measures evidence of early
+   abnormal activity. It is not a probability of profit. Until the outcome log
+   demonstrates otherwise, no score threshold has any proven edge behind it.
 
 ---
 

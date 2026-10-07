@@ -1,0 +1,61 @@
+════════════════════════════════════════════════════════════════════════════════════════════════
+  ALT RADAR  ·  crypto perp momentum scanner  ·  Bybit · OKX · MEXC        23:14:07 UTC
+  1,351 coins tracked   feed: 3/3 live   scan: every 30s   stake: $0.10   mode: LIVE DATA · NO ORDERS
+════════════════════════════════════════════════════════════════════════════════════════════════
+
+  TOP SIGNALS                                              DIR    SCORE
+  ─────────────────────────────────────────────────────────────  ──────────────
+  #  COIN         PRICE      24H%    VOL(24h)   FUND    OI-TREND  SPREAD   VOL  BOOK  OI    SCORE
+  ──────────────────────────────────────────────────────────────────────────────────────────────
+ ★1  ▲ ARBU_USDT    0.08412     +47.3%   $3.4M     +0.021%  ↑ +12.4%  0.8%    88   74    69   82 ⚠UNVALIDATED
+  2  ▼ MAVIA_USDT   0.19240     -31.2%   $1.8M     +0.034%  ↑ +9.1%   1.1%    81   77    72   80 ⚠UNVALIDATED
+  3  ▲ NEAR_USDT    5.361       +6.8%    $175M     -0.003%  ↑ +2.1%   0.04%   91   52    58   77
+  4  ▼ ARCSOL_USDT  0.01340     -18.7%   $620K     -0.041%  ↑ +7.3%   1.6%    76   70    79   75 ⚠UNVALIDATED
+  5  ▲ WIF_USDT     0.2297      +22.1%   $8.9M     +0.008%  ↑ +6.7%   1.2%    84   81    73   79
+
+  ── vetoed this scan ─────────────────────────────────────────────────────────────────────────────
+   ⨯ SPXSTOCK_USDT   synthetic equity contract     ⨯ 1000BONK_USDT  already vertical (late signal)
+   ⨯ BADMOON_USDT    24h vol $310 below floor     ⨯ AGENCY_USDT    spread 6.2% (wide)
+
+────────────────────────────────────────────────────────────────────────────────────────────────
+  ↑↓ select   ENTER breakdown+plan   f filter   s sort   d long/short/both   p pause   q quit
+════════════════════════════════════════════════════════════════════════════════════════════════
+
+  ══ DETAIL VIEW — MAVIA_USDT  ▼ SHORT  (Tier 2 · UNVALIDATED) ══════════════════════════════════
+
+  WHY IT FLAGGED                                  SIGNAL  WEIGHT  MAG    LEAN
+  ──────────────────────────────────────────────  ───────  ──────  ─────  ─────
+  Volume 4.1× its own 24h median, 3 consecutive     VOL     40%    32.8   -0.82
+  15m bars EXPANDING DOWN · 4H broke prior 4H low
+  Book ask-heavy +77% ask notional, thin bids      BOOK    30%    23.1   -0.91
+  OI +9.1% while price -6.4% → NEW SHORTS added   OI      30%    24.0   -0.74
+  Funding +0.034% → longs pay, shorts RECEIVE ✓
+  MTF: 5m↓ 15m↓ 1H↓ 4H↓ 1D↓ (aligned — clean trend)
+  ──────────────────────────────────────────────  ───────  ──────  ─────  ─────
+  All three signals agree bearish. Composite lean -0.83 → SHORT
+  Early-ness 0.71 (move is young: price in 38th pct of 24h range)
+
+  TRADE PLAN  (for your review — bot places no orders)
+  ────────────────────────────────────────────────────────────────────────────────────────────
+  Direction      ▼ SHORT          (mirrors detected lean, not defaulted)
+  Entry          0.19240 – 0.19160   (limit, inside spread)
+  Stop loss      0.20380   ▲ +5.9%   (above 4H swing high 0.20340, 1 tick buffer)
+  TP1            0.17120   ▼ -11%    (2R)  → cover 50%
+  TP2            0.15150   ▼ -21%    (5R)  → cover 30%, trail rest
+  ────────────────────────────────────────────────────────────────────────────────────────────
+  Leverage       14×   (computed from stake+stop; operator band 20–50×)
+  ⚠ below your 20× floor — safe value at this stake. UNDER-SCALED, not inflated.
+  Position size  0.06 USDT notional → ~$0.0043 margin   [stake $0.10, 2% risk]
+  Max loss       $0.0035  if stopped out
+  Costs          taker 0.05%×2 = $0.00006 · funding PAYS +$0.00002/settle (short side)
+  Break-even     ▼ -0.13%  (signed: short needs price DOWN 0.13% to cover)
+  R:R            2.0 : 5.0
+  ────────────────────────────────────────────────────────────────────────────────────────────
+  ✓ Funding favours this short — no carry bleed.
+  ⚠ Tier 2: no deep history exists for this coin. Signal is UNBACKTESTED.
+  ⚠ MEXC min notional $0.41 ≤ stake ✓  ·  spread 1.1% acceptable at 14×
+
+════════════════════════════════════════════════════════════════════════════════════════════════
+  COMPounding: stake $0.10 → $0.13 (+30%) · 14W/61T · +$0.031 net  ·  longs 9 · shorts 5
+  Rule: +20% → +20% stake.  −30% from peak → halve stake, pause 5 trades.
+════════════════════════════════════════════════════════════════════════════════════════════════
