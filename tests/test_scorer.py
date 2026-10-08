@@ -116,7 +116,13 @@ m4, l4, _ = scorer.oi_funding_component(-1.0, -4.0, -0.0015, 0.0018)  # crowded 
 check("crowded short funding reduces bearish lean (mirror)", l4 > l2, f"crowded={l4} vs normal={l2}")
 
 m5, l5, _ = scorer.oi_funding_component(1.0, None, 0.0001, 0.0018)
-check("missing OI degrades gracefully", m5 == 0.0 and l5 == 0.0, f"{m5},{l5}")
+check("missing OI degrades gracefully (funding-only, near-zero lean)",
+      l5 == 0.0 and m5 < 0.05, f"{m5},{l5}")
+m5b, l5b, _ = scorer.oi_funding_component(1.0, None, 0.0015, 0.0018)
+m5c, l5c, _ = scorer.oi_funding_component(-1.0, None, -0.0015, 0.0018)
+check("funding-only crowded longs lean bearish", l5b < 0, f"{l5b}")
+check("funding-only symmetric", abs(m5b - m5c) < 1e-9 and abs(l5b + l5c) < 1e-9,
+      f"{m5b},{l5b} vs {m5c},{l5c}")
 
 print("\n=== early-ness lowers quality for a mature move ===")
 young = mk([100.0] * 130 + [100 * (1.004 ** i) for i in range(20)],

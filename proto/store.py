@@ -120,8 +120,28 @@ class Store:
         coins = c.execute("SELECT COUNT(DISTINCT coin) FROM signal_log").fetchone()[0]
         longs = c.execute("SELECT COUNT(*) FROM signal_log WHERE direction='LONG'").fetchone()[0]
         shorts = c.execute("SELECT COUNT(*) FROM signal_log WHERE direction='SHORT'").fetchone()[0]
+        outcomes = c.execute("SELECT COUNT(*) FROM outcome_log").fetchone()[0]
         return {"rows": total, "flagged": flagged, "coins": coins,
-                "longs": longs, "shorts": shorts}
+                "longs": longs, "shorts": shorts, "outcomes": outcomes}
+
+    def log_outcome(self, signal_id, horizon, return_pct, max_fav, max_adv):
+        import time as _t
+        self.conn.execute(
+            "INSERT INTO outcome_log (signal_id,horizon,return_pct,max_fav,max_adv,resolved_at)"
+            " VALUES (?,?,?,?,?,?)",
+            (signal_id, horizon, return_pct, max_fav, max_adv, int(_t.time())))
+        self.conn.commit()
+
+    def has_outcome(self, signal_id, horizon):
+        row = self.conn.execute(
+            "SELECT 1 FROM outcome_log WHERE signal_id=? AND horizon=?",
+            (signal_id, horizon)).fetchone()
+        return bool(row)
+
+    def pending_outcomes(self, limit=500):
+        return list(self.conn.execute(
+            "SELECT id,coin,price,direction,ts FROM signal_log ORDER BY id DESC LIMIT ?",
+            (limit,)).fetchall())
 
     def close(self):
         self.conn.close()

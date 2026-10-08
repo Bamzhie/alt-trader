@@ -73,9 +73,10 @@ class App:
                     cards.append(sc)
 
         # Log: flagged rows AND shadow rows (vetoed / sub-threshold). SS6.1a.
+        # Flagged = actionable AND above threshold (selective, not permissive).
         if self.args.write_logs:
             for sc in cards:
-                flagged = bool(sc.actionable) or sc.score >= self.args.log_threshold
+                flagged = bool(sc.actionable) and sc.score >= self.args.log_threshold
                 try:
                     self.store.log_signal(sc, flagged=flagged, tier=2)
                 except Exception:
@@ -342,7 +343,7 @@ def main():
     ap.add_argument("--coins", type=int, default=150)
     ap.add_argument("--interval", type=int, default=60)
     ap.add_argument("--db", default="data/signals.db")
-    ap.add_argument("--log-threshold", type=float, default=18.0)
+    ap.add_argument("--log-threshold", type=float, default=24.0)
     ap.add_argument("--write-logs", action="store_true", default=True)
     ap.add_argument("--no-logs", dest="write_logs", action="store_false")
     ap.add_argument("--headless", action="store_true",

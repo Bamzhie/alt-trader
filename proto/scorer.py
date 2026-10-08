@@ -117,7 +117,18 @@ def oi_funding_component(price_change_pct, oi_change_pct, funding_rate, funding_
     Extreme funding marks crowding on the opposite side of the flow.
     """
     if oi_change_pct is None:
-        return 0.0, 0.0, {"oi": None, "funding": round(funding_rate, 6), "oi_available": False}
+        # Funding-only path (MEXC has no OI history): crowding still informs
+        # lean, magnitude scaled to funding share so it never outscores OI+funding.
+        fund_ratio = abs(funding_rate) / funding_cap if funding_cap > 0 else 0.0
+        fund_mag = min(1.0, fund_ratio)
+        lean = 0.0
+        if fund_ratio > 0.25:
+            lean = -((1.0 if funding_rate > 0 else -1.0)
+                     * min(0.35, (fund_ratio - 0.25) * 0.4))
+        mag = max(0.0, min(1.0, 0.35 * fund_mag))
+        return mag, lean, {"oi": None, "funding": round(funding_rate, 6),
+                           "funding_pct_of_cap": round(fund_ratio, 3),
+                           "oi_available": False}
 
     oi_mag = min(1.0, abs(oi_change_pct) / 15.0)
     fund_ratio = abs(funding_rate) / funding_cap if funding_cap > 0 else 0.0
