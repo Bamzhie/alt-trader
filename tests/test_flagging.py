@@ -156,8 +156,38 @@ def test_24h_runup_vetoed():
           str([v.code for v in up.vetoes]))
 
 
+def test_apply_vetoes_keeps_5_arg_signature():
+    """Regression: the pre-v2 5-arg call must keep working. The 24h param
+    defaults to 0.0, so veto behaviour is identical when it is absent."""
+    print("\n=== test_apply_vetoes_keeps_5_arg_signature ===")
+    bars = mk_bars()
+    legacy = Scorecard(coin="LEGACY")
+    try:
+        scorer.apply_vetoes(legacy, bars, 5_000_000, 7.0, 25.0)
+        raised = None
+    except TypeError as e:
+        raised = str(e)
+    check("old 5-arg call does not raise TypeError", raised is None,
+          raised or "")
+
+    current = Scorecard(coin="CURRENT")
+    scorer.apply_vetoes(current, bars, 5_000_000, 7.0, 25.0, 0.0)
+    check("5-arg and explicit change_24h=0.0 produce identical vetoes",
+          [(v.code, v.reason) for v in legacy.vetoes]
+          == [(v.code, v.reason) for v in current.vetoes],
+          f"{[(v.code, v.reason) for v in legacy.vetoes]} vs "
+          f"{[(v.code, v.reason) for v in current.vetoes]}")
+    codes = {v.code for v in legacy.vetoes}
+    check("veto set is the pre-v2 one (wide_spread + 1h late_move)",
+          codes == {"wide_spread", "late_move"}, str(codes))
+    check("absent 24h argument runs no 24h rule",
+          not any("in 24h" in v.reason for v in legacy.vetoes),
+          str([v.reason for v in legacy.vetoes]))
+
+
 test_none_min_notional_never_flags()
 test_24h_runup_vetoed()
+test_apply_vetoes_keeps_5_arg_signature()
 
 print("\n=== is_actionable(stake) matrix (actionable property untouched) ===")
 fit = mkcard("FIT", 60.0, "LONG", min_not=0.01)

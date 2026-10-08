@@ -213,7 +213,7 @@ def oi_funding_component(price_change_pct, oi_change_pct, funding_rate, funding_
 
 
 def apply_vetoes(sc, bars, quote_vol_24h, spread_pct, change_1h_pct,
-                 change_24h_pct):
+                 change_24h_pct=0.0):
     """Hard disqualifiers. Each records a machine code and a human reason."""
     if quote_vol_24h < MIN_QUOTE_VOLUME_24H:
         sc.vetoes.append(Veto("low_volume",
