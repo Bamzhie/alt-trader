@@ -161,10 +161,19 @@ class Store:
             (signal_id, horizon)).fetchone()
         return bool(row)
 
-    def pending_outcomes(self, limit=500):
-        return list(self.conn.execute(
-            "SELECT id,coin,price,direction,ts FROM signal_log ORDER BY id DESC LIMIT ?",
-            (limit,)).fetchall())
+    def pending_outcomes(self, limit=None):
+        """Unresolved-signal candidates, OLDEST FIRST.
+
+        Ordering is part of the contract: the resolver visits rows once per
+        pass, so DESC order starved the oldest signals forever once the log
+        outgrew the cap. Default `limit=None` pages through every row - no
+        silent truncation. `limit` stays for callers that want to bound a
+        single pass (it now bounds the OLDEST rows, matching the order).
+        """
+        sql = "SELECT id,coin,price,direction,ts FROM signal_log ORDER BY id ASC"
+        if limit is None:
+            return list(self.conn.execute(sql).fetchall())
+        return list(self.conn.execute(sql + " LIMIT ?", (limit,)).fetchall())
 
     def close(self):
         self.conn.close()

@@ -259,7 +259,14 @@ def _bybit_oi(coin):
         return None
 
 
-def build_universe(stake, budget=150, store=None):
+# Guaranteed scan universe: 80 stake-tradeable + 40 tail + 30 rotation,
+# disjoint, spilling to fill. One constant so build_universe's default and
+# the CLI's --coins default can never drift apart (a smaller --coins would
+# silently drop the guaranteed tail from every scan).
+UNIVERSE_BUDGET = 150
+
+
+def build_universe(stake, budget=UNIVERSE_BUDGET, store=None):
     """
     Stake-aware scan universe: disjoint groups that fill `budget`.
 
@@ -458,16 +465,24 @@ def score_universe(ranked, det, tk, stake, analyse=None, errors=None,
     return cards
 
 
-def main():
+def cli_parser():
+    """Argument parser for `python3 -m proto.scan`, extracted so tests can
+    pin the defaults - specifically that --coins equals UNIVERSE_BUDGET."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--top", type=int, default=20)
     ap.add_argument("--stake", type=float, default=0.10)
-    ap.add_argument("--coins", type=int, default=120, help="how many coins to analyse")
+    ap.add_argument("--coins", type=int, default=UNIVERSE_BUDGET,
+                    help="how many coins to analyse (default: the full "
+                         "universe budget, so the guaranteed tail is scanned)")
     ap.add_argument("--db", default="data/signals.db",
                     help="signal db; rotation pointer persists here across runs")
     ap.add_argument("--no-logs", action="store_true",
                     help="in-memory store: rotation pointer does not persist")
-    args = ap.parse_args()
+    return ap
+
+
+def main():
+    args = cli_parser().parse_args()
 
     print(f"ALT RADAR prototype scan  ·  stake ${args.stake:.2f}  ·  read-only\n")
 

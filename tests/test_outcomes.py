@@ -242,6 +242,57 @@ def test_bar_source_contract():
           str(outmod.resolve_pending.__defaults__))
 
 
+def test_pending_outcomes_oldest_first_untruncated():
+    """Review finding (Important): pending_outcomes returned the NEWEST 500
+    rows (ORDER BY id DESC LIMIT 500), so once the backlog passes 500 the
+    oldest signals are never visited and never resolve. Pin: every row is
+    returned, oldest first; the optional `limit` arg stays for callers that
+    bound the scan (backward-compatible signature)."""
+    print("=== pending_outcomes: oldest first, no silent 500-row truncation ===")
+    st = Store(os.path.join(tempfile.mkdtemp(), "pending.db"))
+    n = 520
+    st.conn.executemany(
+        "INSERT INTO signal_log (ts, coin, price, direction) VALUES (?,?,?,?)",
+        [(SIGNAL_TS + i, f"BACK{i:03d}", ENTRY, "LONG") for i in range(n)])
+    st.conn.commit()
+
+    rows = st.pending_outcomes()
+    ids = [r[0] for r in rows]
+    check(f"all {n} pending rows returned (cap used to keep 500)",
+          len(rows) == n, str(len(rows)))
+    check("oldest first", ids == sorted(ids), str(ids[:5]))
+    check("first row is the oldest signal", ids and ids[0] == 1, str(ids[:3]))
+    check("last row is the newest signal", ids and ids[-1] == n, str(ids[-3:]))
+    check("explicit limit still honored (signature backward-compatible)",
+          len(st.pending_outcomes(limit=10)) == 10,
+          str(len(st.pending_outcomes(limit=10))))
+    st.close()
+
+
+def test_resolver_visits_oldest_beyond_500_pending():
+    """End-to-end form of the same finding: with >500 pending rows the OLDEST
+    signal must still be resolved. The GHOST* backlog rows are absent from
+    the symbol map, so they are skipped without any fetch - only ordering and
+    the cap decide whether the old signal at id 1 is ever reached."""
+    print("=== resolver reaches the oldest signal past a 500-row backlog ===")
+    tmp = tempfile.mkdtemp()
+    st = Store(os.path.join(tmp, "backlog.db"))
+    oldest = insert_signal(st, coin="OLD")
+    st.conn.executemany(
+        "INSERT INTO signal_log (ts, coin, price, direction) VALUES (?,?,?,?)",
+        [(SIGNAL_TS, f"GHOST{i:03d}", ENTRY, "LONG") for i in range(504)])
+    st.conn.commit()
+    colmod.append_bars(tmp, "OLD", future_bars(48))
+
+    done = outmod.resolve_pending(st, {"OLD": "OLD_USDT"}, horizons=("1h",),
+                                  bar_source="collector", data_dir=tmp)
+    check("backlog exceeds the old 500 cap", st.count() > 500, str(st.count()))
+    check("oldest signal visited and resolved", done == 1, str(done))
+    check("outcome row written for the oldest id",
+          "1h" in outcome_rows(st, oldest), str(outcome_rows(st, oldest)))
+    st.close()
+
+
 def run(fn):
     print(f"--- {fn.__name__}")
     try:
@@ -255,7 +306,9 @@ for t in (test_signed_return_mirrors,
           test_rotated_out_coin_still_resolves,
           test_insufficient_bars_stay_unresolved,
           test_collector_mode_reads_only_local,
-          test_bar_source_contract):
+          test_bar_source_contract,
+          test_pending_outcomes_oldest_first_untruncated,
+          test_resolver_visits_oldest_beyond_500_pending):
     run(t)
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))

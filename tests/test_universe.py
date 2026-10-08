@@ -7,8 +7,10 @@ produces visibly wrong groups.
 """
 
 import contextlib
+import inspect
 import io
 import os
+import re
 import sys
 import tempfile
 import time
@@ -420,6 +422,46 @@ def test_degraded_venue_continues():
         restore()
 
 
+def test_cli_default_coins_equals_universe_budget():
+    """Review finding (Important): `main()` defaulted --coins to 120 while the
+    universe budget is 150, so every CLI scan silently dropped the guaranteed
+    40-coin tail. Pin: the parser default EQUALS the budget constant - the
+    test imports the constant instead of restating 150."""
+    print("=== CLI --coins default == universe budget ===")
+    budget = getattr(scanmod, "UNIVERSE_BUDGET", None)
+    check("UNIVERSE_BUDGET constant exported", isinstance(budget, int), str(budget))
+
+    # End to end: a default CLI run must rank and analyse the whole budget.
+    tk, det = make_fixture(tradeable_count=100)
+    restore = install(tk, det, bybit_set=None)
+    orig = (scanmod.analyse_one, sys.argv, sys.stdout)
+    scanmod.analyse_one = lambda *a, **k: None     # scoring out of scope
+    out = ""
+    try:
+        sys.argv = ["scan", "--db", os.path.join(tempfile.mkdtemp(), "cli.db")]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            scanmod.main()
+        out = buf.getvalue()
+    finally:
+        scanmod.analyse_one, sys.argv, sys.stdout = orig
+        restore()
+    m = re.search(r"analysing top (\d+)", out)
+    check("default run analyses the full budget (tail not dropped)",
+          m is not None and budget is not None and int(m.group(1)) == budget,
+          m.group(0) if m else out[-200:])
+
+    parser = getattr(scanmod, "cli_parser", None)
+    default = parser().get_default("coins") if parser else None
+    check("--coins parser default == UNIVERSE_BUDGET",
+          default is not None and budget is not None and default == budget,
+          f"default={default} budget={budget}")
+    bdef = inspect.signature(scanmod.build_universe).parameters["budget"].default
+    check("build_universe default budget == UNIVERSE_BUDGET",
+          budget is not None and bdef == budget,
+          f"budget={bdef} constant={budget}")
+
+
 def run(fn):
     print(f"--- {fn.__name__}")
     try:
@@ -435,6 +477,7 @@ for t in (test_groups_disjoint_and_fill_150,
           test_tail_prefers_mexc_only_when_bybit_map_available,
           test_missing_detail_row_fails_closed,
           test_cli_scan_advances_pointer,
+          test_cli_default_coins_equals_universe_budget,
           test_degraded_venue_continues):
     run(t)
 
