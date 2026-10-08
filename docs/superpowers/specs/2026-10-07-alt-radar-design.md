@@ -195,7 +195,26 @@ derived from evidence, then the components are combined.
 **Symmetry requirement.** Every directional input must be evaluated so that
 mirrored conditions produce mirrored scores. A configuration where bid-heavy
 books and ask-heavy books both score high bullish is a bug, not a tuning
-choice. Test §9 asserts this explicitly with mirrored fixtures.
+choice. Test §9 asserts this with mirrored fixtures.
+
+**Indicator-to-role mapping.** Directional lean is taken only from signals that
+actually carry direction:
+
+| Indicator | Role |
+|---|---|
+| EMA relationship, Donchian position, RSI, Stochastic | directional lean (level/position) |
+| OBV slope, book skew, price/breakout direction | directional lean (flow/imbalance) |
+| **MACD histogram** | **magnitude only — acceleration, not direction** |
+| ATR, Bollinger width, volume expansion, book thinness | magnitude only (unsigned) |
+| VWAP position | directional lean (relative to fair value) |
+
+**Correction to an earlier draft:** the MACD histogram was listed as a
+directional input. Measurement contradicts this. The histogram measures the
+*second derivative* — acceleration. On a smooth exponential path it is
+near-zero and sign-arbitrary (measured: −0.224 rising vs −0.221 falling, both
+negative), while on a real curved market it behaves correctly (measured: +0.597
+rising vs −0.782 falling on mirrored choppy series). Using it for direction
+would inject noise into the lean. It therefore contributes to magnitude only.
 
 **Early-ness is a first-class input.** A setup that has already moved
 substantially has, by definition, stopped being early. So each signal
@@ -204,11 +223,18 @@ recent range and relative to its own volume baseline. A coin that already ran
 scores lower on quality even if its raw abnormality is high. This is what
 distinguishes detection from chasing.
 
-**Independent of magnitude.** None of these components reference a target
+**Independence of magnitude.** None of these components reference a target
 return, a percentage-of-price move threshold as an *outcome*, or a desired
 multiple. The screener's veto on vertical moves (§3.2) exists to avoid
 untradeable entries, not to select for big moves — it rejects late signals, it
 does not reward size.
+
+**Volume basis.** Expansion and OBV use **base** volume, not quote volume.
+Quote volume embeds price, so on a falling series it shrinks purely because
+price fell, which would suppress downside expansion and introduce a silent
+bullish bias into a signal required to be unsigned. Quote volume is used only
+for cross-sectional liquidity ranking. This was found by the symmetry tests and
+is guarded by a regression test.
 
 Weights sum to 100. Score = weighted magnitude composite, then **hard vetoes**
 applied (§3.2). Every contribution is retained for display so the operator can
