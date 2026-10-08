@@ -7,7 +7,9 @@ Run:  python3 -m proto.scan [--top N] [--stake X] [--coins N]
 import argparse
 import re
 import sys
+import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import mexc
@@ -17,6 +19,72 @@ from .scorer import score_coin, volume_price_component
 from .store import Store
 
 SYNTH_MARKERS = ("STOCK", "XAU", "XAG", "USOIL", "SOXL", "SPX", "NDX", "GLD", "SLV")
+
+# Loop concurrency (spec SS3): 12 workers, a 100ms stagger on the first wave
+# (thundering-herd guard), and a venue-wide 20 req/s cap every request passes
+# through. The adapter's own retry (0.4s x 2^attempt, 3 tries) IS the
+# specified backoff; once it exhausts, the loop counts the failure.
+MAX_WORKERS = 12
+STAGGER_S = 0.1
+REQ_PER_S = 20
+
+
+class RateLimiter:
+    """Thread-safe rolling-window requests-per-second cap."""
+
+    def __init__(self, rate=REQ_PER_S, window=1.0):
+        self.rate = rate
+        self.window = window
+        self._times = deque()
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                while self._times and now - self._times[0] >= self.window:
+                    self._times.popleft()
+                if len(self._times) < self.rate:
+                    self._times.append(now)
+                    return
+                wait = self.window - (now - self._times[0])
+            time.sleep(max(wait, 0.001))
+
+
+LIMITER = RateLimiter()
+
+# Venue health (spec SS6: degraded venue marked and excluded, never silent).
+# `ok` reflects the LAST attempt; `fails` is the cumulative counted-failure
+# total; `last_err` the most recent failure reason. build_universe degrades
+# around a failed venue AND records it here so the UI can mark it.
+VENUE_STATE = {}
+
+
+def _venue(venue, err=None):
+    st = VENUE_STATE.setdefault(venue, {"ok": True, "fails": 0, "last_err": None})
+    if err is None:
+        st["ok"] = True
+    else:
+        st["ok"] = False
+        st["fails"] += 1
+        st["last_err"] = f"{type(err).__name__}: {err}"
+
+
+def venue_health():
+    """Per-venue {ok, fails, last_err} for the UI. Copies, not aliases."""
+    return {v: dict(st) for v, st in VENUE_STATE.items()}
+
+
+def _fnum(v):
+    """Venue number or 0.0 - a garbage field degrades, never crashes.
+
+    Venue feeds are untrusted text: a non-numeric lastPrice/amount24 must
+    not raise out of the universe build or the scan sort.
+    """
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def canon(sym):
@@ -136,16 +204,21 @@ def _bybit_symbol_set():
 
     None means "we don't know" and the tail group falls back to the
     lowest-volume slice, so guaranteed coverage never depends on Bybit being
-    up. Never raises: missing adapter or failed fetch degrade to the fallback.
+    up. Any failure shape - BybitError, TimeoutError, ValueError - degrades
+    to the fallback AND is recorded in venue health: degraded is marked and
+    counted, never silent (spec SS6).
     """
     try:
         from . import bybit
         rows = bybit.tickers()
-    except Exception:
+        if not rows:
+            _venue("bybit", RuntimeError("empty ticker list"))
+            return None
+        _venue("bybit")
+        return {canon(s) for s in rows}
+    except Exception as e:
+        _venue("bybit", e)
         return None
-    if not rows:
-        return None
-    return {canon(s) for s in rows}
 
 
 def build_universe(stake, budget=150, store=None):
@@ -179,7 +252,7 @@ def build_universe(stake, budget=150, store=None):
         if not coin or is_synthetic(coin, det.get(sym)):
             continue
         pool.append((sym, coin))
-    pool.sort(key=lambda sc: float(tk.get(sc[0], {}).get("amount24") or 0),
+    pool.sort(key=lambda sc: _fnum(tk.get(sc[0], {}).get("amount24")),
               reverse=True)
 
     picked = []
@@ -199,7 +272,7 @@ def build_universe(stake, budget=150, store=None):
         return n
 
     def stake_ok(sc):
-        price = float(tk.get(sc[0], {}).get("lastPrice") or 0)
+        price = _fnum(tk.get(sc[0], {}).get("lastPrice"))
         row = det.get(sc[0]) or {}
         n = mexc.min_notional(sc[0], row, price)
         return n is not None and n <= stake
@@ -230,6 +303,12 @@ def build_universe(stake, budget=150, store=None):
     return picked
 
 
+def _gated(fn, *args, **kw):
+    """One venue request, admitted through the venue-wide rate cap."""
+    LIMITER.acquire()
+    return fn(*args, **kw)
+
+
 def tf_lean(sym, interval, limit=200, min_bars=30):
     """volume_price lean for one higher timeframe, or None when unavailable.
 
@@ -238,7 +317,7 @@ def tf_lean(sym, interval, limit=200, min_bars=30):
     missing Bybit map degrades the universe tail.
     """
     try:
-        bars = mexc.klines(sym, interval, limit=limit)
+        bars = _gated(mexc.klines, sym, interval, limit=limit)
     except Exception:
         return None
     if not bars or len(bars) < min_bars:
@@ -246,17 +325,32 @@ def tf_lean(sym, interval, limit=200, min_bars=30):
     return volume_price_component(bars)[1]
 
 
-def analyse_one(sym, coin, detail, tk_row, stake):
-    """Fetch bars + book for one coin and score it. Returns a Scorecard or None."""
+def analyse_one(sym, coin, detail, tk_row, stake, errors=None):
+    """Fetch bars + book for one coin and score it. Returns a Scorecard or None.
+
+    None is ALWAYS a counted failure: the reason is recorded in
+    `errors[coin]` (when an errors dict is supplied) so the loop can surface
+    `failed N/150` and the detail view can show the per-coin last error.
+    Every failure shape counts the same way - MexcError after the adapter's
+    retries, TimeoutError from a socket read, ValueError from a garbage
+    venue field (deferred Task 1/2 notes) - none may escape and kill the
+    loop. MTF fetch failures are NOT per-coin failures: tf_lean degrades
+    those to no-bonus evidence by design.
+    """
+    def fail(reason):
+        if errors is not None:
+            errors[coin] = reason
+        return None
+
     try:
         price = float(tk_row.get("lastPrice") or 0)
         if price <= 0:
-            return None
+            return fail("no usable lastPrice")
         quote_vol = float(tk_row.get("amount24") or 0)
         change_24h = float(tk_row.get("riseFallRate") or 0) * 100
 
-        bars = mexc.klines(sym, "5m", limit=200)
-        bids, asks = mexc.depth(sym, limit=20)
+        bars = _gated(mexc.klines, sym, "5m", limit=200)
+        bids, asks = _gated(mexc.depth, sym, limit=20)
 
         # Higher timeframes for the MTF alignment bonus (spec SS4):
         # 1H trend, 4H swing bias, same volume_price lean formula.
@@ -289,10 +383,34 @@ def analyse_one(sym, coin, detail, tk_row, stake):
             lean_1H=lean_1h, lean_4H=lean_4h,
             min_notional=min_not, venue="MEXC", tier=2)
         return sc
-    except mexc.MexcError:
-        return None
-    except Exception:
-        return None
+    except Exception as e:
+        return fail(f"{type(e).__name__}: {e}")
+
+
+def score_universe(ranked, det, tk, stake, analyse=None, errors=None,
+                   stagger=STAGGER_S, max_workers=MAX_WORKERS):
+    """Concurrent per-coin fetch+score (spec SS3).
+
+    12 workers; the first wave of submissions is staggered 100ms apart so
+    the venue never sees a thundering herd at t=0; every venue request
+    inside analyse_one passes through LIMITER (20 req/s venue-wide).
+    Coins that fail are excluded from the returned scorecards AND recorded
+    in `errors` as {coin: reason} - never silently dropped.
+    """
+    analyse = analyse or analyse_one
+    cards = []
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = []
+        for i, (sym, coin) in enumerate(ranked):
+            futs.append(ex.submit(analyse, sym, coin, det.get(sym, {}),
+                                  tk.get(sym, {}), stake, errors=errors))
+            if i < max_workers and stagger:
+                time.sleep(stagger)
+        for f in as_completed(futs):
+            sc = f.result()
+            if sc:
+                cards.append(sc)
+    return cards
 
 
 def main():
@@ -323,25 +441,26 @@ def main():
     # liquidity, then take the top N for analysis.
     ranked = sorted(
         uni,
-        key=lambda sc: float(tk.get(sc[0], {}).get("amount24") or 0),
+        key=lambda sc: _fnum(tk.get(sc[0], {}).get("amount24")),
         reverse=True,
     )[: args.coins]
 
     print(f"analysing top {len(ranked)} by 24h volume ...\n")
     t1 = time.time()
 
-    cards = []
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        futs = {
-            ex.submit(analyse_one, sym, coin, det.get(sym, {}), tk.get(sym, {}), args.stake): coin
-            for sym, coin in ranked
-        }
-        for f in as_completed(futs):
-            sc = f.result()
-            if sc:
-                cards.append(sc)
+    errors = {}
+    cards = score_universe(ranked, det, tk, args.stake, errors=errors)
 
-    print(f"scored {len(cards)} coins  [{time.time()-t1:.1f}s]\n")
+    print(f"scored {len(cards)} coins · failed {len(errors)}/{len(ranked)}  "
+          f"[{time.time()-t1:.1f}s]\n")
+    for v, st in venue_health().items():
+        if not st["ok"]:
+            print(f"  WARNING: {v.upper()} degraded ({st['fails']} failures) - "
+                  f"{st['last_err']}")
+    for coin, reason in sorted(errors.items()):
+        print(f"  failed {coin}: {reason}")
+    if errors:
+        print()
 
     cards.sort(key=lambda c: c.score, reverse=True)
     top = cards[: args.top]

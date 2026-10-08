@@ -11,6 +11,7 @@ import io
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -261,6 +262,164 @@ def test_cli_scan_advances_pointer():
         restore()
 
 
+def test_degraded_venue_continues():
+    """Task 6: Bybit down -> the tail falls back, MEXC-only scoring
+    continues, and the venue failure is COUNTED and MARKED, never silent.
+    Also covers the loop's error contracts: TimeoutError/ValueError shapes
+    must count, not crash (deferred Task 1/2 notes); per-coin failures land
+    in `failed N/M` with a last-error per coin; garbage venue fields count
+    instead of raising; the universe feed is cached 10 minutes."""
+    print("=== degraded venue: counted, marked, never silent ===")
+    from proto import app as appmod
+    from proto import bybit as bybitmod
+    from proto.scorer import Scorecard
+
+    tk, det = make_fixture(tradeable_count=100)
+
+    def fake_bars(sym, interval, limit=200):
+        """60 rising bars - enough for real scoring, no thin_history veto."""
+        base, bars, px = 1_700_000_000, [], 1.0
+        for i in range(60):
+            c = px * 1.002
+            bars.append({"ts": base + i * 300, "o": px, "h": c * 1.001,
+                         "l": px * 0.999, "c": c, "vol": 1e5, "amount": 1e5 * c})
+            px = c
+        return bars
+
+    def fake_depth(sym, limit=20):
+        return ([(0.999, 100.0)], [(1.001, 100.0)])
+
+    def raise_exc(exc):
+        raise exc
+
+    class Args:
+        stake = STAKE
+        coins = 10
+        interval = 60
+        db = os.path.join(tempfile.mkdtemp(), "degraded.db")
+        log_threshold = 24.0
+        write_logs = False
+
+    # Real analyse_one/score_universe/build_universe; fake venue responses.
+    # Note: _bybit_symbol_set is NOT patched here - the real one must call
+    # bybit.tickers (patched to raise) and degrade through venue health.
+    orig = (scanmod.mexc.tickers, scanmod.mexc.details, scanmod.mexc.klines,
+            scanmod.mexc.depth, scanmod.LIMITER, scanmod.STAGGER_S,
+            bybitmod.tickers)
+    scanmod.mexc.tickers = lambda: tk
+    scanmod.mexc.details = lambda: det
+    scanmod.mexc.klines = fake_bars
+    scanmod.mexc.depth = fake_depth
+    scanmod.LIMITER = scanmod.RateLimiter(rate=10_000)   # offline = no waits
+    scanmod.STAGGER_S = 0
+    scanmod.VENUE_STATE.clear()
+    bybitmod.tickers = lambda: raise_exc(
+        bybitmod.BybitError("api error code=10001"))
+
+    def restore():
+        (scanmod.mexc.tickers, scanmod.mexc.details, scanmod.mexc.klines,
+         scanmod.mexc.depth, scanmod.LIMITER, scanmod.STAGGER_S,
+         bybitmod.tickers) = orig
+
+    try:
+        # 1. Bybit raises -> tail falls back to the lowest-volume slice and
+        #    the universe still fills its 150 budget.
+        uni = scanmod.build_universe(STAKE)
+        coins = [c for _, c in uni]
+        check("bybit down: universe still fills 150", len(uni) == 150, str(len(uni)))
+        check("bybit down: tail falls back to lowest-vol 40",
+              coins[80:120] == [C(i) for i in range(40)], str(coins[80:120]))
+
+        # 2. The venue failure is COUNTED and MARKED, not swallowed.
+        h = scanmod.venue_health()["bybit"]
+        check("bybit marked degraded", h["ok"] is False, str(h))
+        check("bybit failure counted", h["fails"] == 1, str(h))
+        check("bybit last error surfaced", "BybitError" in (h["last_err"] or ""),
+              str(h))
+
+        # 3. TimeoutError / ValueError shapes also degrade + count, never crash.
+        for exc in (TimeoutError("socket read timed out"),
+                    ValueError("bad literal for float()"),
+                    bybitmod.BybitError("api error code=10001")):
+            bybitmod.tickers = (lambda exc=exc: raise_exc(exc))
+            try:
+                uni = scanmod.build_universe(STAKE)
+                check(f"{type(exc).__name__}: universe still fills",
+                      len(uni) == 150, str(len(uni)))
+            except Exception as e:
+                check(f"{type(exc).__name__} swallowed+counted", False,
+                      f"raised {type(e).__name__}: {e}")
+        h = scanmod.venue_health()["bybit"]
+        check("all failure shapes counted", h["fails"] == 4, str(h))
+
+        # 4. With Bybit down, MEXC-only coins are still fetched and scored.
+        bybitmod.tickers = lambda: raise_exc(bybitmod.BybitError("down"))
+        errors = {}
+        cards = scanmod.score_universe(uni[:10], det, tk, STAKE,
+                                       errors=errors, stagger=0)
+        check("MEXC-only scores still returned", len(cards) == 10, str(len(cards)))
+        check("cards are real scorecards",
+              all(isinstance(c, Scorecard) for c in cards))
+        check("no per-coin failures", errors == {}, str(errors))
+
+        # 5. App assembly: header counts failures and marks the degraded venue.
+        a = appmod.App(Args())
+        a.refresh_universe()
+        a.scan_once()
+        check("app scans while bybit down", len(a.cards) == 10, str(len(a.cards)))
+        check("header: failed 0/10", "failed 0/10" in a.status, a.status)
+        check("header: degraded venue marked", "DEGRADED" in a.status, a.status)
+
+        # 6. Per-coin venue failure: counted in failed N/M, last error kept,
+        #    the loop never crashes.
+        def raise_klines(sym, interval, limit=200):
+            raise scanmod.mexc.MexcError("api error 429")
+        scanmod.mexc.klines = raise_klines
+        a.scan_once()
+        check("failed coins excluded from cards", a.cards == [], str(len(a.cards)))
+        check("header: failed 10/10", "failed 10/10" in a.status, a.status)
+        check("per-coin last error kept",
+              len(a.last_errors) == 10
+              and all("MexcError" in m for m in a.last_errors.values()),
+              str(a.last_errors))
+
+        # 7. Garbage venue field: counted per-coin failure, never a crash
+        #    (Task 1 deferred: unguarded float() on price strings). The
+        #    garbage coin is a TAIL coin - guaranteed in the universe every
+        #    cycle - and coins=150 so it is actually ranked and scored.
+        scanmod.mexc.klines = fake_bars
+        tk_bad = dict(tk)
+        tk_bad[C(1) + "_USDT"] = dict(tk[C(1) + "_USDT"], lastPrice="garbage")
+        scanmod.mexc.tickers = lambda: tk_bad
+        a.args.coins = 150
+        a.refresh_universe()
+        check("garbage price: universe still builds", len(a.uni) == 150,
+              str(len(a.uni)))
+        check("garbage-price coin still covered", C(1) in [c for _, c in a.uni])
+        a.scan_once()
+        check("garbage price: counted, not crashed",
+              a.failed == 1 and len(a.cards) == 149,
+              f"failed={a.failed} cards={len(a.cards)}")
+        check("garbage price: ValueError in last error",
+              "ValueError" in a.last_errors.get(C(1), ""),
+              str(a.last_errors.get(C(1))))
+
+        # 8. Universe feed is cached 10 minutes, not rebuilt every scan.
+        calls = []
+        orig_bu = appmod.build_universe
+        appmod.build_universe = lambda *ar, **kw: (calls.append(1), [])[1]
+        try:
+            a.maybe_refresh_universe()          # just refreshed -> cached
+            check("fresh universe not rebuilt", calls == [], str(calls))
+            a._uni_at = time.time() - 601       # past the 10-minute TTL
+            a.maybe_refresh_universe()
+            check("stale universe rebuilt once", calls == [1], str(calls))
+        finally:
+            appmod.build_universe = orig_bu
+    finally:
+        restore()
+
+
 def run(fn):
     print(f"--- {fn.__name__}")
     try:
@@ -275,7 +434,8 @@ for t in (test_groups_disjoint_and_fill_150,
           test_rotation_pointer_persists_and_advances,
           test_tail_prefers_mexc_only_when_bybit_map_available,
           test_missing_detail_row_fails_closed,
-          test_cli_scan_advances_pointer):
+          test_cli_scan_advances_pointer,
+          test_degraded_venue_continues):
     run(t)
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))

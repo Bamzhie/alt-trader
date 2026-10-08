@@ -18,11 +18,11 @@ import sys
 import time
 
 from . import mexc
+from . import scan as scanmod
 from . import indicators as ind
 from . import planner as pl
-from .scan import build_universe, analyse_one
+from .scan import build_universe, score_universe, venue_health
 from .store import Store
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 SORT_KEYS = {
     "score": lambda c: -c.score,
@@ -31,6 +31,11 @@ SORT_KEYS = {
     "move": lambda c: -abs(c.change_24h_pct),
     "vol": lambda c: -c.quote_vol_24h,
 }
+
+# Universe feed cache (spec SS3): tickers+details+Bybit map refresh at most
+# every 10 minutes in memory. Excluded from the 90s scan gate - only the
+# per-coin fetch+score in scan_once is inside that budget.
+UNIVERSE_TTL = 600
 
 
 class App:
@@ -48,6 +53,11 @@ class App:
         self.uni = []
         self.det = {}
         self.tk = {}
+        self.failed = 0              # per-coin failures, last scan_once
+        self.last_errors = {}        # {coin: reason} from the last scan_once
+        self.log_errors = 0          # store write failures, last scan_once
+        self.universe_error = None   # last universe refresh failure, if any
+        self._uni_at = 0.0           # when self.uni was last refreshed
 
     # ---------- data ----------
     def refresh_universe(self):
@@ -56,27 +66,50 @@ class App:
         self.uni = build_universe(self.args.stake, store=self.store)
         self.det = mexc.details()
         self.tk = mexc.tickers()
+        self._uni_at = time.time()
+
+    def maybe_refresh_universe(self):
+        """Refresh the universe feed only when the 10-minute cache expired.
+
+        A failed refresh keeps the last good universe and is surfaced in
+        status - never a silent crash of the loop.
+        """
+        if time.time() - self._uni_at <= UNIVERSE_TTL:
+            return
+        try:
+            self.refresh_universe()
+            self.universe_error = None
+        except Exception as e:
+            self.universe_error = f"{type(e).__name__}: {e}"
+            if not self.uni:
+                self.status = f"universe unavailable: {self.universe_error}"
+
+    def degraded_text(self):
+        """Header marker for venues whose last universe fetch failed (SS6)."""
+        bad = [v.upper() for v, st in venue_health().items() if not st["ok"]]
+        return "".join(f" · ⚠ {v} DEGRADED" for v in bad)
 
     def scan_once(self):
+        # The 90s gate covers the per-coin fetch+score ONLY; the universe
+        # feed above is cached 10 minutes and excluded from that budget.
+        self.maybe_refresh_universe()
         t0 = time.time()
         ranked = sorted(
             self.uni,
-            key=lambda s: float(self.tk.get(s[0], {}).get("amount24") or 0),
+            key=lambda s: scanmod._fnum(self.tk.get(s[0], {}).get("amount24")),
             reverse=True)[: self.args.coins]
 
-        cards = []
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            futs = {ex.submit(analyse_one, sym, coin, self.det.get(sym, {}),
-                              self.tk.get(sym, {}), self.args.stake): coin
-                    for sym, coin in ranked}
-            for f in as_completed(futs):
-                sc = f.result()
-                if sc:
-                    cards.append(sc)
+        errors = {}
+        cards = score_universe(ranked, self.det, self.tk, self.args.stake,
+                               errors=errors,
+                               stagger=scanmod.STAGGER_S,
+                               max_workers=scanmod.MAX_WORKERS)
 
         # Log: flagged rows AND shadow rows (vetoed / sub-threshold). SS6.1a.
         # Flagged = stake-aware actionable AND above threshold (selective,
         # not permissive): a None min_notional never flags (fail-closed).
+        # Log write failures are counted too - never swallowed silently.
+        log_errors = 0
         if self.args.write_logs:
             for sc in cards:
                 flagged = (sc.is_actionable(self.args.stake)
@@ -84,16 +117,34 @@ class App:
                 try:
                     self.store.log_signal(sc, flagged=flagged, tier=2)
                 except Exception:
-                    pass
+                    log_errors += 1
 
+        self.failed = len(errors)
+        self.last_errors = errors
+        self.log_errors = log_errors
         self.cards = cards
         self.sel = 0
         self.last_scan = time.time()
         self.status = (f"scanned {len(cards)} in {time.time()-t0:.0f}s · "
-                       f"universe {len(self.uni)}")
+                       f"universe {len(self.uni)} · "
+                       f"failed {len(errors)}/{len(ranked)}"
+                       + (f" · log errors {log_errors}" if log_errors else "")
+                       + (f" · universe ERROR {self.universe_error}"
+                          if self.universe_error else "")
+                       + self.degraded_text())
 
     def visible(self):
-        out = self.cards
+        """Ranked rows: non-vetoed only. Vetoes get their own section (SS6)."""
+        out = [c for c in self.cards if not c.vetoes]
+        if self.dir_filter == "long":
+            out = [c for c in out if c.direction == "LONG"]
+        elif self.dir_filter == "short":
+            out = [c for c in out if c.direction == "SHORT"]
+        return sorted(out, key=SORT_KEYS[self.sort_key])
+
+    def vetoed(self):
+        """Vetoed rows, excluded from ranking but still visible + logged."""
+        out = [c for c in self.cards if c.vetoes]
         if self.dir_filter == "long":
             out = [c for c in out if c.direction == "LONG"]
         elif self.dir_filter == "short":
@@ -122,7 +173,8 @@ class App:
         cw.border(0)
 
         paused = " PAUSED" if self.paused else ""
-        cw.addstr(0, 2, f" ALT RADAR · MEXC perp scanner · live · read-only{paused} ".ljust(w - 4))
+        cw.addstr(0, 2, f" ALT RADAR · MEXC perp scanner · live · read-only"
+                        f" · TIER-2 UNVALIDATED{paused} "[:w - 4])
         st = self.store.stats()
         cw.addstr(1, 2, f" universe {len(self.uni)} · shown {len(rows)} · "
                         f"sort {self.sort_key} · dir {self.dir_filter} · "
@@ -136,7 +188,11 @@ class App:
         cw.addstr(4, 2, header[:w - 4], curses.A_BOLD)
         cw.hline(5, 2, curses.ACS_HLINE, w - 4)
 
-        body_h = h - 9
+        vet = self.vetoed()
+        # Reserve room for the vetoed section (header + up to 3 rows) so the
+        # ranked list never pushes it off-screen.
+        veto_lines = (2 + min(len(vet), 3)) if vet else 0
+        body_h = max(1, h - 9 - veto_lines)
         start = 0
         if self.sel >= body_h:
             start = self.sel - body_h + 1
@@ -146,8 +202,6 @@ class App:
             vol = c.quote_vol_24h
             vol_s = f"${vol/1e6:.1f}M" if vol >= 1e6 else f"${vol/1e3:.0f}K"
             flags = []
-            if c.vetoes:
-                flags.append("veto:" + ",".join(v.code for v in c.vetoes))
             if c.min_notional and c.min_notional > self.args.stake:
                 flags.append("WATCH")
             attr = curses.A_REVERSE if (i + start) == self.sel else curses.A_NORMAL
@@ -158,6 +212,27 @@ class App:
                 cw.addstr(y, 2, line[:w - 4], attr)
             except curses.error:
                 pass
+
+        # Vetoed section: excluded from ranking, still visible + shadow-logged
+        # (spec SS5/SS6) - a vetoed coin that later pumps must leave a trace.
+        y = 6 + body_h
+        if vet and y < h - 3:
+            try:
+                cw.addstr(y, 2, (f"── VETOED · {len(vet)} excluded from "
+                                 f"ranking, shadow-logged ──")[:w - 4],
+                          curses.A_DIM)
+            except curses.error:
+                pass
+            y += 1
+        for c in vet[:max(0, h - 3 - y)]:
+            arrow = {"LONG": "▲", "SHORT": "▼"}.get(c.direction, "•")
+            codes = ",".join(v.code for v in c.vetoes)
+            line = f"   {arrow} {c.coin:<15}{c.score:>7.1f}  veto:{codes}"
+            try:
+                cw.addstr(y, 2, line[:w - 4], curses.A_DIM)
+            except curses.error:
+                pass
+            y += 1
 
         help_txt = ("↑↓ select  ENTER detail  d long/short/both  s sort  "
                     "p pause  w logs  q quit")
@@ -204,6 +279,17 @@ class App:
         if card.oi_change_pct is None:
             put("  ⚠ OI unavailable on MEXC — OI/FUNDING signal is running on "
                 "funding alone", curses.A_DIM)
+        if any(isinstance(n, str) and "UNVALIDATED" in n for n in card.notes):
+            put("  ⚠ TIER 2 · UNVALIDATED — no outcome history exists for this "
+                "score yet; treat as experimental", curses.A_DIM)
+        if card.coin in self.last_errors:
+            put(f"  ⚠ last error: {self.last_errors[card.coin]}", curses.A_DIM)
+        # Counter-trend labels are surfaced, never swallowed (spec SS4) —
+        # they reach plan warnings when a plan exists; show them here too so
+        # an unplannable coin still carries the risk label.
+        for n in card.notes:
+            if isinstance(n, str) and n.startswith("counter-trend:"):
+                put(f"  ⚠ {n}", curses.A_BOLD)
         put("")
 
         if card.vetoes:
@@ -285,18 +371,23 @@ def run_headless(app, iterations=None):
     n = 0
     try:
         while iterations is None or n < iterations:
-            app.refresh_universe()
+            # scan_once refreshes the universe itself when the 10-minute
+            # cache expires, so every cycle stays inside the same contract.
             app.scan_once()
             rows = app.visible()
             st = app.store.stats()
 
             print(f"\n{'='*100}")
             print(f" ALT RADAR · {time.strftime('%Y-%m-%d %H:%M:%S')} · MEXC · "
-                  f"stake ${app.args.stake:.2f} · read-only")
+                  f"stake ${app.args.stake:.2f} · read-only · TIER-2 UNVALIDATED")
             print(f" universe {len(app.uni)} · shown {len(rows)} · "
+                  f"vetoed {len(app.vetoed())} · "
                   f"sort {app.sort_key} · dir {app.dir_filter}")
             print(f" logs {st['rows']} rows / {st['coins']} coins · "
-                  f"flagged {st['flagged']} · L {st['longs']} / S {st['shorts']}")
+                  f"flagged {st['flagged']} · L {st['longs']} / S {st['shorts']}"
+                  f" · failed {app.failed}{app.degraded_text()}"
+                  + (f" · universe ERROR {app.universe_error}"
+                     if app.universe_error else ""))
             print("=" * 100)
             print(f"{'#':<3}{'DIR':<5}{'COIN':<15}{'PRICE':>13}{'24H%':>8}"
                   f"{'VOL24':>10}{'LEAN':>7}{'EARLY':>7}{'SCORE':>7}  FLAGS")
@@ -310,14 +401,23 @@ def run_headless(app, iterations=None):
                 vol = c.quote_vol_24h
                 vol_s = f"${vol/1e6:.1f}M" if vol >= 1e6 else f"${vol/1e3:.0f}K"
                 flags = []
-                if c.vetoes:
-                    flags.append("veto:" + ",".join(v.code for v in c.vetoes))
                 if c.min_notional and c.min_notional > app.args.stake:
                     flags.append("WATCH")
                 print(f"{shown+1:<3}{arrow:<5}{c.coin:<15}{c.price:>13.8g}"
                       f"{c.change_24h_pct:>7.1f}%{vol_s:>10}{c.lean:>7.2f}"
                       f"{c.earlyness:>7.2f}{c.score:>7.1f}  {' '.join(flags)}")
                 shown += 1
+
+            # Vetoed: excluded from ranking, still visible + shadow-logged.
+            vet = app.vetoed()
+            if vet:
+                print("-" * 100)
+                print(f" VETOED · {len(vet)} excluded from ranking, "
+                      f"shadow-logged (top 5 by {app.sort_key})")
+                for c in vet[:5]:
+                    arrow = {"LONG": "▲", "SHORT": "▼"}.get(c.direction, "•")
+                    codes = ",".join(v.code for v in c.vetoes)
+                    print(f"   {arrow} {c.coin:<15}{c.score:>7.1f}  veto:{codes}")
 
             top = next((c for c in rows if c.actionable), None)
             if top:
