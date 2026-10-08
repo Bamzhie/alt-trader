@@ -33,11 +33,15 @@ def append_bars(data_dir, coin, bars):
             w.writerow({k: b[k] for k in HEADER})
     return len(new)
 
-def collect_once(data_dir="data/bars", limit_per_coin=200):
+def collect_full_universe(data_dir="data/bars", limit_per_coin=200):
+    """Fetch 5m bars for EVERY universe coin, regardless of scan rotation.
+
+    build_universe(stake=inf, budget=None) is uncapped (spec SS5: the
+    collector covers the full universe, not the 150-coin scan rotation), so a
+    coin that leaves rotation keeps accumulating bars for outcome resolution.
+    """
     from .scan import build_universe
     from . import mexc
-    # The collector covers the FULL universe, not the scan rotation - a coin
-    # that leaves rotation must keep accumulating bars for outcome resolution.
     uni = build_universe(float("inf"), budget=None)
     counts = {}
     for sym, coin in uni:
