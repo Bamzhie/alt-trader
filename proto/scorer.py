@@ -27,6 +27,7 @@ WEIGHTS = {
 MIN_QUOTE_VOLUME_24H = 250_000.0   # USDT
 MAX_SPREAD_PCT = 3.0
 LATE_MOVE_PCT = 12.0               # 1h move beyond this is a chase, not an entry
+LATE_MOVE_24H_PCT = 35.0           # 24h verticality: by the time we see it, it's over
 
 # MTF alignment (spec SS4)
 MTF_LEAN_THRESHOLD = 0.15          # a lean must exceed this on every timeframe
@@ -92,6 +93,19 @@ class Scorecard:
     @property
     def actionable(self):
         return (not self.vetoes) and self.tradeable and self.direction != "NEUTRAL"
+
+    def is_actionable(self, stake):
+        """
+        Stake-aware flag gate (spec SS4). `actionable` above stays
+        stake-agnostic - it drives ranking and keeps existing callers
+        working. A FLAG additionally requires a CONFIRMED minimum that fits
+        the stake: min_notional None (unknown) is fail-closed, so a coin we
+        cannot size never flags even though it still ranks and shadow-logs.
+        An unknown stake fails closed the same way.
+        """
+        if self.min_notional is None or stake is None:
+            return False
+        return self.actionable and self.min_notional <= stake
 
 
 def book_component(bids, asks):
@@ -198,7 +212,8 @@ def oi_funding_component(price_change_pct, oi_change_pct, funding_rate, funding_
     }
 
 
-def apply_vetoes(sc, bars, quote_vol_24h, spread_pct, change_1h_pct):
+def apply_vetoes(sc, bars, quote_vol_24h, spread_pct, change_1h_pct,
+                 change_24h_pct):
     """Hard disqualifiers. Each records a machine code and a human reason."""
     if quote_vol_24h < MIN_QUOTE_VOLUME_24H:
         sc.vetoes.append(Veto("low_volume",
@@ -208,6 +223,14 @@ def apply_vetoes(sc, bars, quote_vol_24h, spread_pct, change_1h_pct):
     if abs(change_1h_pct) >= LATE_MOVE_PCT:
         sc.vetoes.append(Veto("late_move",
                               f"already moved {change_1h_pct:+.1f}% in 1h — late signal, not an entry"))
+    # 24h verticality (spec SS3.2): a coin that has already run 35% in a day
+    # is a chase even when the last hour looks calm. Same machine code as the
+    # 1h rule; only one late_move reason is recorded so veto_codes stays
+    # readable downstream.
+    if (abs(change_24h_pct) >= LATE_MOVE_24H_PCT
+            and not any(v.code == "late_move" for v in sc.vetoes)):
+        sc.vetoes.append(Veto("late_move",
+                              f"already moved {change_24h_pct:+.1f}% in 24h — vertical move, not an entry"))
     if not bars or len(bars) < 30:
         sc.vetoes.append(Veto("thin_history",
                               f"only {len(bars) if bars else 0} bars — insufficient warm-up"))
@@ -228,7 +251,8 @@ def score_coin(coin, bars, bids, asks, *,
                    funding_rate=funding_rate, oi_change_pct=oi_change_pct,
                    min_notional=min_notional)
 
-    apply_vetoes(sc, bars, quote_vol_24h, spread_pct, change_1h_pct)
+    apply_vetoes(sc, bars, quote_vol_24h, spread_pct, change_1h_pct,
+                 change_24h_pct)
 
     if sc.min_notional is not None:
         sc.tradeable = True  # planner compares against stake later

@@ -36,7 +36,10 @@ CREATE TABLE IF NOT EXISTS signal_log (
     min_notional    REAL,
     veto_codes      TEXT,
     tradeable       INTEGER NOT NULL DEFAULT 1,
-    tier            INTEGER NOT NULL DEFAULT 2
+    tier            INTEGER NOT NULL DEFAULT 2,
+    -- 1 = pre-v2 history (stake-agnostic flag rule), 2 = current rule.
+    -- Historical rows stay comparable by filtering on flag_version (SS6.1).
+    flag_version    INTEGER DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_signal_ts_coin ON signal_log(ts, coin);
 CREATE INDEX IF NOT EXISTS idx_signal_flagged ON signal_log(flagged);
@@ -69,17 +72,37 @@ class Store:
         self.conn = sqlite3.connect(path, timeout=30)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
 
+    def _migrate(self):
+        """Add signal_log.flag_version to a pre-v2 database and backfill.
+
+        Existing rows predate the stake-aware flag rule, so they are version 1;
+        every row written from now on stamps 2. Idempotent: safe on reopen.
+        """
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(signal_log)")}
+        if "flag_version" not in cols:
+            self.conn.execute(
+                "ALTER TABLE signal_log ADD COLUMN flag_version INTEGER DEFAULT 1")
+        self.conn.execute(
+            "UPDATE signal_log SET flag_version=1 WHERE flag_version IS NULL")
+
     def log_signal(self, sc, flagged, tier=2):
-        """Insert one scorecard. flagged=False writes a shadow row."""
+        """Insert one scorecard. flagged=False writes a shadow row.
+
+        flagged must already be computed with the stake-aware rule
+        (Scorecard.is_actionable(stake) and score >= threshold); this method
+        only stamps the row with the flag rule version it was written under.
+        """
         cur = self.conn.execute(
             """INSERT INTO signal_log
                (ts, coin, venue, flagged, score, lean, direction, earlyness,
                 mag_vol, mag_book, mag_oi, lean_vol, lean_book, lean_oi,
                 price, change_24h_pct, quote_vol_24h, spread_pct,
-                funding_rate, min_notional, veto_codes, tradeable, tier)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                funding_rate, min_notional, veto_codes, tradeable, tier,
+                flag_version)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,2)""",
             (int(time.time()), sc.coin, sc.venue, 1 if flagged else 0,
              sc.score, sc.lean, sc.direction, sc.earlyness,
              sc.magnitude_parts.get("VOL"), sc.magnitude_parts.get("BOOK"),

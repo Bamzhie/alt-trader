@@ -75,10 +75,12 @@ class App:
                     cards.append(sc)
 
         # Log: flagged rows AND shadow rows (vetoed / sub-threshold). SS6.1a.
-        # Flagged = actionable AND above threshold (selective, not permissive).
+        # Flagged = stake-aware actionable AND above threshold (selective,
+        # not permissive): a None min_notional never flags (fail-closed).
         if self.args.write_logs:
             for sc in cards:
-                flagged = bool(sc.actionable) and sc.score >= self.args.log_threshold
+                flagged = (sc.is_actionable(self.args.stake)
+                           and sc.score >= self.args.log_threshold)
                 try:
                     self.store.log_signal(sc, flagged=flagged, tier=2)
                 except Exception:
