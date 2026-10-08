@@ -6,6 +6,8 @@ liquid coin), so an implementation that sorts by symbol instead of 24h volume
 produces visibly wrong groups.
 """
 
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -211,6 +213,54 @@ def test_missing_detail_row_fails_closed():
     check("but still covered by a group", C(199) in coins)
 
 
+def test_cli_scan_advances_pointer():
+    """Review finding 2: main() must open a Store and pass it to
+    build_universe, so two successive CLI runs against the same --db
+    advance the rotation pointer (and --no-logs stays in-memory)."""
+    print("=== CLI main(): two runs with the same --db advance the pointer ===")
+    tmp = tempfile.mkdtemp()
+    db = os.path.join(tmp, "cli.db")
+    tk, det = make_fixture(tradeable_count=100)
+    restore = install(tk, det, bybit_set=None)
+    orig = (scanmod.analyse_one, sys.argv, sys.stdout)
+    scanmod.analyse_one = lambda *a, **k: None   # scoring out of scope, no network
+
+    def run_cli(*argv_extra):
+        sys.argv = ["scan", *argv_extra]
+        buf = io.StringIO()
+        code = 0
+        try:
+            with contextlib.redirect_stdout(buf):
+                scanmod.main()
+        except SystemExit as e:            # argparse errors
+            code = e.code or 0
+        return code, buf.getvalue()
+
+    try:
+        code1, out1 = run_cli("--db", db)
+        st = Store(db)
+        ptr1 = scanmod.rotation_pointer(st)
+        st.close()
+        check("run1 exits 0", code1 == 0, f"exit={code1} {out1[-200:]}")
+        check("run1 advances pointer 0 -> 30", ptr1 == 30, str(ptr1))
+
+        code2, out2 = run_cli("--db", db)
+        st = Store(db)
+        ptr2 = scanmod.rotation_pointer(st)
+        st.close()
+        check("run2 exits 0", code2 == 0, f"exit={code2} {out2[-200:]}")
+        check("run2 advances pointer 30 -> 60", ptr2 == 60, str(ptr2))
+
+        db2 = os.path.join(tmp, "nologs.db")
+        code3, out3 = run_cli("--db", db2, "--no-logs")
+        check("--no-logs run exits 0", code3 == 0, f"exit={code3} {out3[-200:]}")
+        check("--no-logs uses in-memory store (no db file created)",
+              not os.path.exists(db2), str(os.path.exists(db2)))
+    finally:
+        scanmod.analyse_one, sys.argv, sys.stdout = orig
+        restore()
+
+
 def run(fn):
     print(f"--- {fn.__name__}")
     try:
@@ -224,7 +274,8 @@ for t in (test_groups_disjoint_and_fill_150,
           test_shortfall_spills,
           test_rotation_pointer_persists_and_advances,
           test_tail_prefers_mexc_only_when_bybit_map_available,
-          test_missing_detail_row_fails_closed):
+          test_missing_detail_row_fails_closed,
+          test_cli_scan_advances_pointer):
     run(t)
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))

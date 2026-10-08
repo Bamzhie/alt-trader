@@ -14,6 +14,7 @@ from . import mexc
 from . import indicators as ind
 from . import planner as pl
 from .scorer import score_coin
+from .store import Store
 
 SYNTH_MARKERS = ("STOCK", "XAU", "XAG", "USOIL", "SOXL", "SPX", "NDX", "GLD", "SLV")
 
@@ -277,12 +278,20 @@ def main():
     ap.add_argument("--top", type=int, default=20)
     ap.add_argument("--stake", type=float, default=0.10)
     ap.add_argument("--coins", type=int, default=120, help="how many coins to analyse")
+    ap.add_argument("--db", default="data/signals.db",
+                    help="signal db; rotation pointer persists here across runs")
+    ap.add_argument("--no-logs", action="store_true",
+                    help="in-memory store: rotation pointer does not persist")
     args = ap.parse_args()
 
     print(f"ALT RADAR prototype scan  ·  stake ${args.stake:.2f}  ·  read-only\n")
 
     t0 = time.time()
-    uni = build_universe(args.stake)
+    # Same wiring as the app: a Store is what carries the rotation pointer, so
+    # every scan path advances it. File db by default (survives restarts);
+    # --no-logs keeps the run disk-free via an in-memory store.
+    store = Store(":memory:") if args.no_logs else Store(args.db)
+    uni = build_universe(args.stake, store=store)
     det = mexc.details()
     tk = mexc.tickers()
     print(f"universe: {len(uni)} USDT perps (synthetics removed)  "
@@ -362,6 +371,7 @@ def main():
               "unplannable, or min-notional blocked at this stake)")
 
     print(f"\ntotal {time.time()-t0:.1f}s")
+    store.close()
 
 
 if __name__ == "__main__":
