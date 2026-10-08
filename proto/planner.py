@@ -115,6 +115,18 @@ def compute_leverage(stake, risk_per_trade_pct, stop_distance_pct,
     return lev
 
 
+def copy_counter_trend(sc, plan):
+    """Copy the scorer's counter-trend label into plan warnings.
+
+    Warnings are surfaced, never swallowed (spec SS4): the scorer can only
+    annotate its own Scorecard, so the planner carries the label onward.
+    """
+    for n in sc.notes:
+        if isinstance(n, str) and n.startswith("counter-trend:"):
+            plan.warnings.append(n)
+    return plan
+
+
 def build_plan(sc, stake, risk_per_trade_pct=2.0, swing_ref=None,
                fee_pct=TAKER_FEE_PCT, funding_rate=0.0, funding_cap=0.0018,
                hold_hours=24):
@@ -125,8 +137,9 @@ def build_plan(sc, stake, risk_per_trade_pct=2.0, swing_ref=None,
     swing_ref: structural stop reference (swing low for LONG, high for SHORT).
     """
     if not swing_ref:
-        return Plan(coin=sc.coin, direction=sc.direction,
-                    warnings=["no structural stop reference available — cannot plan safely"])
+        p = Plan(coin=sc.coin, direction=sc.direction,
+                 warnings=["no structural stop reference available — cannot plan safely"])
+        return copy_counter_trend(sc, p)
 
     lv = plan_levels(sc.direction, sc.price, swing_ref)
 
@@ -206,6 +219,7 @@ def build_plan(sc, stake, risk_per_trade_pct=2.0, swing_ref=None,
             f"{stop_distance_pct:.2f}% stop — costs dominate this trade")
     for v in sc.vetoes:
         p.warnings.append(f"vetoed: {v.reason}")
+    copy_counter_trend(sc, p)
     return p
 
 

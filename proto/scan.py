@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from . import mexc
 from . import indicators as ind
 from . import planner as pl
-from .scorer import score_coin
+from .scorer import score_coin, volume_price_component
 from .store import Store
 
 SYNTH_MARKERS = ("STOCK", "XAU", "XAG", "USOIL", "SOXL", "SPX", "NDX", "GLD", "SLV")
@@ -230,6 +230,22 @@ def build_universe(stake, budget=150, store=None):
     return picked
 
 
+def tf_lean(sym, interval, limit=200, min_bars=30):
+    """volume_price lean for one higher timeframe, or None when unavailable.
+
+    None means "no evidence": a failed fetch or a thin history degrades to
+    no-bonus scoring instead of dropping the coin, mirroring the way a
+    missing Bybit map degrades the universe tail.
+    """
+    try:
+        bars = mexc.klines(sym, interval, limit=limit)
+    except Exception:
+        return None
+    if not bars or len(bars) < min_bars:
+        return None
+    return volume_price_component(bars)[1]
+
+
 def analyse_one(sym, coin, detail, tk_row, stake):
     """Fetch bars + book for one coin and score it. Returns a Scorecard or None."""
     try:
@@ -241,6 +257,11 @@ def analyse_one(sym, coin, detail, tk_row, stake):
 
         bars = mexc.klines(sym, "5m", limit=200)
         bids, asks = mexc.depth(sym, limit=20)
+
+        # Higher timeframes for the MTF alignment bonus (spec SS4):
+        # 1H trend, 4H swing bias, same volume_price lean formula.
+        lean_1h = tf_lean(sym, "1H")
+        lean_4h = tf_lean(sym, "4H")
 
         # 1h move, from 5m bars: 12 bars.
         change_1h = 0.0
@@ -265,6 +286,7 @@ def analyse_one(sym, coin, detail, tk_row, stake):
             quote_vol_24h=quote_vol, spread_pct=spread_pct, change_1h_pct=change_1h,
             price=price, change_24h_pct=change_24h,
             funding_rate=funding, funding_cap=fund_cap, oi_change_pct=None,
+            lean_1H=lean_1h, lean_4H=lean_4h,
             min_notional=min_not, venue="MEXC", tier=2)
         return sc
     except mexc.MexcError:

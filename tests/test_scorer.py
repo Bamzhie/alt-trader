@@ -173,5 +173,16 @@ leaks = [t for t in ["target_return", "expected_return", "take_profit_pct",
                      "500", "multiple_target"] if t in src]
 check("no target-return constants", not leaks, f"found {leaks}")
 
+print("\n=== MTF leans never push the score outside 0-100 ===")
+for lean1h, lean4h, tag in [(0.5, 0.5, "aligned"), (0.5, -0.5, "counter"),
+                            (0.14, 0.14, "sub-threshold"), (None, None, "absent")]:
+    for bars, nm in [(vbars, "up"), (mirror(vbars), "dn")]:
+        s = scorer.score_coin("MTF", bars, bid_heavy, ask_heavy,
+                              quote_vol_24h=5e6, spread_pct=0.2,
+                              change_1h_pct=1.0, tier=1,
+                              lean_1H=lean1h, lean_4H=lean4h)
+        check(f"score in [0,100] ({nm}, {tag})", 0.0 <= s.score <= 100.0,
+              f"score={s.score}")
+
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)

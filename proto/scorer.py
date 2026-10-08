@@ -28,6 +28,39 @@ MIN_QUOTE_VOLUME_24H = 250_000.0   # USDT
 MAX_SPREAD_PCT = 3.0
 LATE_MOVE_PCT = 12.0               # 1h move beyond this is a chase, not an entry
 
+# MTF alignment (spec SS4)
+MTF_LEAN_THRESHOLD = 0.15          # a lean must exceed this on every timeframe
+MTF_ALIGN_BONUS = 8.0              # flat points, capped by the 100 ceiling
+
+
+def mtf_alignment(lean_5m, lean_1h, lean_4h):
+    """
+    (aligned, counter_note) for the three timeframe leans.
+
+    aligned: all three same sign and all |lean| > MTF_LEAN_THRESHOLD.
+    counter_note: label (never a score effect) when the 5m and 4H leans
+    oppose, each beyond the threshold: "counter-trend: 5m X vs 4H Y ...".
+
+    A missing lean (None) can be neither aligned nor opposed - absent
+    evidence earns no bonus and no warning. Leans are the SAME
+    volume_price lean per timeframe, so signs compare like for like.
+    """
+    leans = (lean_5m, lean_1h, lean_4h)
+    if any(x is None for x in leans):
+        return False, None
+
+    signs = [1 if x > 0 else (-1 if x < 0 else 0) for x in leans]
+    strong = [abs(x) > MTF_LEAN_THRESHOLD for x in leans]
+
+    aligned = all(strong) and len(set(signs)) == 1
+
+    counter = None
+    if strong[0] and strong[2] and signs[0] != signs[2]:
+        d5 = "LONG" if signs[0] > 0 else "SHORT"
+        d4 = "LONG" if signs[2] > 0 else "SHORT"
+        counter = f"counter-trend: 5m {d5} vs 4H {d4} — elevated risk"
+    return aligned, counter
+
 
 @dataclass
 class Veto:
@@ -186,6 +219,7 @@ def score_coin(coin, bars, bids, asks, *,
                price=0.0, change_24h_pct=0.0,
                funding_rate=0.0, funding_cap=0.0018,
                oi_change_pct=None,
+               lean_1H=None, lean_4H=None,
                min_notional=None, venue="MEXC", tier=2):
     """Full scoring pass for one coin. Returns a Scorecard."""
     sc = Scorecard(coin=coin, venue=venue, price=price,
@@ -215,7 +249,18 @@ def score_coin(coin, bars, bids, asks, *,
                 + WEIGHTS["book"] * bk_mag
                 + WEIGHTS["oi_funding"] * oi_mag)
         sc.earlyness = ind.earlyness(bars)
-        sc.score = round(100.0 * base * (0.55 + 0.45 * sc.earlyness), 1)
+        raw = 100.0 * base * (0.55 + 0.45 * sc.earlyness)
+
+        # MTF: same formula per timeframe, 5m lean = the volume_price lean
+        # computed above. Alignment adds its bonus AFTER base*earlyness and
+        # BEFORE rounding, capped by the 0-100 ceiling. Counter-trend is a
+        # label only - it never moves the score.
+        aligned, counter = mtf_alignment(vp_lean, lean_1H, lean_4H)
+        if aligned:
+            raw = min(100.0, raw + MTF_ALIGN_BONUS)
+        if counter:
+            sc.notes.append(counter)
+        sc.score = round(raw, 1)
 
         # Composite lean: weight by each signal's magnitude so a strong
         # directional reading outweighs a weak one.
