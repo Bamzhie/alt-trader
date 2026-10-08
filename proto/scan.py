@@ -98,19 +98,135 @@ def is_synthetic(coin, detail_row=None):
     return any(t in coin for t in SYNTH_MARKERS)
 
 
-def build_universe():
-    """USDT perps only, synthetics removed. Returns [(symbol, coin)]."""
+# Universe groups for one scan cycle (spec SS3): three DISJOINT groups, deduped
+# by coin, filled in priority order 80 -> 40 -> 30, shortfall spilling into the
+# remainder so the budget still fills.
+GROUP_TRADEABLE = 80    # min_notional <= stake, ranked by 24h quote volume
+GROUP_TAIL = 40         # MEXC-only when Bybit's map is known, else lowest-volume
+GROUP_ROTATION = 30     # rolling window over the remainder, pointer in meta
+ROTATION_KEY = "rotation_ptr"
+
+
+def rotation_pointer(store):
+    """Rotation offset into the remainder group, persisted in meta.
+
+    0 when unset or unparsable - a bad pointer must never stop the scan.
+    """
+    try:
+        return int(store.get_meta(ROTATION_KEY, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def advance_rotation(store, consumed):
+    """Move the rotation pointer forward by `consumed` remainder coins.
+
+    Returns the new pointer. Read-time modulo against the current remainder
+    keeps it in range; the stored value only ever grows, so the window keeps
+    sweeping forward even as the remainder itself changes between cycles.
+    """
+    ptr = rotation_pointer(store) + max(0, int(consumed))
+    store.set_meta(ROTATION_KEY, ptr)
+    return ptr
+
+
+def _bybit_symbol_set():
+    """Coins Bybit also lists, or None when that map is unavailable.
+
+    None means "we don't know" and the tail group falls back to the
+    lowest-volume slice, so guaranteed coverage never depends on Bybit being
+    up. Never raises: missing adapter or failed fetch degrade to the fallback.
+    """
+    try:
+        from . import bybit
+        rows = bybit.tickers()
+    except Exception:
+        return None
+    if not rows:
+        return None
+    return {canon(s) for s in rows}
+
+
+def build_universe(stake, budget=150, store=None):
+    """
+    Stake-aware scan universe: disjoint groups that fill `budget`.
+
+    Groups, in priority order, deduped by coin:
+      1. tradeable - min_notional <= stake (an unknown minimum is fail-closed
+         and excluded), ranked by 24h quote volume, first 80.
+      2. tail - coins Bybit does not list (MEXC-only) when that map is
+         available, otherwise the 40 lowest-volume coins. Lowest volume first
+         either way, so the thin end of the book gets guaranteed coverage.
+      3. rotation - 30 from whatever remains, starting at meta:rotation_ptr.
+    Any group shortfall spills across the rest of the remainder so the budget
+    still fills; the three groups never overlap.
+
+    With `store`, the pointer is read from and advanced in meta by the number
+    of remainder coins consumed, so the window sweeps forward every cycle and
+    survives restarts. `budget=None` means uncapped (full universe).
+
+    Returns [(symbol, coin)].
+    """
     tk = mexc.tickers()
     det = mexc.details()
-    out = []
+
+    pool = []
     for sym, row in tk.items():
         if not sym.endswith("_USDT"):
             continue
         coin = canon(sym)
         if not coin or is_synthetic(coin, det.get(sym)):
             continue
-        out.append((sym, coin))
-    return out
+        pool.append((sym, coin))
+    pool.sort(key=lambda sc: float(tk.get(sc[0], {}).get("amount24") or 0),
+              reverse=True)
+
+    picked = []
+    used = set()
+
+    def take(items):
+        """Append unused items until the budget is full. Returns count taken."""
+        n = 0
+        for it in items:
+            if budget is not None and len(picked) >= budget:
+                break
+            if it[1] in used:
+                continue
+            picked.append(it)
+            used.add(it[1])
+            n += 1
+        return n
+
+    def stake_ok(sc):
+        price = float(tk.get(sc[0], {}).get("lastPrice") or 0)
+        row = det.get(sc[0]) or {}
+        n = mexc.min_notional(sc[0], row, price)
+        return n is not None and n <= stake
+
+    # 1. tradeable by stake, vol-ranked
+    take([sc for sc in pool if stake_ok(sc)][:GROUP_TRADEABLE])
+
+    # 2. tail: MEXC-only when the Bybit map answers, else lowest-volume slice
+    bybit_set = _bybit_symbol_set()
+    tail_pool = [sc for sc in pool if sc[1] not in used]
+    if bybit_set is not None:
+        tail_pool = [sc for sc in tail_pool if sc[1] not in bybit_set]
+    take(list(reversed(tail_pool))[:GROUP_TAIL])
+
+    # 3. rotation window over the remainder, then shortfall spill
+    remainder = [sc for sc in pool if sc[1] not in used]
+    consumed = 0
+    if remainder:
+        n = len(remainder)
+        ptr = (rotation_pointer(store) if store is not None else 0) % n
+        window = [remainder[(ptr + i) % n] for i in range(min(GROUP_ROTATION, n))]
+        consumed += take(window)
+        start = (ptr + len(window)) % n
+        consumed += take([remainder[(start + i) % n] for i in range(n)])
+
+    if store is not None and consumed:
+        advance_rotation(store, consumed)
+    return picked
 
 
 def analyse_one(sym, coin, detail, tk_row, stake):
@@ -166,7 +282,7 @@ def main():
     print(f"ALT RADAR prototype scan  ·  stake ${args.stake:.2f}  ·  read-only\n")
 
     t0 = time.time()
-    uni = build_universe()
+    uni = build_universe(args.stake)
     det = mexc.details()
     tk = mexc.tickers()
     print(f"universe: {len(uni)} USDT perps (synthetics removed)  "

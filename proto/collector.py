@@ -36,7 +36,9 @@ def append_bars(data_dir, coin, bars):
 def collect_once(data_dir="data/bars", limit_per_coin=200):
     from .scan import build_universe
     from . import mexc
-    uni = build_universe()
+    # The collector covers the FULL universe, not the scan rotation - a coin
+    # that leaves rotation must keep accumulating bars for outcome resolution.
+    uni = build_universe(float("inf"), budget=None)
     counts = {}
     for sym, coin in uni:
         try:

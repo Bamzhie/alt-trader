@@ -107,7 +107,7 @@ for k in appmod.SORT_KEYS:
 
 print("\n=== live scan + store write (real network) ===")
 a.refresh_universe()
-check("universe is non-empty", len(a.uni) > 300, str(len(a.uni)))
+check("universe fills the 150 budget", len(a.uni) == 150, str(len(a.uni)))
 check("no TradFi leaked", not any(c in ("OPENAI", "NVIDIA", "NAS100", "XAU",
                                        "AAPLSTOCK", "SILVER") for _, c in a.uni))
 t0 = time.time()

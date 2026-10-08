@@ -51,7 +51,9 @@ class App:
 
     # ---------- data ----------
     def refresh_universe(self):
-        self.uni = build_universe()
+        # store passed -> rotation pointer read/advanced each refresh, so the
+        # 30-coin rotation window sweeps forward and survives restarts.
+        self.uni = build_universe(self.args.stake, store=self.store)
         self.det = mexc.details()
         self.tk = mexc.tickers()
 
