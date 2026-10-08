@@ -333,6 +333,29 @@ SQLite:
 indicator against realised results rather than assumption, and is the
 prerequisite for any future claim about which formulas work.
 
+**What the log does and does not buy.** It measures the operator's *real* hit
+rate on *their* coins at *their* costs, and it calibrates thresholds against
+outcomes rather than intuition. It does not retroactively validate Tier 2, and
+it cannot reveal coins that were never scanned.
+
+### 6.1a Shadow Logging — the denominator
+
+A log containing only flagged signals answers *"were my signals good?"* It
+cannot answer *"what did I miss?"* Because the collector records only what it
+records, coins removed by a veto are unrecoverable — a vetoed coin that later
+pumped leaves no trace.
+
+**Requirement.** Every candidate that clears the cheap filters is logged,
+including:
+- coins below the display threshold
+- coins vetoed by the late/vertical filter (with the veto reason recorded)
+- coins whose directional lean was ambiguous
+
+Flagged and shadow rows are distinguishable in the log, so hit rate is computed
+both ways. Storage cost is negligible (measured in §6.3). Without this, the log
+yields only a numerator and cannot support any recall or rejection-rate
+analysis.
+
 ### 6.2 Two-Tier Evidence Structure
 
 Measured: **0 of 40** sampled MEXC-only alts have enough history for any real
@@ -354,6 +377,23 @@ never be presented as equally evidenced.
 
 A continuous collector accumulates 5m bars from now forward, creating the Tier 2
 history that free APIs cannot supply retroactively.
+
+**What local storage buys the operator**, in descending order of realised value:
+
+1. **Calibrated judgment.** After a few hundred logged trades, the operator
+   knows *which of their own signals earned alerts* — e.g. book imbalance paid
+   out and OI divergence did not; 5m entries got chopped while 1H entries did
+   not; funding bled shorts on this venue. This is judgement derived from their
+   own record, and it is the primary justification for storing data locally.
+2. **Threshold calibration** — score cutoffs set from measured hit rates rather
+   than guesswork.
+3. **Replay and regression** — reproduce any past scan to debug or re-tune.
+4. **Deferred Tier 2 validation** (§6.2) — real, but arrives in months, not
+   days.
+
+**What it does not buy:** knowledge of coins never scanned or vetoed (mitigated
+by §6.1a), and any retrospective validation. Both limits are structural, not
+implementation gaps.
 
 **Measured storage cost** (real MEXC payloads, ~95 B/bar JSON, 4.4× zlib
 compression, all timeframes derived from 5m):
