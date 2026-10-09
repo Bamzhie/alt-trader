@@ -260,35 +260,48 @@ def snapshot_label(rows):
         time.strftime("%H:%M", time.localtime(saved_at)), n_coins)
 
 
+def load_file_snapshot(db_path):
+    """Read the close-time snapshot only; safe and quick on the UI thread."""
+    from proto import snapshot as snap
+    cards, plans, saved_at = snap.load(db_path)
+    if not cards:
+        return [], {}, 0.0, ""
+    import time as _t
+    label = "saved %s (%d coins)" % (
+        _t.strftime("%H:%M", _t.localtime(saved_at)), len(cards))
+    return cards, plans, saved_at, label
+
+
 def resolve_launch_snapshot(db_path):
     """("file"|"db"|"empty", cards, plans, label) for instant launch.
 
-    File first (exact last screen, cached plans included), then the DB's
-    latest scan cycle (no plans — they embed live structure), then blank.
-    Only local reads; fully unit-testable.
+    Show whichever persisted source is newer: the close-time file (exact last
+    screen, cached plans included) or the coin_state board (one row per coin,
+    always coherent, no duplicates). Fall back to either source if the other
+    is absent or unreadable. Only local reads.
     """
-    from proto import snapshot as snap
-    cards, plans, saved_at = snap.load(db_path)
-    if cards:
-        import time as _t
-        label = "saved %s (%d coins)" % (
-            _t.strftime("%H:%M", _t.localtime(saved_at)), len(cards))
-        return "file", cards, plans, label
+    file_cards, file_plans, saved_at, file_label = load_file_snapshot(db_path)
+    db_rows = []
     try:
         from proto.store import Store
         store = Store(db_path)
         try:
-            rows = store.latest_rows()
+            db_rows = store.current_rows()
         finally:
             try:
                 store.close()
             except Exception:
                 pass
     except Exception:
-        return "empty", [], {}, ""
-    if not rows:
-        return "empty", [], {}, ""
-    return "db", snapshot_cards(rows), {}, snapshot_label(rows)
+        db_rows = []
+
+    db_at = max((r.get("ts") or 0 for r in db_rows), default=0)
+    if db_rows and (not file_cards or db_at > (saved_at or 0)):
+        db_label = snapshot_label(db_rows).replace("saved ", "scan ", 1)
+        return "db", snapshot_cards(db_rows), {}, db_label
+    if file_cards:
+        return "file", file_cards, file_plans, file_label
+    return "empty", [], {}, ""
 
 
 def plan_text(card, plan):

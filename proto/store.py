@@ -49,6 +49,41 @@ CREATE TABLE IF NOT EXISTS signal_log (
 CREATE INDEX IF NOT EXISTS idx_signal_ts_coin ON signal_log(ts, coin);
 CREATE INDEX IF NOT EXISTS idx_signal_flagged ON signal_log(flagged);
 
+-- Current board: exactly one row per coin, upserted every scan. The same
+-- coin is NEVER a new signal twice here — signal_log stays the append-only
+-- journal (time series for analysis), coin_state is the materialized "now"
+-- (what the table shows, what launch reads, first-seen tracking).
+CREATE TABLE IF NOT EXISTS coin_state (
+    coin            TEXT    PRIMARY KEY,
+    venue           TEXT    NOT NULL DEFAULT 'MEXC',
+    flagged         INTEGER NOT NULL DEFAULT 0,
+    score           REAL,
+    lean            REAL,
+    direction       TEXT,
+    earlyness       REAL,
+    mag_vol         REAL,
+    mag_book        REAL,
+    mag_oi          REAL,
+    lean_vol        REAL,
+    lean_book       REAL,
+    lean_oi         REAL,
+    price           REAL,
+    change_24h_pct  REAL,
+    quote_vol_24h   REAL,
+    spread_pct      REAL,
+    funding_rate    REAL,
+    oi_change_pct   REAL,
+    oi_notional     REAL,
+    min_notional    REAL,
+    veto_codes      TEXT,
+    tradeable       INTEGER NOT NULL DEFAULT 1,
+    tier            INTEGER NOT NULL DEFAULT 2,
+    signal_id       INTEGER REFERENCES signal_log(id),
+    first_seen      INTEGER,
+    last_seen       INTEGER,
+    scans_seen      INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE TABLE IF NOT EXISTS outcome_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     signal_id   INTEGER NOT NULL REFERENCES signal_log(id),
@@ -129,6 +164,37 @@ class Store:
         if "oi_change_pct" not in cols:
             self.conn.execute(
                 "ALTER TABLE signal_log ADD COLUMN oi_change_pct REAL")
+        self._backfill_coin_state()
+
+    def _backfill_coin_state(self):
+        """One coin_state row per coin from the latest signal_log row.
+
+        Runs when coin_state is empty but the journal has rows (upgrades and
+        fresh checkouts against a copied DB): newest row per coin wins, ties
+        broken by id. Idempotent — a non-empty coin_state is left alone.
+        """
+        n_state = self.conn.execute(
+            "SELECT COUNT(*) FROM coin_state").fetchone()[0]
+        if n_state:
+            return
+        self.conn.execute(
+            """INSERT INTO coin_state
+               (coin, venue, flagged, score, lean, direction, earlyness,
+                mag_vol, mag_book, mag_oi, lean_vol, lean_book, lean_oi,
+                price, change_24h_pct, quote_vol_24h, spread_pct,
+                funding_rate, oi_change_pct, oi_notional, min_notional,
+                veto_codes, tradeable, tier, signal_id, first_seen,
+                last_seen, scans_seen)
+               SELECT coin, venue, flagged, score, lean, direction, earlyness,
+                mag_vol, mag_book, mag_oi, lean_vol, lean_book, lean_oi,
+                price, change_24h_pct, quote_vol_24h, spread_pct,
+                funding_rate, oi_change_pct, oi_notional, min_notional,
+                veto_codes, tradeable, tier, id,
+                (SELECT MIN(ts) FROM signal_log s2 WHERE s2.coin = coin),
+                ts, (SELECT COUNT(*) FROM signal_log s3 WHERE s3.coin = coin)
+               FROM signal_log s1
+               WHERE id = (SELECT MAX(id) FROM signal_log s4
+                           WHERE s4.coin = s1.coin)""")
 
     def latest_rows(self, window_s=180):
         """Most recent scan cycle's rows, newest scan first by score.
@@ -240,22 +306,41 @@ class Store:
              bars_examined, int(_t.time())))
         self.conn.commit()
 
-    def plan_stats(self):
-        """Stop/TP1/TP2 hit counts over resolved planned signals.
+    def plan_stats(self, hours=None):
+        """Plan-level touch rates for a signal-time cohort.
 
         Two cohorts, because a young plan with untouched levels is pending,
         not a miss: "all rows" is the to-date touch rate (moves as bars
         arrive); "terminal" (stop touched OR TP2 touched — the trade is
-        over) is the finished-trade rate. Both are reported; neither is
-        presented as a final win rate while live rows dominate.
+        over) is the finished-trade rate. `hours=None` means all history;
+        otherwise the cohort is signals logged in the last `hours`. Each row
+        is a scan signal, so a pair repeated across scans is counted again.
         """
+        since = time.time() - hours * 3600 if hours is not None else None
+        clause = " WHERE s.flagged=1"
+        params = ()
+        if since is not None:
+            clause += " AND s.ts>?"
+            params = (since,)
         rows = self.conn.execute(
-            "SELECT stop_hit, tp1_hit, tp2_hit FROM plan_outcome").fetchall()
+            "SELECT o.stop_hit, o.tp1_hit, o.tp2_hit FROM plan_outcome o"
+            " JOIN signal_log s ON s.id=o.signal_id" + clause,
+            params).fetchall()
+        plans_logged = self.conn.execute(
+            "SELECT COUNT(*) FROM plan_log p JOIN signal_log s "
+            "ON s.id=p.signal_id" + clause, params).fetchone()[0]
+        signal_count, coin_count = self.conn.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT s.coin) FROM signal_log s" + clause,
+            params).fetchone()
         n = len(rows)
-        base = {"planned": 0, "stop_hit": 0, "tp1_hit": 0, "tp2_hit": 0,
+        base = {"window_hours": hours, "signals": signal_count,
+                "coins": coin_count, "plans_logged": plans_logged,
+                "planned": 0, "measured": 0,
+                "stop_hit": 0, "tp1_hit": 0, "tp2_hit": 0,
                 "stop_pct": 0.0, "tp1_pct": 0.0, "tp2_pct": 0.0,
-                "terminal": 0, "t_stop_pct": 0.0, "t_tp1_pct": 0.0,
-                "t_tp2_pct": 0.0}
+                "terminal": 0, "terminal_pct": 0.0,
+                "t_stop_hit": 0, "t_tp1_hit": 0, "t_tp2_hit": 0,
+                "t_stop_pct": 0.0, "t_tp1_pct": 0.0, "t_tp2_pct": 0.0}
         if not n:
             return base
         sh = sum(r[0] for r in rows)
@@ -263,13 +348,96 @@ class Store:
         t2 = sum(r[2] for r in rows)
         term = [r for r in rows if r[0] or r[2]]
         nt = len(term)
-        out = {"planned": n, "stop_hit": sh, "tp1_hit": t1, "tp2_hit": t2,
+        tsh = sum(r[0] for r in term)
+        tt1 = sum(r[1] for r in term)
+        tt2 = sum(r[2] for r in term)
+        out = {**base, "planned": n, "measured": n,
+               "stop_hit": sh, "tp1_hit": t1, "tp2_hit": t2,
                "stop_pct": 100.0 * sh / n, "tp1_pct": 100.0 * t1 / n,
                "tp2_pct": 100.0 * t2 / n, "terminal": nt,
-               "t_stop_pct": 100.0 * sum(r[0] for r in term) / nt if nt else 0.0,
-               "t_tp1_pct": 100.0 * sum(r[1] for r in term) / nt if nt else 0.0,
-               "t_tp2_pct": 100.0 * sum(r[2] for r in term) / nt if nt else 0.0}
+               "terminal_pct": 100.0 * nt / n,
+               "t_stop_hit": tsh, "t_tp1_hit": tt1, "t_tp2_hit": tt2,
+               "t_stop_pct": 100.0 * tsh / nt if nt else 0.0,
+               "t_tp1_pct": 100.0 * tt1 / nt if nt else 0.0,
+               "t_tp2_pct": 100.0 * tt2 / nt if nt else 0.0}
         return out
+
+    def upsert_current(self, sc, flagged, signal_id, tier=2):
+        """Refresh this coin's board row (insert or update, never duplicate).
+
+        Called once per scored card per scan, right after log_signal. The
+        journal keeps every observation; coin_state keeps exactly one row
+        per coin: latest fields win, first_seen is sticky, scans_seen counts
+        observations. Returns the coin.
+        """
+        import time as _t
+        now = int(_t.time())
+        self.conn.execute(
+            """INSERT INTO coin_state
+               (coin, venue, flagged, score, lean, direction, earlyness,
+                mag_vol, mag_book, mag_oi, lean_vol, lean_book, lean_oi,
+                price, change_24h_pct, quote_vol_24h, spread_pct,
+                funding_rate, oi_change_pct, oi_notional, min_notional,
+                veto_codes, tradeable, tier, signal_id, first_seen,
+                last_seen, scans_seen)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)
+               ON CONFLICT(coin) DO UPDATE SET
+                venue=excluded.venue, flagged=excluded.flagged,
+                score=excluded.score, lean=excluded.lean,
+                direction=excluded.direction, earlyness=excluded.earlyness,
+                mag_vol=excluded.mag_vol, mag_book=excluded.mag_book,
+                mag_oi=excluded.mag_oi, lean_vol=excluded.lean_vol,
+                lean_book=excluded.lean_book, lean_oi=excluded.lean_oi,
+                price=excluded.price, change_24h_pct=excluded.change_24h_pct,
+                quote_vol_24h=excluded.quote_vol_24h,
+                spread_pct=excluded.spread_pct,
+                funding_rate=excluded.funding_rate,
+                oi_change_pct=excluded.oi_change_pct,
+                oi_notional=excluded.oi_notional,
+                min_notional=excluded.min_notional,
+                veto_codes=excluded.veto_codes, tradeable=excluded.tradeable,
+                tier=excluded.tier, signal_id=excluded.signal_id,
+                first_seen=min(first_seen, excluded.first_seen),
+                last_seen=excluded.last_seen,
+                scans_seen=scans_seen+1""",
+            (sc.coin, sc.venue, 1 if flagged else 0,
+             sc.score, sc.lean, sc.direction, sc.earlyness,
+             sc.magnitude_parts.get("VOL"), sc.magnitude_parts.get("BOOK"),
+             sc.magnitude_parts.get("OI"),
+             sc.lean_parts.get("VOL"), sc.lean_parts.get("BOOK"),
+             sc.lean_parts.get("OI"),
+             sc.price, sc.change_24h_pct, sc.quote_vol_24h, sc.spread_pct,
+             sc.funding_rate, sc.oi_change_pct, sc.oi_notional,
+             sc.min_notional,
+             ",".join(v.code for v in sc.vetoes),
+             1 if sc.tradeable else 0, tier, signal_id, now, now))
+        self.conn.commit()
+        return sc.coin
+
+    def current_rows(self):
+        """Whole board, score first: one dict per coin (same shape as
+        latest_rows, plus first_seen/scans_seen). Launch reads this."""
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(coin_state)")]
+        if "coin" not in cols:
+            return []
+        return [
+            dict(zip(["coin", "venue", "flagged", "score", "lean",
+                      "direction", "earlyness", "mag_vol", "mag_book",
+                      "mag_oi", "lean_vol", "lean_book", "lean_oi", "price",
+                      "change_24h_pct", "quote_vol_24h", "spread_pct",
+                      "funding_rate", "min_notional", "veto_codes",
+                      "tradeable", "tier", "ts",
+                      "oi_change_pct", "oi_notional",
+                      "signal_id", "first_seen", "scans_seen"], r))
+            for r in self.conn.execute(
+                """SELECT coin, venue, flagged, score, lean, direction,
+                          earlyness, mag_vol, mag_book, mag_oi, lean_vol,
+                          lean_book, lean_oi, price, change_24h_pct,
+                          quote_vol_24h, spread_pct, funding_rate,
+                          min_notional, veto_codes, tradeable, tier,
+                          last_seen, oi_change_pct, oi_notional,
+                          signal_id, first_seen, scans_seen
+                   FROM coin_state ORDER BY score DESC""")]
 
     def count(self, flagged=None):
         if flagged is None:

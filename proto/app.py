@@ -132,6 +132,9 @@ class App:
                     if flagged and plan is not None and getattr(
                             plan, "valid", False):
                         self.store.log_plan(sid, plan)
+                    # Board upkeep: the coin's single current row follows
+                    # every scan (journal above keeps the full history).
+                    self.store.upsert_current(sc, flagged, sid, tier=2)
                 except Exception:
                     log_errors += 1
 
