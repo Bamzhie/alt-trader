@@ -21,7 +21,7 @@ from .app import App
 from . import collector as colmod
 from . import measurement as measuremod
 from . import outcomes as outmod
-from .scan import build_universe
+from .scan import MAX_WORKERS, build_universe
 
 
 def full_symbol_map():
@@ -145,9 +145,12 @@ def main():
                         sym_map = full_symbol_map()
                     done = outmod.resolve_pending(app.store, sym_map)
                     pdone = outmod.resolve_plans(app.store, sym_map)
+                    episode_result = outmod.resolve_episode_plans(
+                        app.store, sym_map, now=now)
                     last_resolve = now
                     print(f"[{time.strftime('%H:%M:%S')}] resolve: "
-                          f"{done} new outcomes, {pdone} plan rows",
+                          f"{done} new outcomes, {pdone} plan rows, "
+                          f"{episode_result['resolved']} episode outcomes",
                           flush=True)
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] resolve FAILED: "
@@ -163,12 +166,30 @@ def main():
                     tk, det = app.tk, app.det
                     eligible = measuremod.measurement_eligible(
                         tk, det, args.stake)
+                    refresh_state = (f"ERROR {app.universe_error}"
+                                     if app.universe_error else "ok")
+                    print(f"[{time.strftime('%H:%M:%S')}] measure inputs: "
+                          f"refresh {refresh_state}; "
+                          f"tickers {len(tk)} details {len(det)} "
+                          f"eligible {len(eligible)}", flush=True)
+                    if not eligible:
+                        print(f"[{time.strftime('%H:%M:%S')}] measure "
+                              "WARNING: zero eligible coins; no measurement "
+                              "attempts will be recorded", flush=True)
+
+                    def _measure_progress(done, total):
+                        if done % 50 == 0 or done == total:
+                            print(f"[{time.strftime('%H:%M:%S')}] measure "
+                                  f"scoring {done}/{total}", flush=True)
+
                     counts = measuremod.run_cycle(
                         app.store, eligible, config=measure_cfg,
                         now_fn=time.time, tickers=tk,
                         attempt_id_factory=lambda coin, cycle_ts:
                         measuremod.measurement_attempt_id(
-                            coin, cycle_ts, run_id))
+                            coin, cycle_ts, run_id),
+                        max_workers=MAX_WORKERS,
+                        progress_fn=_measure_progress)
                     last_measure = now
                     stats = measuremod.cadence_stats(app.store)
                     print(f"[{time.strftime('%H:%M:%S')}] measure: "

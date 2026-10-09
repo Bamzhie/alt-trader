@@ -21,6 +21,7 @@ import hashlib
 import json
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 from enum import IntEnum
 from typing import Optional, NamedTuple, Any
 
@@ -143,10 +144,11 @@ class ObservationEvent(NamedTuple):
     attempt_id: Optional[str] = None   # unique ID for deduplication
 
     @classmethod
-    def qualifying(cls, coin, venue, config_hash, obs_ts, signal_id):
+    def qualifying(cls, coin, venue, config_hash, obs_ts, signal_id,
+                   attempt_id=None):
         """Create a QUALIFYING observation."""
         return cls(coin, venue, config_hash, obs_ts, ObservationClass.QUALIFYING,
-                   signal_id)
+                   signal_id, None, None, attempt_id)
 
     @classmethod
     def non_qualifying(cls, coin, venue, config_hash, obs_ts):
@@ -242,6 +244,44 @@ def _insert_episode(conn, coin, venue, direction, signal_id, start_ts,
          versions.get("outcome_rule", OUTCOME_RULE_VERSION),
          versions.get("cost_model", COST_MODEL_VERSION)))
     return cur.lastrowid
+
+
+def _freeze_episode_plan(conn, episode_id, signal_id, plan, frozen_at):
+    """Persist the first valid plan in the same transaction as its episode."""
+    if plan is None or not _plan_status(plan)[0] == "PLANNED":
+        return
+    values = {name: getattr(plan, name, None) for name in
+              ("entry_low", "entry_high", "stop", "tp1", "tp2",
+               "leverage", "notional", "max_loss")}
+    warnings = getattr(plan, "warnings", None) or []
+    conn.execute(
+        """INSERT INTO episode_plan
+           (episode_id, signal_id, direction, entry_low, entry_high, stop,
+            tp1, tp2, leverage, notional, max_loss, warnings, frozen_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (episode_id, signal_id, getattr(plan, "direction", None),
+         values["entry_low"], values["entry_high"], values["stop"],
+         values["tp1"], values["tp2"], values["leverage"],
+         values["notional"], values["max_loss"],
+         json.dumps(warnings, separators=(",", ":")), int(frozen_at)))
+
+
+def _after_coverage_gap(conn, coin, config_hash, obs_ts):
+    """Whether the previous episode lost coverage without observed quiet."""
+    row = conn.execute(
+        """SELECT close_ts FROM signal_episode
+           WHERE coin=? AND config_hash=? AND close_reason='COVERAGE_LOST'
+           ORDER BY close_ts DESC, id DESC LIMIT 1""",
+        (coin, config_hash)).fetchone()
+    if row is None or row[0] is None:
+        return 0
+    quiet = conn.execute(
+        """SELECT 1 FROM episode_observation
+           WHERE coin=? AND config_hash=? AND obs_class=?
+             AND obs_ts>? AND obs_ts<? LIMIT 1""",
+        (coin, config_hash, int(ObservationClass.NON_QUALIFYING),
+         int(row[0]), int(obs_ts))).fetchone()
+    return int(quiet is None)
 
 
 def _close_episode(conn, episode_id, reason: CloseReason, close_ts):
@@ -412,11 +452,14 @@ def process_observation(store, event: ObservationEvent, plan=None,
         # QUALIFYING
         direction = _direction_from_plan(plan, card)
         if ep is None:
+            after_gap = _after_coverage_gap(
+                conn, event.coin, event.config_hash, now)
             plan_status, no_plan_reason = _plan_status(plan)
             ep_id = _insert_episode(
                 conn, event.coin, event.venue, direction, event.signal_id,
                 now, after_gap, event.config_hash, config_json, versions,
                 plan_status, no_plan_reason)
+            _freeze_episode_plan(conn, ep_id, event.signal_id, plan, now)
             _bump(conn, ep_id, "qualifying_obs")
             _insert_observation(conn, event, ep_id, False)
             _advance_valid(conn, ep_id, now, qualifying=True)
@@ -433,6 +476,7 @@ def process_observation(store, event: ObservationEvent, plan=None,
                 conn, event.coin, event.venue, direction, event.signal_id,
                 now, 0, event.config_hash, config_json, versions,
                 plan_status, no_plan_reason)
+            _freeze_episode_plan(conn, new_id, event.signal_id, plan, now)
             _bump(conn, new_id, "qualifying_obs")
             _insert_observation(conn, event, new_id, False)
             _advance_valid(conn, new_id, now, qualifying=True)
@@ -521,8 +565,22 @@ def _direction_from_plan(plan, card=None):
 
 def _plan_status(plan):
     """(plan_status, no_plan_reason) for a new episode's first observation."""
-    if plan is None:
+    if plan is None or not bool(getattr(plan, "valid", False)):
         return "NO_PLAN", "no plan at first qualifying observation"
+    direction = getattr(plan, "direction", None)
+    levels = [getattr(plan, name, None) for name in
+              ("entry_low", "entry_high", "stop", "tp1", "tp2")]
+    try:
+        if direction not in ("LONG", "SHORT") or not all(
+                math.isfinite(float(v)) and float(v) > 0 for v in levels):
+            return "NO_PLAN", "first plan has invalid or incomplete levels"
+        lo, hi, stop, tp1, tp2 = map(float, levels)
+    except (TypeError, ValueError):
+        return "NO_PLAN", "first plan has invalid or incomplete levels"
+    if direction == "LONG" and not stop < lo < hi < tp1 < tp2:
+        return "NO_PLAN", "first LONG plan levels are out of order"
+    if direction == "SHORT" and not stop > hi > lo > tp1 > tp2:
+        return "NO_PLAN", "first SHORT plan levels are out of order"
     return "PLANNED", None
 
 
@@ -572,7 +630,8 @@ def epoch_ts(store):
 
 
 def run_cycle(store, eligible, *, config, now_fn=None, score_one=None,
-              attempt_id_factory=None, tickers=None):
+              attempt_id_factory=None, tickers=None, max_workers=1,
+              progress_fn=None):
     """
     One measurement cycle: a coverage sweep, then exactly one attempt per
     eligible coin.
@@ -621,79 +680,101 @@ def run_cycle(store, eligible, *, config, now_fn=None, score_one=None,
                 "outcome_rule": OUTCOME_RULE_VERSION,
                 "cost_model": COST_MODEL_VERSION}
 
-    for sym, coin, detail in eligible:
-        attempt_id = (attempt_id_factory(coin, cycle_ts)
-                      if attempt_id_factory is not None else None)
-        try:
-            card = score_one(sym, coin, detail)
-        except Exception as e:
-            # A failed fetch is UNKNOWN, never NON_QUALIFYING and never a
-            # silent drop: the attempt is journaled with its reason.
-            log_attempt(store, coin, cfg_hash, now_fn(),
-                        ObservationClass.UNKNOWN,
-                        degraded_reasons=f"{type(e).__name__}: {e}",
-                        attempt_id=attempt_id)
+    eligible = list(eligible)
+    # The daemon measures the entire venue universe. Score fetches are
+    # independent and use the scan module's shared rate limiter, so run them
+    # concurrently while keeping journal/lifecycle writes serialized below.
+    # Preserve eligible order for deterministic episode cursor updates.
+    executor = (ThreadPoolExecutor(max_workers=max_workers)
+                if max_workers > 1 and eligible else None)
+    futures = ([executor.submit(score_one, sym, coin, detail)
+                for sym, coin, detail in eligible]
+               if executor else None)
+
+    try:
+        for index, (sym, coin, detail) in enumerate(eligible):
+            attempt_id = (attempt_id_factory(coin, cycle_ts)
+                          if attempt_id_factory is not None else None)
+            try:
+                card = (futures[index].result() if futures is not None
+                        else score_one(sym, coin, detail))
+            except Exception as e:
+                # A failed fetch is UNKNOWN, never NON_QUALIFYING and never a
+                # silent drop: the attempt is journaled with its reason.
+                log_attempt(store, coin, cfg_hash, now_fn(),
+                            ObservationClass.UNKNOWN,
+                            degraded_reasons=f"{type(e).__name__}: {e}",
+                            attempt_id=attempt_id)
+                counts["attempted"] += 1
+                counts["failed"] += 1
+                counts["unknown"] += 1
+                if progress_fn is not None:
+                    progress_fn(index + 1, len(eligible))
+                continue
+
+            if card is None:
+                log_attempt(store, coin, cfg_hash, now_fn(),
+                            ObservationClass.UNKNOWN,
+                            degraded_reasons="no scorecard (fetch failed)",
+                            attempt_id=attempt_id)
+                counts["attempted"] += 1
+                counts["failed"] += 1
+                counts["unknown"] += 1
+                if progress_fn is not None:
+                    progress_fn(index + 1, len(eligible))
+                continue
+
+            # obs_ts is captured after scoring completes (spec §3.1): the
+            # earliest moment the system could have acted on this observation.
+            obs_ts = now_fn()
+            degraded = _card_is_degraded(card)
+            flagged = _card_flagged(card, config)
+            degraded_reasons = None
+
+            if degraded:
+                # A degraded card is UNKNOWN even when flagged: it can neither
+                # start an episode nor refresh one (spec §3.3).
+                obs_class = ObservationClass.UNKNOWN
+                degraded_reasons = "degraded: " + "; ".join(
+                    n for n in (getattr(card, "notes", None) or [])
+                    if isinstance(n, str)
+                    and n.startswith(_DEGRADED_NOTE_PREFIXES))
+                counts["degraded"] += 1
+                counts["unknown"] += 1
+            elif flagged and card.direction in ("LONG", "SHORT"):
+                obs_class = ObservationClass.QUALIFYING
+                counts["qualifying"] += 1
+            else:
+                obs_class = ObservationClass.NON_QUALIFYING
+                counts["non_qualifying"] += 1
             counts["attempted"] += 1
-            counts["failed"] += 1
-            counts["unknown"] += 1
-            continue
 
-        if card is None:
-            log_attempt(store, coin, cfg_hash, now_fn(),
-                        ObservationClass.UNKNOWN,
-                        degraded_reasons="no scorecard (fetch failed)",
-                        attempt_id=attempt_id)
-            counts["attempted"] += 1
-            counts["failed"] += 1
-            counts["unknown"] += 1
-            continue
-
-        # obs_ts is captured after scoring completes (spec §3.1): the
-        # earliest moment the system could have acted on this observation.
-        obs_ts = now_fn()
-        degraded = _card_is_degraded(card)
-        flagged = _card_flagged(card, config)
-        degraded_reasons = None
-
-        if degraded:
-            # A degraded card is UNKNOWN even when flagged: it can neither
-            # start an episode nor refresh one (spec §3.3).
-            obs_class = ObservationClass.UNKNOWN
-            degraded_reasons = "degraded: " + "; ".join(
-                n for n in (getattr(card, "notes", None) or [])
-                if isinstance(n, str)
-                and n.startswith(_DEGRADED_NOTE_PREFIXES))
-            counts["degraded"] += 1
-            counts["unknown"] += 1
-        elif flagged and card.direction in ("LONG", "SHORT"):
-            obs_class = ObservationClass.QUALIFYING
-            counts["qualifying"] += 1
-        else:
-            obs_class = ObservationClass.NON_QUALIFYING
-            counts["non_qualifying"] += 1
-        counts["attempted"] += 1
-
-        if (active_epoch and obs_class == ObservationClass.QUALIFYING
-                and int(obs_ts) >= epoch):
-            # Persist the score row with its measurement metadata, then run
-            # the transactional lifecycle. The frozen plan rides the event.
-            signal_id = store.log_signal(card, flagged=True, tier=2)
-            store.record_measurement_observation(
-                signal_id, obs_ts=obs_ts, data_quality="OK",
-                degraded_reasons=None,
-                last_bar_ts=getattr(card, "last_bar_ts", None),
-                ticker_ts=getattr(card, "ticker_ts", None),
-                stake=stake, log_threshold=threshold,
-                leverage_cap=config.get("leverage_cap"),
-                config_hash=cfg_hash, code_rev=CODE_REV)
-            event = ObservationEvent.qualifying(coin, venue, cfg_hash, obs_ts,
-                                                signal_id)
-            process_observation(store, event, getattr(card, "plan", None),
-                                versions, cfg_json, card=card)
-        else:
-            log_attempt(store, coin, cfg_hash, obs_ts, obs_class,
-                        degraded_reasons=degraded_reasons,
-                        attempt_id=attempt_id)
+            if (active_epoch and obs_class == ObservationClass.QUALIFYING
+                    and int(obs_ts) >= epoch):
+                # Persist the score row with its measurement metadata, then run
+                # the transactional lifecycle. The frozen plan rides the event.
+                signal_id = store.log_signal(card, flagged=True, tier=2)
+                store.record_measurement_observation(
+                    signal_id, obs_ts=obs_ts, data_quality="OK",
+                    degraded_reasons=None,
+                    last_bar_ts=getattr(card, "last_bar_ts", None),
+                    ticker_ts=getattr(card, "ticker_ts", None),
+                    stake=stake, log_threshold=threshold,
+                    leverage_cap=config.get("leverage_cap"),
+                    config_hash=cfg_hash, code_rev=CODE_REV)
+                event = ObservationEvent.qualifying(coin, venue, cfg_hash, obs_ts,
+                                                    signal_id, attempt_id)
+                process_observation(store, event, getattr(card, "plan", None),
+                                    versions, cfg_json, card=card)
+            else:
+                log_attempt(store, coin, cfg_hash, obs_ts, obs_class,
+                            degraded_reasons=degraded_reasons,
+                            attempt_id=attempt_id)
+            if progress_fn is not None:
+                progress_fn(index + 1, len(eligible))
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
     return counts
 
 

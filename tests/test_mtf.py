@@ -216,6 +216,9 @@ if sc_none is not None and sc_all is not None and sc_dn is not None:
           any(n.startswith("MTF 1H unavailable") for n in sc_none.notes)
           and any(n.startswith("MTF 4H unavailable") for n in sc_none.notes),
           str(sc_none.notes))
+    check("transient MTF failures mark measurement quality as degraded",
+          any(n.startswith("DATA transient input failure")
+              for n in sc_none.notes), str(sc_none.notes))
     check("venue health counts the failed higher-TF fetches",
           scanmod.venue_health().get("mexc", {}).get("fails", 0) >= 2,
           str(scanmod.venue_health()))

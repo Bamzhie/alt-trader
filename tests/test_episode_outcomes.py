@@ -114,7 +114,7 @@ def test_bar_completeness_helpers():
 def test_entry_window_slots():
     print("--- entry window: eligibility and completeness")
 
-    T0 = 1_700_000_000
+    T0 = 1_700_000_100
     slots = outmod.entry_slots(T0, validity_s=DEFAULT_ENTRY_VALIDITY_MINUTES * 60)
     # open_ts > T0 and open_ts + 300 <= T0 + 3600: a 60-minute window holds
     # exactly eleven 5-minute bars.
@@ -146,7 +146,7 @@ def test_entry_window_slots():
 def test_fill_adverse_edge():
     print("--- fill: adverse edge of the entry band")
 
-    T0 = 1_700_000_000
+    T0 = 1_700_000_100
     slots = outmod.entry_slots(T0)
     entry_high, entry_low = 100.1, 99.9
     plan = {"direction": "LONG", "entry_low": entry_low,
@@ -201,7 +201,7 @@ def test_fill_adverse_edge():
 def test_entry_open_and_stale_bars_are_ignored():
     print("--- open bars and stale bars never fill an entry")
 
-    T0 = 1_700_000_000
+    T0 = 1_700_000_100
     slots = outmod.entry_slots(T0)
     plan = {"direction": "LONG", "entry_low": 99.9, "entry_high": 100.1,
             "stop": 95.0, "tp1": 105.0, "tp2": 110.0}
@@ -234,7 +234,7 @@ def test_entry_open_and_stale_bars_are_ignored():
 def test_entry_status_pending_and_unfilled():
     print("--- entry status: pending, unfilled, unavailable")
 
-    T0 = 1_700_000_000
+    T0 = 1_700_000_100
     slots = outmod.entry_slots(T0)
     plan = {"direction": "LONG", "entry_low": 99.9, "entry_high": 100.1,
             "stop": 95.0, "tp1": 105.0, "tp2": 110.0}
@@ -280,7 +280,7 @@ def test_entry_status_pending_and_unfilled():
 def test_trade_resolution_rules():
     print("--- trade resolution: fill bar, stop-first, TP1, TP2, expiry")
 
-    T0 = 1_700_000_000
+    T0 = 1_700_000_100
     entry_high, entry_low = 100.1, 99.9
     plan = {"direction": "LONG", "entry_low": entry_low,
             "entry_high": entry_high, "stop": 95.0, "tp1": 105.0,
@@ -359,12 +359,12 @@ def test_trade_resolution_rules():
     splan = {"direction": "SHORT", "entry_low": entry_low,
              "entry_high": entry_high, "stop": 105.0, "tp1": 95.0,
              "tp2": 90.0}
-    sbars = [bar(FILL_OPEN, 100.0, 99.9, 99.9, 99.9),
+    sbars = [bar(FILL_OPEN, 100.0, 100.0, 99.9, 99.9),
              bar(FILL_OPEN + 300, 100.0, 106.0, 99.0, 105.0)]
     r = outmod.resolve_trade(sbars, splan, fill_bar_open_ts=FILL_OPEN,
                              fill_price=entry_low, now=sbars[-1]["open_ts"] + 300)
     check("SHORT stop is above and counts", r["status"] == "STOPPED", str(r))
-    sbars2 = [bar(FILL_OPEN, 100.0, 99.9, 99.9, 99.9),
+    sbars2 = [bar(FILL_OPEN, 100.0, 100.0, 99.9, 99.9),
               bar(FILL_OPEN + 300, 100.0, 100.0, 89.0, 90.0)]
     r = outmod.resolve_trade(sbars2, splan, fill_bar_open_ts=FILL_OPEN,
                              fill_price=entry_low,
@@ -375,7 +375,7 @@ def test_trade_resolution_rules():
 def test_trade_gap_recovery():
     print("--- trade gaps: recoverable then unavailable, never zero-filled")
 
-    T0 = 1_700_000_000
+    T0 = 1_700_000_100
     plan = {"direction": "LONG", "entry_low": 99.9, "entry_high": 100.1,
             "stop": 95.0, "tp1": 105.0, "tp2": 110.0}
     FILL_OPEN = T0 + 300
@@ -408,7 +408,7 @@ def test_trade_gap_recovery():
 def test_fixed_horizons():
     print("--- fixed horizons from the modeled fill")
 
-    T0 = 1_700_000_000
+    T0 = 1_700_000_100
     plan = {"direction": "LONG", "entry_low": 99.9, "entry_high": 100.1,
             "stop": 95.0, "tp1": 105.0, "tp2": 110.0}
     FILL_TS = T0 + 600
@@ -513,7 +513,7 @@ def _plan_row(store, direction="LONG", signal_id=1):
             frozen_at)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (1, signal_id, direction, entry_low, entry_high, stop, tp1, tp2,
-         10, 1.0, 0.05, None, 1_700_000_000))
+         10, 1.0, 0.05, None, 1_700_000_100))
     store.conn.commit()
     return {"direction": direction, "entry_low": entry_low,
             "entry_high": entry_high, "stop": stop, "tp1": tp1, "tp2": tp2}
@@ -643,21 +643,21 @@ def test_planned_episodes_query():
     store = _make_store()
     store.conn.executescript(
         """INSERT INTO signal_log (id, ts, coin, flagged, direction, price)
-           VALUES (1, 1_700_000_000, 'BTC', 1, 'LONG', 100.0);
+           VALUES (1, 1_700_000_100, 'BTC', 1, 'LONG', 100.0);
            INSERT INTO signal_episode
              (id, coin, venue, direction, first_signal_id, start_ts, state,
               plan_status, config_hash)
-           VALUES (1, 'BTC', 'MEXC', 'LONG', 1, 1_700_000_000, 'CLOSED',
+           VALUES (1, 'BTC', 'MEXC', 'LONG', 1, 1_700_000_100, 'CLOSED',
                    'PLANNED', 'h1'),
-                  (2, 'ETH', 'MEXC', 'LONG', 1, 1_700_000_000, 'CLOSED',
+                  (2, 'ETH', 'MEXC', 'LONG', 1, 1_700_000_100, 'CLOSED',
                    'NO_PLAN', 'h1'),
-                  (3, 'SOL', 'MEXC', 'LONG', 1, 1_700_000_000, 'CLOSED',
+                  (3, 'SOL', 'MEXC', 'LONG', 1, 1_700_000_100, 'CLOSED',
                    'PLANNED', 'h1');""")
     _plan_row(store, signal_id=1)
     store.conn.execute(
         "INSERT INTO episode_plan (episode_id, signal_id, direction, entry_low,"
         " entry_high, stop, tp1, tp2, frozen_at) VALUES (3, 1, 'LONG', 99.9,"
-        " 100.1, 95.0, 105.0, 110.0, 1_700_000_000)")
+        " 100.1, 95.0, 105.0, 110.0, 1_700_000_100)")
     store.conn.commit()
 
     rows = store.planned_episodes()
@@ -669,7 +669,7 @@ def test_planned_episodes_query():
           rows[0]["coin"] == "BTC" and rows[0]["direction"] == "LONG"
           and rows[0]["entry_high"] == 100.1, str(rows[0]))
     check("each row carries the episode start (T0)",
-          rows[0]["start_ts"] == 1_700_000_000, str(rows[0]))
+          rows[0]["start_ts"] == 1_700_000_100, str(rows[0]))
     store.close()
 
 
@@ -679,21 +679,21 @@ def test_resolve_episode_plans_end_to_end_offline():
     store = _make_store()
     store.conn.executescript(
         """INSERT INTO signal_log (id, ts, coin, flagged, direction, price)
-           VALUES (1, 1_700_000_000, 'BTC', 1, 'LONG', 100.0);
+           VALUES (1, 1_700_000_100, 'BTC', 1, 'LONG', 100.0);
            INSERT INTO signal_episode
              (id, coin, venue, direction, first_signal_id, start_ts, state,
               plan_status, config_hash)
-           VALUES (1, 'BTC', 'MEXC', 'LONG', 1, 1_700_000_000, 'CLOSED',
+           VALUES (1, 'BTC', 'MEXC', 'LONG', 1, 1_700_000_100, 'CLOSED',
                    'PLANNED', 'h1');""")
     store.conn.execute(
         """INSERT INTO episode_plan
            (episode_id, signal_id, direction, entry_low, entry_high,
             stop, tp1, tp2, leverage, notional, max_loss, warnings, frozen_at)
            VALUES (1, 1, 'LONG', 99.9, 100.1, 95.0, 105.0, 110.0,
-                   10, 1.0, 0.05, NULL, 1_700_000_000)""")
+                   10, 1.0, 0.05, NULL, 1_700_000_100)""")
     store.conn.commit()
 
-    T0 = 1_700_000_000
+    T0 = 1_700_000_100
     # Slot 1 (T0+300) holds price above the band: no touch. Slot 2 (T0+600)
     # trades down to 100.0, filling the LONG at the adverse edge 100.1, and
     # its bar closes at T0+900. Later slots drift quietly with no stop/TP.
@@ -759,24 +759,24 @@ def test_resolve_episode_plans_unfilled_and_no_symbol():
     store = _make_store()
     store.conn.executescript(
         """INSERT INTO signal_log (id, ts, coin, flagged, direction, price)
-           VALUES (1, 1_700_000_000, 'BTC', 1, 'LONG', 100.0);
+           VALUES (1, 1_700_000_100, 'BTC', 1, 'LONG', 100.0);
            INSERT INTO signal_episode
              (id, coin, venue, direction, first_signal_id, start_ts, state,
               plan_status, config_hash)
-           VALUES (1, 'BTC', 'MEXC', 'LONG', 1, 1_700_000_000, 'CLOSED',
+           VALUES (1, 'BTC', 'MEXC', 'LONG', 1, 1_700_000_100, 'CLOSED',
                    'PLANNED', 'h1');""")
     store.conn.execute(
         """INSERT INTO episode_plan
            (episode_id, signal_id, direction, entry_low, entry_high,
             stop, tp1, tp2, leverage, notional, max_loss, warnings, frozen_at)
            VALUES (1, 1, 'LONG', 99.9, 100.1, 95.0, 105.0, 110.0,
-                   10, 1.0, 0.05, NULL, 1_700_000_000)""")
+                   10, 1.0, 0.05, NULL, 1_700_000_100)""")
     store.conn.commit()
 
     def boom(coin, data_dir):
         raise AssertionError("bar_loader must not run for an unknown symbol")
 
-    T0 = 1_700_000_000
+    T0 = 1_700_000_100
     now = T0 + 3600 + 300
     outmod.resolve_episode_plans(store, {}, now=now, bar_loader=boom)
     row = store.conn.execute(

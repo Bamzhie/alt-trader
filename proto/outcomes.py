@@ -15,6 +15,7 @@ The resolver takes the venue symbol map, never the scan rotation: a coin that
 left rotation still resolves from its collector bars (spec SS5 coverage).
 """
 from . import collector
+import math
 
 HORIZON_BARS = {"1h": 12, "4h": 48, "24h": 288, "7d": 2016}  # 5m bars
 REST_MAX_BARS = 2000  # MEXC klines hard cap: 7d (2016 bars) never fits
@@ -197,7 +198,10 @@ EPISODE_HORIZON_BARS = {"1h": 12, "4h": 48, "24h": 288, "7d": 2016}
 
 def bar_close_ts(bar):
     """Close timestamp of a 5m bar = open_ts + 300."""
-    return int(bar["open_ts"]) + BAR_SECONDS
+    ts = bar.get("open_ts", bar.get("ts"))
+    if ts is None:
+        raise ValueError("bar has no open timestamp")
+    return int(ts) + BAR_SECONDS
 
 
 def is_valid_bar(bar, *, now):
@@ -206,7 +210,14 @@ def is_valid_bar(bar, *, now):
     A bar the venue may still revise (close in the future relative to `now`)
     never decides a fill, a stop, a target or a horizon.
     """
-    return bar_close_ts(bar) <= int(now)
+    try:
+        o, h, l, c = (float(bar[k]) for k in ("o", "h", "l", "c"))
+        finite = all(math.isfinite(v) for v in (o, h, l, c))
+        closes = bar_close_ts(bar) <= int(now)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    return (finite and l <= min(o, c) <= max(o, c) <= h
+            and closes)
 
 
 def slot_recoverable(slot_ts, *, now):
@@ -222,7 +233,8 @@ def entry_slots(t0, validity_s=ENTRY_VALIDITY_S):
     """
     t0 = int(t0)
     end = t0 + int(validity_s)
-    return [ts for ts in range(t0 + BAR_SECONDS, end + 1, BAR_SECONDS)
+    first_slot = (t0 // BAR_SECONDS + 1) * BAR_SECONDS
+    return [ts for ts in range(first_slot, end + 1, BAR_SECONDS)
             if ts + BAR_SECONDS <= end]
 
 
@@ -242,7 +254,23 @@ def index_bars(bars):
     """
     by_slot = {}
     for b in bars:
-        ts = int(b["open_ts"])
+        # The collector's stable on-disk contract calls this field `ts`;
+        # resolver helpers use the more explicit `open_ts` name.
+        if "open_ts" not in b and "ts" in b:
+            b = {**b, "open_ts": b["ts"]}
+        try:
+            ts = int(b["open_ts"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        # Invalid OHLC must not count toward a complete slot or touch a level.
+        try:
+            o, h, l, c = (float(b[k]) for k in ("o", "h", "l", "c"))
+            if (not all(math.isfinite(v) for v in (o, h, l, c))
+                    or not l <= min(o, c) <= max(o, c) <= h):
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+        b = {**b, "o": o, "h": h, "l": l, "c": c}
         by_slot.setdefault(ts, []).append(b)
     return {ts: blist[0] for ts, blist in by_slot.items() if len(blist) == 1}
 
@@ -507,12 +535,33 @@ _FINAL_FILL = ("FILLED",)
 _TERMINAL_TRADE = ("STOPPED", "TP2", "EXPIRED", "UNAVAILABLE")
 
 
-def _default_bar_loader(coin, data_dir):
-    """Collector-only bar read: offline by default, no REST in unit tests."""
+def _default_bar_loader(coin, data_dir, symbol=None):
+    """Merge collector history with REST recovery, normalizing timestamps.
+
+    Collector bars win timestamp ties because the local series is the source
+    used for the longer 7d horizons. REST supplies recent missing slots while
+    they remain within the venue's backfill window.
+    """
     try:
-        return collector.read_bars(data_dir, coin)
+        bars = collector.read_bars(data_dir, coin)
     except Exception:
-        return []
+        bars = []
+    normalized = [{**b, "open_ts": b.get("open_ts", b.get("ts"))}
+                  for b in bars]
+    if symbol:
+        try:
+            from . import mexc
+            rest = mexc.klines(symbol, "5m", limit=REST_MAX_BARS)
+        except Exception:
+            rest = []
+        seen = {b["open_ts"] for b in normalized}
+        for bar in rest:
+            ts = bar.get("open_ts", bar.get("ts"))
+            if ts is not None and ts not in seen:
+                normalized.append({**bar, "open_ts": ts})
+                seen.add(ts)
+    return sorted((b for b in normalized if b.get("open_ts") is not None),
+                  key=lambda b: int(b["open_ts"]))
 
 
 def resolve_episode_plans(store, symbol_map, *, now, bar_loader=None,
@@ -529,7 +578,15 @@ def resolve_episode_plans(store, symbol_map, *, now, bar_loader=None,
     Plan tracking is independent of episode lifecycle (spec 6.5), so a
     closed or reversed episode's plan still resolves.
     """
-    loader = bar_loader or _default_bar_loader
+    if bar_loader is None:
+        loader = lambda coin, directory: _default_bar_loader(
+            coin, directory, symbol_map.get(coin))
+    else:
+        loader = bar_loader
+    # Coverage expiry must progress even for delisted coins which have no
+    # remaining plan bars or venue symbol (spec §6.3).
+    from .measurement import sweep_coverage
+    sweep_coverage(store, now)
     summary = {"resolved": 0, "filled": 0, "unfilled": 0, "unavailable": 0,
                "skipped": 0, "pending": 0, "trade_stopped": 0, "trade_tp2": 0,
                "trade_expired": 0, "horizons_matured": 0}
@@ -557,8 +614,7 @@ def resolve_episode_plans(store, symbol_map, *, now, bar_loader=None,
         t0 = int(ep["start_ts"])
 
         prior = store.episode_outcome_row(ep_id)
-        if prior and (prior["entry_status"] in _TERMINAL_ENTRY
-                      or prior["trade_status"] in _TERMINAL_TRADE):
+        if prior and prior["entry_status"] in _TERMINAL_ENTRY:
             continue  # immutable: already resolved
 
         # Entry. A fill already recorded in an earlier pass is kept, so the
@@ -590,18 +646,19 @@ def resolve_episode_plans(store, symbol_map, *, now, bar_loader=None,
             continue  # UNFILLED / UNAVAILABLE: no trade, no horizons
 
         summary["filled"] += 1
-        trade = resolve_trade(bars, plan,
-                              fill_bar_open_ts=entry["fill_bar_open_ts"],
-                              fill_price=entry["fill_price"], now=now)
-        summary[f"trade_{trade['status'].lower()}"] = \
-            summary.get(f"trade_{trade['status'].lower()}", 0) + 1
-        store.upsert_episode_outcome(
-            ep_id, trade_status=trade["status"], stop_index=trade["stop"],
-            tp1_index=trade["tp1"], tp2_index=trade["tp2"],
-            tp1_before_stop=trade["tp1_before_stop"],
-            exit_ts=trade["exit_ts"], exit_price=trade["exit_price"],
-            mfe_pct=trade["mfe_pct"], mae_pct=trade["mae_pct"],
-            resolved_through_ts=now)
+        if prior is None or prior["trade_status"] not in _TERMINAL_TRADE:
+            trade = resolve_trade(bars, plan,
+                                  fill_bar_open_ts=entry["fill_bar_open_ts"],
+                                  fill_price=entry["fill_price"], now=now)
+            summary[f"trade_{trade['status'].lower()}"] = \
+                summary.get(f"trade_{trade['status'].lower()}", 0) + 1
+            store.upsert_episode_outcome(
+                ep_id, trade_status=trade["status"], stop_index=trade["stop"],
+                tp1_index=trade["tp1"], tp2_index=trade["tp2"],
+                tp1_before_stop=trade["tp1_before_stop"],
+                exit_ts=trade["exit_ts"], exit_price=trade["exit_price"],
+                mfe_pct=trade["mfe_pct"], mae_pct=trade["mae_pct"],
+                resolved_through_ts=now)
 
         for row in resolve_horizons(bars, plan,
                                     fill_bar_open_ts=entry["fill_bar_open_ts"],

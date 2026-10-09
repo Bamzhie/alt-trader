@@ -239,7 +239,7 @@ def _bybit_symbol_set():
         return None
 
 
-def _bybit_oi(coin, price):
+def _bybit_oi(coin, price, quality_errors=None):
     """(pct_change, notional_usdt) for a Bybit-shared coin; (None, None) else.
 
     Reads BYBIT_MAP - filled by the universe refresh - so this lookup never
@@ -262,6 +262,8 @@ def _bybit_oi(coin, price):
         return pct, notion
     except Exception as e:
         _venue("bybit", e)
+        if quality_errors is not None:
+            quality_errors.append(f"Bybit OI fetch failed: {type(e).__name__}")
         return None, None
 
 
@@ -431,7 +433,7 @@ def _gated(fn, *args, **kw):
     return fn(*args, **kw)
 
 
-def tf_lean(sym, interval, limit=200, min_bars=30):
+def tf_lean(sym, interval, limit=200, min_bars=30, quality_errors=None):
     """volume_price lean for one higher timeframe, or None when unavailable.
 
     None means "no evidence": a failed fetch or a thin history degrades to
@@ -444,6 +446,9 @@ def tf_lean(sym, interval, limit=200, min_bars=30):
         bars = _gated(mexc.klines, sym, interval, limit=limit)
     except Exception as e:
         _venue("mexc", e)
+        if quality_errors is not None:
+            quality_errors.append(
+                f"MEXC {interval} fetch failed: {type(e).__name__}")
         return None
     if not bars or len(bars) < min_bars:
         return None
@@ -482,8 +487,9 @@ def analyse_one(sym, coin, detail, tk_row, stake, errors=None,
 
         # Higher timeframes for the MTF alignment bonus (spec SS4):
         # 1H trend, 4H swing bias, same volume_price lean formula.
-        lean_1h = tf_lean(sym, "1H")
-        lean_4h = tf_lean(sym, "4H")
+        quality_errors = []
+        lean_1h = tf_lean(sym, "1H", quality_errors=quality_errors)
+        lean_4h = tf_lean(sym, "4H", quality_errors=quality_errors)
 
         # 1h move, from 5m bars: 12 bars.
         change_1h = 0.0
@@ -520,7 +526,7 @@ def analyse_one(sym, coin, detail, tk_row, stake, errors=None,
         # OI leg (spec SS4): Bybit open-interest change for shared coins
         # only. MEXC-only coins, an unknown symbol map, or a failed fetch
         # all degrade to None -> funding-only scoring, counted, never fatal.
-        oi_pct, oi_notion = _bybit_oi(coin, price)
+        oi_pct, oi_notion = _bybit_oi(coin, price, quality_errors)
 
         sc = score_coin(
             coin, bars, bids, asks,
@@ -536,6 +542,9 @@ def analyse_one(sym, coin, detail, tk_row, stake, errors=None,
                                 f"bonus (missing evidence, not neutral)")
         if _skew_note is not None:
             sc.notes.append(_skew_note)
+        if quality_errors:
+            sc.notes.append("DATA transient input failure: "
+                            + "; ".join(quality_errors))
         if attach_plans and sc.direction in ("LONG", "SHORT") and not sc.vetoes:
             # Score-consistent plan snapshot for the measurement log: swing
             # from the SAME bars the score used (no extra request, no drift

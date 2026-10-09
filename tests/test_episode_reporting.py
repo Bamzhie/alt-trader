@@ -289,9 +289,11 @@ class TestCohortSeparation(EpisodeReportingTestCase):
         self.start_episode("A", cfg=self.cfg, cfg_json=self.cfg_json)
         self.start_episode("B", cfg=self.other_cfg, cfg_json=self.other_json)
         s = episode_report.summary(self.store)
-        self.assertEqual(s["started"], 2)
         self.assertTrue(s["cohort"]["mixed_configs_warning"])
         self.assertEqual(len(s["cohort"]["config_hashes_seen"]), 2)
+        self.assertEqual(len(s["by_cohort"]), 2)
+        self.assertEqual(sum(c["report"]["started"]
+                             for c in s["by_cohort"]), 2)
 
     def test_rule_version_filter_separates_cohorts(self):
         self.start_episode("A", versions=VERSIONS)

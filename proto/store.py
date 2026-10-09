@@ -844,8 +844,8 @@ class Store:
 
     @staticmethod
     def _episode_columns(conn):
-        return [r[1] for r in
-                conn.execute("SELECT * FROM signal_episode LIMIT 0")]
+        cur = conn.execute("SELECT * FROM signal_episode LIMIT 0")
+        return [description[0] for description in cur.description]
 
     def open_episode(self, coin, config_hash):
         """The single non-closed episode row for (coin, config_hash), or None.

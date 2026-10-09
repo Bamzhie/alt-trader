@@ -110,11 +110,18 @@ a.refresh_universe()
 check("universe fills the 150 budget", len(a.uni) == 150, str(len(a.uni)))
 check("no TradFi leaked", not any(c in ("OPENAI", "NVIDIA", "NAS100", "XAU",
                                        "AAPLSTOCK", "SILVER") for _, c in a.uni))
+# The earlier store/UI checks deliberately run with logging disabled. Enable
+# it only for the live scan so this assertion proves that this scan wrote rows
+# instead of passing on the three fixture rows above.
+a.args.write_logs = True
+rows_before_live_scan = a.store.count()
 t0 = time.time()
 a.scan_once()
 check("scan produced cards", len(a.cards) > 0, str(len(a.cards)))
 check("scan under 90s", time.time() - t0 < 90, f"{time.time()-t0:.1f}s")
-check("logs written", a.store.count() > 0, str(a.store.count()))
+check("live scan wrote signal rows",
+      a.store.count() > rows_before_live_scan,
+      f"before={rows_before_live_scan} after={a.store.count()}")
 both = [c for c in a.cards if c.direction in ("LONG", "SHORT")]
 check("has directional signals", len(both) > 0, f"{len(both)}")
 check("scores in range 0..100",

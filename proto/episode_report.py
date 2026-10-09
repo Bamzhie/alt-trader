@@ -102,8 +102,12 @@ def _cohort_clause(store, config_hash, rule_versions):
                 raise ValueError(
                     f"unknown rule version {key!r}: expected one of"
                     f" {sorted(_RULE_VERSION_COLUMNS)}")
-            clause += f" AND {_RULE_VERSION_COLUMNS[key]}=?"
-            params.append(rule_versions[key])
+            column = _RULE_VERSION_COLUMNS[key]
+            if rule_versions[key] is None:
+                clause += f" AND {column} IS NULL"
+            else:
+                clause += f" AND {column}=?"
+                params.append(rule_versions[key])
     return clause, params
 
 
@@ -142,6 +146,38 @@ def summary(store, *, config_hash=None, rule_versions=None, now=None):
     hashes = [r[0] for r in conn.execute(
         "SELECT DISTINCT config_hash FROM signal_episode"
         " WHERE config_hash IS NOT NULL").fetchall()]
+
+    # Never emit one aggregate across unlike configs or rule versions. Each
+    # immutable measurement cohort gets its own independently denominated
+    # report; callers can still request a single cohort explicitly.
+    if config_hash is None and not rule_versions:
+        cohort_rows = conn.execute(
+            "SELECT DISTINCT config_hash, flag_rule_version,"
+            " plan_rule_version, episode_rule_version,"
+            " outcome_rule_version, cost_model_version"
+            " FROM signal_episode ORDER BY config_hash, flag_rule_version,"
+            " plan_rule_version, episode_rule_version,"
+            " outcome_rule_version, cost_model_version").fetchall()
+        cohorts = []
+        for row in cohort_rows:
+            cfg, flag, plan_v, episode_v, outcome_v, cost_v = row
+            versions = {"flag_rule": flag, "plan_rule": plan_v,
+                        "episode_rule": episode_v,
+                        "outcome_rule": outcome_v, "cost_model": cost_v}
+            cohorts.append({"config_hash": cfg, "rule_versions": versions,
+                            "report": summary(store, config_hash=cfg,
+                                               rule_versions=versions,
+                                               now=now)})
+        if len(cohorts) > 1:
+            return {"cohort": {"config_hashes_seen": hashes,
+                               "mixed_configs_warning": True,
+                               "mixed_configs_note":
+                               "cohorts are reported separately; rates and "
+                               "denominators are never combined"},
+                    "by_cohort": cohorts,
+                    "disclosure": {"net_pnl_reported": False,
+                                   "net_win_rate_reported": False,
+                                   "simulated_trade_return_reported": False}}
 
     episodes = [dict(zip(_EP_FIELDS, r)) for r in conn.execute(
         "SELECT " + ", ".join(_EP_FIELDS) + " FROM signal_episode"
@@ -509,7 +545,8 @@ def _bootstrap_interval(by_coin):
 # --------------------------------------------------------------------------
 
 def breakdowns(store, *, dimension, min_episodes=MIN_EXPLORATORY_EPISODES,
-               min_coins=MIN_EXPLORATORY_COINS):
+               min_coins=MIN_EXPLORATORY_COINS, config_hash=None,
+               rule_versions=None):
     """
     Exploratory cohort breakdowns (spec 11).
 
@@ -528,10 +565,31 @@ def breakdowns(store, *, dimension, min_episodes=MIN_EXPLORATORY_EPISODES,
     if store is None:
         return []
     conn = store.conn
+    clause, params = _cohort_clause(store, config_hash, rule_versions)
+    cohort_rows = conn.execute(
+        "SELECT DISTINCT config_hash, flag_rule_version, plan_rule_version,"
+        " episode_rule_version, outcome_rule_version, cost_model_version"
+        " FROM signal_episode" + (" WHERE 1=1" + clause if clause else ""),
+        params).fetchall()
+    if config_hash is None and not rule_versions and len(cohort_rows) > 1:
+        result = []
+        for cfg, flag, plan_v, episode_v, outcome_v, cost_v in cohort_rows:
+            versions = {"flag_rule": flag, "plan_rule": plan_v,
+                        "episode_rule": episode_v,
+                        "outcome_rule": outcome_v, "cost_model": cost_v}
+            for item in breakdowns(
+                    store, dimension=dimension, min_episodes=min_episodes,
+                    min_coins=min_coins, config_hash=cfg,
+                    rule_versions=versions):
+                item["cohort"] = {"config_hash": cfg,
+                                  "rule_versions": versions}
+                result.append(item)
+        return result
     rows = [dict(zip(_EP_FIELDS + ("score",), r)) for r in conn.execute(
         "SELECT " + ", ".join(_EP_FIELDS)
         + ", (SELECT s.score FROM signal_log s WHERE s.id = e.first_signal_id)"
-        " AS score FROM signal_episode e").fetchall()]
+        " AS score FROM signal_episode e"
+        + (" WHERE 1=1" + clause if clause else ""), params).fetchall()]
     if not rows:
         return []
     episode_ids = [r["id"] for r in rows]
