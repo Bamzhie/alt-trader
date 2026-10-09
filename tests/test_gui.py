@@ -854,7 +854,50 @@ class TestWidgetLayer(unittest.TestCase):
         det = gui.detail.get("1.0", "end")
         self.assertNotIn("fetching", det)
 
-    # ---- 4c. picks / watch / new modals ---------------------------------
+    # ---- 4d. instant launch + scan prune ---------------------------------
+    def test_launch_shows_saved_snapshot(self):
+        from proto.store import Store
+        db = os.path.join(self.tmp, "gui.db")
+        store = Store(db)
+        try:
+            sc = mkcard("AAA", score=70)
+            sc.magnitude_parts = {"VOL": 0.5, "BOOK": 0.4, "OI": 0.3}
+            sc.lean_parts = {"VOL": 0.5, "BOOK": 0.4, "OI": 0.3}
+            store.log_signal(sc, flagged=True)
+            store.log_signal(mkcard("BBB", score=40,
+                                    vetoes=("late_move",)), flagged=False)
+        finally:
+            store.close()
+        gui = self.make_gui()
+        self.assertIn("AAA", gui.tree.get_children())
+        self.assertIn("BBB", gui.tree_vetoed.get_children())
+        self.assertIn("showing saved", gui.scan_status)
+        self.assertIn("live scan running", gui.scan_status)
+
+    def test_launch_empty_db_waits_for_scan(self):
+        gui = self.make_gui()
+        self.assertEqual(gui.tree.get_children(), ())
+        self.assertIn("starting", gui.scan_status)
+
+    def test_scan_prune_keeps_good_plans(self):
+        gui = self.make_gui()
+        gui._plan_cache["AAA"] = {"plan": pl.Plan(coin="AAA",
+                                                   direction="LONG"),
+                                    "err": None}
+        gui._plan_cache["ZZZ"] = {"plan": None,
+                                  "err": "coin is no longer in the last scan"}
+        gui._plan_cache["GEO"] = {"plan": None, "err": "LONG levels out of order"}
+        gui.selected_coin = "AAA"
+        gui._on_scan({"universe": 3, "stats": dict(gui.stats),
+                      "cards": [mkcard("AAA", score=70),
+                                mkcard("GEO", score=60),
+                                mkcard("BBB", score=40)],
+                      "failed": 0, "errors": {}, "status": "test scan"})
+        self.assertIn("AAA", gui._plan_cache)     # good plan kept, no flash
+        self.assertNotIn("ZZZ", gui._plan_cache)  # departed coin dropped
+        # stale-context error refetches; geometry failure stays put
+        self.assertNotIn("ZZZ", gui._plans_pending)
+        self.assertIn("GEO", gui._plan_cache)
     def test_segment_buttons(self):
         import tkinter as tk
         gui = self.make_gui()

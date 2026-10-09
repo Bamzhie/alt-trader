@@ -41,7 +41,10 @@ CREATE TABLE IF NOT EXISTS signal_log (
     -- Historical rows stay comparable by filtering on flag_version (SS6.1).
     flag_version    INTEGER DEFAULT 1,
     -- ~USDT open interest behind OIΔ% (NULL when unavailable/MEXC-only).
-    oi_notional     REAL
+    oi_notional     REAL,
+    -- OI percent behind OIΔ% (NULL when unavailable; kept so a relaunch
+    -- from saved rows still shows the percent, not just funding-only).
+    oi_change_pct   REAL
 );
 CREATE INDEX IF NOT EXISTS idx_signal_ts_coin ON signal_log(ts, coin);
 CREATE INDEX IF NOT EXISTS idx_signal_flagged ON signal_log(flagged);
@@ -92,6 +95,41 @@ class Store:
         if "oi_notional" not in cols:
             self.conn.execute(
                 "ALTER TABLE signal_log ADD COLUMN oi_notional REAL")
+        if "oi_change_pct" not in cols:
+            self.conn.execute(
+                "ALTER TABLE signal_log ADD COLUMN oi_change_pct REAL")
+
+    def latest_rows(self, window_s=180):
+        """Most recent scan cycle's rows, newest scan first by score.
+
+        A cycle logs its cards within seconds, so rows within `window_s` of
+        MAX(ts) are one scan. Returns [] on an empty DB. Powers instant
+        launch: the table renders saved rows while the live fetch runs.
+        """
+        row = self.conn.execute("SELECT MAX(ts) FROM signal_log").fetchone()
+        if not row or row[0] is None:
+            return []
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(signal_log)")]
+        have_oi = "oi_change_pct" in cols
+        have_notion = "oi_notional" in cols
+        return [
+            dict(zip(["coin", "venue", "flagged", "score", "lean",
+                      "direction", "earlyness", "mag_vol", "mag_book",
+                      "mag_oi", "lean_vol", "lean_book", "lean_oi", "price",
+                      "change_24h_pct", "quote_vol_24h", "spread_pct",
+                      "funding_rate", "min_notional", "veto_codes",
+                      "tradeable", "tier", "ts",
+                      "oi_change_pct", "oi_notional"], r))
+            for r in self.conn.execute(
+                f"""SELECT coin, venue, flagged, score, lean, direction,
+                           earlyness, mag_vol, mag_book, mag_oi, lean_vol,
+                           lean_book, lean_oi, price, change_24h_pct,
+                           quote_vol_24h, spread_pct, funding_rate,
+                           min_notional, veto_codes, tradeable, tier, ts,
+                           {'oi_change_pct' if have_oi else 'NULL'},
+                           {'oi_notional' if have_notion else 'NULL'}
+                    FROM signal_log WHERE ts >= ? ORDER BY score DESC""",
+                (row[0] - window_s,))]
 
     def log_signal(self, sc, flagged, tier=2):
         """Insert one scorecard. flagged=False writes a shadow row.
@@ -106,8 +144,8 @@ class Store:
                 mag_vol, mag_book, mag_oi, lean_vol, lean_book, lean_oi,
                 price, change_24h_pct, quote_vol_24h, spread_pct,
                 funding_rate, min_notional, veto_codes, tradeable, tier,
-                flag_version, oi_notional)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,2,?)""",
+                flag_version, oi_notional, oi_change_pct)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,2,?,?)""",
             (int(time.time()), sc.coin, sc.venue, 1 if flagged else 0,
              sc.score, sc.lean, sc.direction, sc.earlyness,
              sc.magnitude_parts.get("VOL"), sc.magnitude_parts.get("BOOK"),
@@ -117,7 +155,8 @@ class Store:
              sc.price, sc.change_24h_pct, sc.quote_vol_24h, sc.spread_pct,
              sc.funding_rate, sc.min_notional,
              ",".join(v.code for v in sc.vetoes),
-             1 if sc.tradeable else 0, tier, sc.oi_notional))
+             1 if sc.tradeable else 0, tier, sc.oi_notional,
+             sc.oi_change_pct))
         self.conn.commit()
         return cur.lastrowid
 

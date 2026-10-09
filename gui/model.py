@@ -13,6 +13,7 @@ proto.app and are NEVER forked in this module.
 
 from proto import planner as pl
 from proto.app import SORT_KEYS  # sorting semantics shared with the TUI
+from proto.scorer import Scorecard, Veto
 
 # Direction filters accepted by filter_cards / shown in the toolbar combo.
 DIR_FILTERS = ("both", "long", "short")
@@ -147,6 +148,60 @@ def split_vetoed(cards):
     for c in cards:
         (vetoed if getattr(c, "vetoes", None) else ranked).append(c)
     return ranked, vetoed
+
+
+def snapshot_cards(rows):
+    """Rebuild scorecards from Store.latest_rows() dicts (instant launch).
+
+    Restores every display field the table and detail pane need (parts,
+    vetoes with codes, OI percent + notional, economics). Per-signal notes
+    (vol/price detail dicts) were never logged and stay absent — the detail
+    pane shows the numbers, not the prose. Saved veto reasons read as the
+    code itself (e.g. "late_move"), since only codes are logged.
+
+    Rows arrive newest-scan-first by score; a coin appearing twice (two
+    cycles inside the window) keeps its highest-scored row — the table
+    addresses rows by coin and duplicates would collide.
+    """
+    cards = []
+    seen = set()
+    for r in rows:
+        if r.get("coin") in seen:
+            continue
+        seen.add(r.get("coin"))
+        sc = Scorecard(
+            coin=r.get("coin", "?"), venue=r.get("venue") or "MEXC",
+            score=r.get("score") or 0.0, lean=r.get("lean") or 0.0,
+            direction=r.get("direction") or "NEUTRAL",
+            earlyness=r.get("earlyness") or 0.0,
+            funding_rate=r.get("funding_rate") or 0.0,
+            oi_change_pct=r.get("oi_change_pct"),
+            oi_notional=r.get("oi_notional"),
+            price=r.get("price") or 0.0,
+            change_24h_pct=r.get("change_24h_pct") or 0.0,
+            quote_vol_24h=r.get("quote_vol_24h") or 0.0,
+            spread_pct=r.get("spread_pct") or 0.0,
+            min_notional=r.get("min_notional"))
+        sc.magnitude_parts = {"VOL": r.get("mag_vol"), "BOOK": r.get("mag_book"),
+                              "OI": r.get("mag_oi")}
+        sc.lean_parts = {"VOL": r.get("lean_vol"), "BOOK": r.get("lean_book"),
+                         "OI": r.get("lean_oi")}
+        sc.tradeable = bool(r.get("tradeable", True))
+        codes = [c for c in str(r.get("veto_codes") or "").split(",") if c]
+        sc.vetoes = [Veto(code=c, reason=c) for c in codes]
+        cards.append(sc)
+    return cards
+
+
+def snapshot_label(rows):
+    """'saved 14:02 (150 coins)' or '' when there is nothing saved."""
+    if not rows:
+        return ""
+    import time
+    n_coins = len({r.get("coin") for r in rows})
+    saved_at = max((r.get("ts") or 0) for r in rows)
+    return "saved %s (%d coins)" % (
+        time.strftime("%H:%M", time.localtime(saved_at)), n_coins)
 
 
 def plan_text(card, plan):

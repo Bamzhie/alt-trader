@@ -261,6 +261,7 @@ class RadarGUI(tk.Tk):
             stake=self.stake, coins=self.coins, interval=self.interval,
             universe_budget=self.coins, log_threshold=self.log_threshold,
             db=self.db, write_logs=True)
+        self._show_saved_snapshot()
         self._worker = Worker(worker_args, self._jobs, self._results)
         self._worker.start()
         self._plan_worker = PlanWorker(self._worker, self._plan_jobs,
@@ -270,6 +271,42 @@ class RadarGUI(tk.Tk):
         self.after(POLL_MS, self._poll)
         self.after(TICK_MS, self._tick)
         self._submit("stats")
+
+
+    def _show_saved_snapshot(self):
+        """Instant launch: render the last saved scan, then go live.
+
+        A local SQLite read (~ms) fills the table immediately; the worker's
+        first live scan replaces it when the API fetch finishes. Cached
+        plans are absent (they embed live structure), so the first click
+        fetches on the plan lane. Never fatal: an empty/missing DB just
+        leaves the table blank until the first scan lands.
+        """
+        try:
+            from proto.store import Store
+            store = Store(self.db)
+            try:
+                rows = store.latest_rows()
+            finally:
+                try:
+                    store.close()
+                except Exception:
+                    pass
+            if not rows:
+                return
+            self.cards = model.snapshot_cards(rows)
+            self.failed = 0
+            self.attempted = len(self.cards)
+            self.scan_status = (f"showing {model.snapshot_label(rows)} — "
+                                f"live scan running…")
+            self._render_all()
+        except Exception as e:
+            self.scan_status = (f"no saved signals ({type(e).__name__}) — "
+                                f"waiting for the live scan…")
+            try:
+                self._render_status()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------- widgets
     def _build_header(self):
@@ -816,12 +853,19 @@ class RadarGUI(tk.Tk):
 
         self.error_text = ""
         self.cards = cards
-        # Keep cached plans for coins still present (kills the perpetual
+        # Keep GOOD cached plans for coins still present (kills the perpetual
         # "fetching…" where every scan wiped the plan behind the next scan);
-        # drop coins that left the table. Silently refresh the selected coin.
+        # drop departed coins AND failed lookups (plan None), so a pre-scan
+        # "no longer in the last scan" error refetches instead of sticking.
         coins = {c.coin for c in cards}
         for coin in list(self._plan_cache):
+            cached = self._plan_cache[coin]
             if coin not in coins:
+                del self._plan_cache[coin]
+            elif (cached.get("plan") is None
+                    and cached.get("err") == "coin is no longer in the last scan"):
+                # Pre-scan lookup error, not a real plan failure: the coin is
+                # here now, so refetch instead of showing a stale error.
                 del self._plan_cache[coin]
         if self.selected_coin and self.selected_coin not in coins:
             self.selected_coin = None
