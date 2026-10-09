@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 data/
 *.db
+
+# Qt GUI isolated env (PySide6, ~500MB, reinstallable)
+.venv-qt/
