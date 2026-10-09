@@ -13,7 +13,8 @@ proto.app and are NEVER forked in this module.
 
 from proto import planner as pl
 from proto.app import SORT_KEYS  # sorting semantics shared with the TUI
-from proto.scorer import Scorecard, Veto
+from proto.planner import MAX_LEVERAGE
+from proto.scorer import Scorecard, Veto, fits_stake
 
 # Direction filters accepted by filter_cards / shown in the toolbar combo.
 DIR_FILTERS = ("both", "long", "short")
@@ -94,15 +95,16 @@ def format_vol(v):
 def format_flags(card, stake):
     """Flags column text for one row, space separated ('' when nothing).
 
-      WATCH        - venue minimum notional is above the operator's stake
-                     (same rule the TUI flags column shows);
+      WATCH        - venue minimum MARGIN is above the operator's stake
+                     (min_notional at max leverage; same rule the TUI flags
+                     column shows);
       UNVALIDATED  - Tier-2 marker for MEXC rows (no outcome history yet).
     """
     flags = []
-    min_not = getattr(card, "min_notional", None)
-    f_min = _to_float(min_not)
+    f_min = _to_float(getattr(card, "min_notional", None))
     f_stake = _to_float(stake)
-    if f_min is not None and f_stake is not None and f_min > f_stake:
+    if (f_min is not None and f_stake is not None
+            and not fits_stake(f_min, f_stake)):
         flags.append("WATCH")
     notes = getattr(card, "notes", None) or ()
     tier2 = any(isinstance(n, str) and "UNVALIDATED" in n for n in notes)
@@ -348,12 +350,15 @@ def detail_text(card, plan=None, plan_err=None, stake=None, last_error=None):
         if f_min is None:
             out.append("  ⚠ minimum notional unknown — fails closed, this coin "
                        "never flags at any stake")
-        elif f_min > f_stake:
-            out.append(f"  ⚠ min notional ${f_min:.4f} > stake ${f_stake:.2f} — "
-                       "WATCH only until stake grows")
+        elif not fits_stake(f_min, f_stake):
+            out.append(f"  ⚠ min notional ${f_min:.4f} needs "
+                       f"~${f_min / MAX_LEVERAGE:.4f} margin at "
+                       f"{MAX_LEVERAGE}x > stake ${f_stake:.2f} — WATCH "
+                       f"only until stake grows")
         else:
-            out.append(f"  min notional ${f_min:.4f} ≤ stake ${f_stake:.2f} — "
-                       "fits stake")
+            out.append(f"  min notional ${f_min:.4f} (~${f_min / MAX_LEVERAGE:.4f} "
+                       f"margin at {MAX_LEVERAGE}x) ≤ stake ${f_stake:.2f} — "
+                       f"fits stake")
 
     notes = card.notes or ()
     if any(isinstance(n, str) and "UNVALIDATED" in n for n in notes):

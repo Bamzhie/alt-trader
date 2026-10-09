@@ -200,10 +200,12 @@ class TestFormatOi(unittest.TestCase):
 
 class TestFormatFlags(unittest.TestCase):
     def test_watch_rule_and_boundary(self):
-        # min_notional > stake -> WATCH
-        self.assertEqual(model.format_flags(mkcard("A", min_notional=5.0), 0.1), "WATCH")
-        # boundary: equal to stake is NOT a watch (strictly greater)
-        self.assertEqual(model.format_flags(mkcard("A", min_notional=0.1), 0.1), "")
+        # min margin ($1 at 50x) > stake -> WATCH
+        self.assertEqual(model.format_flags(mkcard("A", min_notional=50.0), 0.1), "WATCH")
+        # $2.48 notional needs ~$0.05 margin: fits a $0.10 stake (leveraged reality)
+        self.assertEqual(model.format_flags(mkcard("A", min_notional=2.48), 0.1), "")
+        # boundary: margin exactly stake is NOT a watch
+        self.assertEqual(model.format_flags(mkcard("A", min_notional=5.0), 0.1), "")
         # below stake -> fine
         self.assertEqual(model.format_flags(mkcard("A", min_notional=0.05), 0.1), "")
 
@@ -211,8 +213,8 @@ class TestFormatFlags(unittest.TestCase):
         self.assertEqual(model.format_flags(mkcard("A", min_notional=None), 0.1), "")
         self.assertEqual(model.format_flags(mkcard("A", min_notional="junk"), 0.1), "")
         # an unvalidated stake must not produce a spurious WATCH either
-        self.assertEqual(model.format_flags(mkcard("A", min_notional=5.0), None), "")
-        self.assertEqual(model.format_flags(mkcard("A", min_notional=5.0), "junk"), "")
+        self.assertEqual(model.format_flags(mkcard("A", min_notional=50.0), None), "")
+        self.assertEqual(model.format_flags(mkcard("A", min_notional=50.0), "junk"), "")
 
     def test_unvalidated_rule(self):
         # MEXC rows are Tier-2 by venue
@@ -228,7 +230,7 @@ class TestFormatFlags(unittest.TestCase):
             model.format_flags(mkcard("A", venue="BYBIT", notes=["plain", 42]), 0.1), "")
 
     def test_combined_flags_space_separated(self):
-        both = mkcard("A", venue="MEXC", min_notional=5.0)
+        both = mkcard("A", venue="MEXC", min_notional=50.0)
         self.assertEqual(model.format_flags(both, 0.1), "WATCH UNVALIDATED")
 
 
@@ -448,14 +450,15 @@ class TestDetailText(unittest.TestCase):
         t = model.detail_text(mkcard("A", min_notional=None), stake=0.1)
         self.assertIn("⚠ minimum notional unknown — fails closed, this coin never "
                       "flags at any stake", t)
-        # above stake -> WATCH wording
-        t = model.detail_text(mkcard("A", min_notional=5.0), stake=0.1)
-        self.assertIn("⚠ min notional $5.0000 > stake $0.10 — WATCH only until "
-                      "stake grows", t)
+        # margin above stake -> WATCH wording with the margin math shown
+        t = model.detail_text(mkcard("A", min_notional=50.0), stake=0.1)
+        self.assertIn("WATCH only until stake grows", t)
+        self.assertIn("margin at 50x", t)
         # at/below stake -> fits
         t = model.detail_text(mkcard("A", min_notional=0.05), stake=0.1)
-        self.assertIn("min notional $0.0500 ≤ stake $0.10 — fits stake", t)
-        t = model.detail_text(mkcard("A", min_notional=0.1), stake=0.1)
+        self.assertIn("(~$0.0010 margin at 50x", t)
+        self.assertIn("fits stake", t)
+        t = model.detail_text(mkcard("A", min_notional=2.48), stake=0.1)
         self.assertIn("fits stake", t)
         # no stake in hand -> no notional line at all
         t = model.detail_text(mkcard("A", min_notional=5.0), stake=None)
@@ -739,7 +742,7 @@ class TestWidgetLayer(unittest.TestCase):
         gui = self.make_gui()
         cards = [
             mkcard("AAA", score=70, direction="LONG", venue="BYBIT",
-                   min_notional=5.0, price=1234.5, change_24h_pct=3.2,
+                   min_notional=50.0, price=1234.5, change_24h_pct=3.2,
                    quote_vol_24h=4_300_000, funding_rate=0.0001,
                    oi_change_pct=12.5, lean=0.5, earlyness=0.8),
             mkcard("BBB", score=40, direction="SHORT", venue="MEXC",

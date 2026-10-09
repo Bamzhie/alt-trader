@@ -29,13 +29,16 @@ def mkcard(coin, score, direction="LONG", min_notional=0.01, vetoes=()):
     return sc
 
 
-cards = [mkcard("A", 90), mkcard("B", 80, min_notional=5.0),
+cards = [mkcard("A", 90), mkcard("B", 80, min_notional=50.0),
          mkcard("C", 70, direction="SHORT"), mkcard("D", 60, vetoes=("late_move",)),
-         mkcard("E", 50, direction="NEUTRAL"), mkcard("F", 40, min_notional=None)]
+         mkcard("E", 50, direction="NEUTRAL"), mkcard("F", 40, min_notional=None),
+         mkcard("Q", 85, min_notional=2.48)]
 
 top = picks.top_picks(cards, stake=0.10, threshold=24.0)
 check("picks only actionable+threshold",
-      [c.coin for c in top] == ["A", "C"], str([c.coin for c in top]))
+      [c.coin for c in top] == ["A", "Q", "C"], str([c.coin for c in top]))
+check("leveraged coin included in picks",
+      "Q" in [c.coin for c in top])
 check("vetoed/neutral/watch excluded from picks",
       all(c.coin not in ("B", "D", "E", "F") for c in top))
 

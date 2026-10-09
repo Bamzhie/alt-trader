@@ -20,12 +20,12 @@ DAILY_N = 20
 
 def top_picks(cards, stake, threshold, n=TOP_N):
     """Top `n` actionable cards by score (trade-now list)."""
+    from proto.scorer import fits_stake
     return sorted(
         (c for c in cards
          if not getattr(c, "vetoes", None)
          and getattr(c, "direction", "NEUTRAL") != "NEUTRAL"
-         and (getattr(c, "min_notional", None) is not None
-              and c.min_notional <= stake)
+         and fits_stake(getattr(c, "min_notional", None), stake)
          and (c.score or 0) >= threshold),
         key=lambda c: -(c.score or 0))[:n]
 
@@ -36,9 +36,10 @@ def watch_list(cards, stake, n=WATCH_N):
     min_notional unknown also lands here (fail-closed: cannot confirm it
     fits, so it waits with the watch list rather than the picks).
     """
+    from proto.scorer import fits_stake
+
     def blocked(c):
-        mn = getattr(c, "min_notional", None)
-        return (mn is None or mn > stake)
+        return not fits_stake(getattr(c, "min_notional", None), stake)
 
     return sorted(
         (c for c in cards

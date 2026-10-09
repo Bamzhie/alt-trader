@@ -202,11 +202,14 @@ def build_plan(sc, stake, risk_per_trade_pct=2.0, swing_ref=None,
         p.warnings.append(
             f"leverage {lev}x is BELOW your {MIN_LEVERAGE_FLOOR}x floor — safe value at "
             f"this stake; under-scaled, not inflated")
-    if sc.min_notional is not None and sc.min_notional > stake:
-        p.tradeable = False
-        p.warnings.append(
-            f"min notional ${sc.min_notional:.4f} > stake ${stake:.2f} — WATCH-ONLY until "
-            f"stake grows")
+    if sc.min_notional is not None:
+        min_margin = sc.min_notional / lev if lev else None
+        if min_margin is not None and min_margin > stake:
+            p.tradeable = False
+            p.warnings.append(
+                f"min notional ${sc.min_notional:.4f} needs ~${min_margin:.4f} "
+                f"margin at {lev}x > stake ${stake:.2f} — WATCH-ONLY until "
+                f"stake grows")
     if notional < (sc.min_notional or 0) and sc.min_notional:
         p.tradeable = False
         p.warnings.append(

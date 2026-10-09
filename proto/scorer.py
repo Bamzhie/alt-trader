@@ -101,14 +101,39 @@ class Scorecard:
         """
         Stake-aware flag gate (spec SS4). `actionable` above stays
         stake-agnostic - it drives ranking and keeps existing callers
-        working. A FLAG additionally requires a CONFIRMED minimum that fits
-        the stake: min_notional None (unknown) is fail-closed, so a coin we
-        cannot size never flags even though it still ranks and shadow-logs.
-        An unknown stake fails closed the same way.
+        working. A FLAG additionally requires a CONFIRMED minimum whose
+        MARGIN fits the stake: min_notional None (unknown) is fail-closed,
+        so a coin we cannot size never flags even though it still ranks
+        and shadow-logs. An unknown stake fails closed the same way.
+
+        Margin, not notional: at 50x a $2.48 minimum notional costs ~$0.05
+        of margin - affordable on a $0.10 stake. fits_stake() holds the
+        rule; the planner enforces per-trade reality with planned leverage.
         """
         if self.min_notional is None or stake is None:
             return False
-        return self.actionable and self.min_notional <= stake
+        return self.actionable and fits_stake(self.min_notional, stake)
+
+
+def fits_stake(min_notional, stake, leverage=None):
+    """True when the venue minimum fits the stake AS MARGIN.
+
+    min_notional / leverage <= stake. Default leverage is the venue maximum
+    (most permissive — matches leveraged trading; the planner enforces
+    per-trade reality with the planned leverage). None/garbage/zero inputs
+    fail closed. Shared by the flag gate, picks, and WATCH display so the
+    rule cannot drift between them.
+    """
+    if leverage is None:
+        from .planner import MAX_LEVERAGE
+        leverage = MAX_LEVERAGE
+    try:
+        mn, st, lv = float(min_notional), float(stake), float(leverage)
+    except (TypeError, ValueError):
+        return False
+    if not (mn > 0 and st > 0 and lv > 0):
+        return False
+    return mn / lv <= st
 
 
 def book_component(bids, asks):

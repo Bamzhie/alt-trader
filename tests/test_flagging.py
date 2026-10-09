@@ -195,9 +195,12 @@ check("min_notional 0.01 <= stake 0.10 -> True",
       is_actionable(fit, 0.10) is True, str(is_actionable(fit, 0.10)))
 check("boundary: min_notional == stake -> True",
       is_actionable(mkcard("EDGE", 50.0, min_not=0.10), 0.10) is True)
-over = mkcard("OVER", 60.0, "LONG", min_not=0.50)
-check("min_notional 0.50 > stake 0.10 -> False",
+over = mkcard("OVER", 60.0, "LONG", min_not=50.0)
+check("min_notional 50.0 needs $1 margin > stake 0.10 -> False",
       is_actionable(over, 0.10) is False, str(is_actionable(over, 0.10)))
+qnt = mkcard("QNT", 60.0, "LONG", min_not=2.48)
+check("leveraged reality: $2.48 notional needs ~$0.05 margin -> True",
+      is_actionable(qnt, 0.10) is True, str(is_actionable(qnt, 0.10)))
 check("property stays stake-agnostic: over-stake coin still ranks",
       over.actionable is True, str(over.actionable))
 check("vetoed coin never actionable",
@@ -218,8 +221,8 @@ check("score exactly 24 -> flagged",
       flagged(mkcard("AT", 24.0, min_not=0.01), 0.10) is True)
 check("score 99 but None min -> never flagged",
       flagged(mkcard("NM", 99.0, min_not=None), 0.10) is False)
-check("score 99 but over-stake min -> never flagged",
-      flagged(mkcard("OV", 99.0, min_not=5.0), 0.10) is False)
+check("score 99 but over-stake margin -> never flagged",
+      flagged(mkcard("OV", 99.0, min_not=50.0), 0.10) is False)
 
 print("\n=== app.py flag line uses is_actionable(stake) ===")
 scan_src = inspect.getsource(appmod.App.scan_once)

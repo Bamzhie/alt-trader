@@ -22,6 +22,7 @@ from . import scan as scanmod
 from . import indicators as ind
 from . import planner as pl
 from .scan import build_universe, score_universe, venue_health, UNIVERSE_BUDGET
+from .scorer import fits_stake
 from .store import Store
 
 SORT_KEYS = {
@@ -215,7 +216,8 @@ class App:
             vol = c.quote_vol_24h
             vol_s = f"${vol/1e6:.1f}M" if vol >= 1e6 else f"${vol/1e3:.0f}K"
             flags = []
-            if c.min_notional and c.min_notional > self.args.stake:
+            if c.min_notional and not fits_stake(c.min_notional,
+                                                 self.args.stake):
                 flags.append("WATCH")
             attr = curses.A_REVERSE if (i + start) == self.sel else curses.A_NORMAL
             line = (f"{i+start+1:<3}{arrow:<5}{c.coin:<15}{c.price:>13.8g}"
@@ -432,7 +434,8 @@ def run_headless(app, iterations=None):
                 vol = c.quote_vol_24h
                 vol_s = f"${vol/1e6:.1f}M" if vol >= 1e6 else f"${vol/1e3:.0f}K"
                 flags = []
-                if c.min_notional and c.min_notional > app.args.stake:
+                if c.min_notional and not fits_stake(c.min_notional,
+                                                     app.args.stake):
                     flags.append("WATCH")
                 print(f"{shown+1:<3}{arrow:<5}{c.coin:<15}{c.price:>13.8g}"
                       f"{c.change_24h_pct:>7.1f}%{vol_s:>10}{c.lean:>7.2f}"
