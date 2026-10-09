@@ -55,23 +55,23 @@ def fake_depth(sym, limit=20):
     return (BIDS, ASKS)
 
 
-def install(bybit_tickers, oi_change):
+def install(bybit_tickers, oi_state):
     """Patch venue feeds + rate caps for offline analysis. Returns restore()."""
     orig = (scanmod.mexc.klines, scanmod.mexc.depth, scanmod.LIMITER,
             scanmod.STAGGER_S, scanmod.VENUE_STATE, bybitmod.tickers,
-            bybitmod.oi_change)
+            bybitmod.oi_state)
     scanmod.mexc.klines = fake_bars
     scanmod.mexc.depth = fake_depth
     scanmod.LIMITER = scanmod.RateLimiter(rate=10_000)   # offline = no waits
     scanmod.STAGGER_S = 0
     scanmod.VENUE_STATE = {}
     bybitmod.tickers = bybit_tickers
-    bybitmod.oi_change = oi_change
+    bybitmod.oi_state = oi_state
 
     def restore():
         (scanmod.mexc.klines, scanmod.mexc.depth, scanmod.LIMITER,
          scanmod.STAGGER_S, scanmod.VENUE_STATE, bybitmod.tickers,
-         bybitmod.oi_change) = orig
+         bybitmod.oi_state) = orig
     return restore
 
 
@@ -79,10 +79,11 @@ def test_shared_coin_gets_oi():
     print("=== shared coin gets real OI; MEXC-only stays funding-only ===")
     oi_calls = []
     seen = []                      # oi_change_pct exactly as score_coin got it
+    seen_notion = []               # oi_notional exactly as score_coin got it
 
     def fake_oi(sym, *a, **k):
         oi_calls.append(sym)
-        return 4.2
+        return 4.2, 1000.0
 
     def fake_tickers():
         return dict(BYBIT_TICKERS)
@@ -92,6 +93,7 @@ def test_shared_coin_gets_oi():
 
     def spy(*a, **k):
         seen.append(k.get("oi_change_pct"))
+        seen_notion.append(k.get("oi_notional"))
         return real_score_coin(*a, **k)
 
     try:
@@ -108,6 +110,11 @@ def test_shared_coin_gets_oi():
         check("scorecard carries the OI change",
               sc_shared is not None and sc_shared.oi_change_pct == 4.2,
               str(getattr(sc_shared, "oi_change_pct", None)))
+        check("notional = units x price reaches the scorer",
+              seen_notion == [1000.0], str(seen_notion))
+        check("scorecard carries the OI notional",
+              sc_shared is not None and sc_shared.oi_notional == 1000.0,
+              str(getattr(sc_shared, "oi_notional", None)))
 
         sc_mexc = scanmod.analyse_one("MEXCONLY_USDT", "MEXCONLY",
                                       DETAIL, TK, 0.10)
@@ -119,6 +126,9 @@ def test_shared_coin_gets_oi():
         check("MEXC-only: scorecard OI is None",
               sc_mexc is not None and sc_mexc.oi_change_pct is None,
               str(getattr(sc_mexc, "oi_change_pct", None)))
+        check("MEXC-only: scorecard notional is None",
+              sc_mexc is not None and sc_mexc.oi_notional is None,
+              str(getattr(sc_mexc, "oi_notional", None)))
     finally:
         scanmod.score_coin = real_score_coin
         restore()

@@ -61,6 +61,23 @@ def format_price(p):
     return f"{f:.8g}"
 
 
+def format_oi(pct, notional=None):
+    """OI cell: percent plus the dollars behind it.
+
+    "+68.3% (~$12K)" — the notional (approx USDT open interest) is what
+    separates real money arriving from a tiny base printing a big percent.
+    "n/a" when the percent is missing (MEXC-only / unavailable).
+    """
+    f = _to_float(pct)
+    if f is None:
+        return "n/a"
+    base = f"{f:+.1f}%"
+    n = _to_float(notional)
+    if n is None:
+        return base
+    return f"{base} (~{format_vol(n)})"
+
+
 def format_vol(v):
     """24h quote volume text: $X.XM at >= 1M, $XK at >= 1K, $N below 1K."""
     f = _to_float(v)
@@ -213,12 +230,16 @@ def detail_text(card, plan=None, plan_err=None, stake=None, last_error=None):
     out.append("")
 
     oi = _to_float(card.oi_change_pct)
+    oi_n = _to_float(getattr(card, "oi_notional", None))
     out.append(f"  earlyness {card.earlyness:.2f}"
                f"   ·   24h {card.change_24h_pct:+.1f}%"
                f"   ·   vol24 {format_vol(card.quote_vol_24h)}"
                f"   ·   spread {card.spread_pct:.2f}%"
                f"   ·   funding {card.funding_rate * 100:+.4f}%"
-               f"   ·   OIΔ {f'{oi:+.1f}%' if oi is not None else 'n/a'}")
+               f"   ·   OIΔ {format_oi(oi, oi_n)}")
+    if oi_n is not None:
+        out.append(f"      (~{format_vol(oi_n)} open interest behind the move — "
+                   f"judge the percent against this base)")
     if oi is None:
         out.append("  ⚠ OI unavailable on MEXC — OI/FUNDING signal is running on "
                    "funding alone")

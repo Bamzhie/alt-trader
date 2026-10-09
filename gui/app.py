@@ -57,7 +57,7 @@ SIGNAL_HEADINGS = {"rank": "#", "dir": "DIR", "coin": "COIN", "price": "PRICE",
                    "oi": "OIΔ%", "lean": "LEAN", "early": "EARLY",
                    "score": "SCORE", "flags": "FLAGS"}
 SIGNAL_WIDTHS = {"rank": 44, "dir": 40, "coin": 92, "price": 104, "ch24": 74,
-                 "vol24": 84, "funding": 84, "oi": 74, "lean": 62,
+                 "vol24": 84, "funding": 84, "oi": 150, "lean": 62,
                  "early": 64, "score": 64, "flags": 210}
 SIGNAL_ANCHORS = {"rank": "center", "dir": "center", "coin": "w",
                   "flags": "w"}
@@ -817,8 +817,7 @@ class RadarGUI(tk.Tk):
                 f"{c.change_24h_pct:+.1f}%",
                 model.format_vol(c.quote_vol_24h),
                 f"{c.funding_rate * 100:+.4f}%",
-                (f"{oi:+.1f}%" if oi is not None else "n/a"),
-                f"{c.lean:+.2f}",
+                model.format_oi(oi, getattr(c, "oi_notional", None)),                f"{c.lean:+.2f}",
                 f"{c.earlyness:.2f}",
                 f"{c.score:.1f}",
                 flags,

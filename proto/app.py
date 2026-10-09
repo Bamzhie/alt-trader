@@ -281,9 +281,14 @@ class App:
             f"   ·   vol24 ${card.quote_vol_24h:,.0f}"
             f"   ·   spread {card.spread_pct:.2f}%"
             f"   ·   funding {card.funding_rate*100:+.4f}%")
-        if card.oi_change_pct is None:
+        _oi = card.oi_change_pct
+        _oin = getattr(card, "oi_notional", None)
+        if _oi is None:
             put("  ⚠ OI unavailable on MEXC — OI/FUNDING signal is running on "
                 "funding alone", curses.A_DIM)
+        elif _oin is not None:
+            put(f"  OIΔ {_oi:+.1f}% on ~${_oin:,.0f} open interest — judge the "
+                f"percent against this base", curses.A_DIM)
         if any(isinstance(n, str) and "UNVALIDATED" in n for n in card.notes):
             put("  ⚠ TIER 2 · UNVALIDATED — no outcome history exists for this "
                 "score yet; treat as experimental", curses.A_DIM)

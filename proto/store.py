@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS signal_log (
     tier            INTEGER NOT NULL DEFAULT 2,
     -- 1 = pre-v2 history (stake-agnostic flag rule), 2 = current rule.
     -- Historical rows stay comparable by filtering on flag_version (SS6.1).
-    flag_version    INTEGER DEFAULT 1
+    flag_version    INTEGER DEFAULT 1,
+    -- ~USDT open interest behind OIΔ% (NULL when unavailable/MEXC-only).
+    oi_notional     REAL
 );
 CREATE INDEX IF NOT EXISTS idx_signal_ts_coin ON signal_log(ts, coin);
 CREATE INDEX IF NOT EXISTS idx_signal_flagged ON signal_log(flagged);
@@ -87,6 +89,9 @@ class Store:
                 "ALTER TABLE signal_log ADD COLUMN flag_version INTEGER DEFAULT 1")
         self.conn.execute(
             "UPDATE signal_log SET flag_version=1 WHERE flag_version IS NULL")
+        if "oi_notional" not in cols:
+            self.conn.execute(
+                "ALTER TABLE signal_log ADD COLUMN oi_notional REAL")
 
     def log_signal(self, sc, flagged, tier=2):
         """Insert one scorecard. flagged=False writes a shadow row.
@@ -101,8 +106,8 @@ class Store:
                 mag_vol, mag_book, mag_oi, lean_vol, lean_book, lean_oi,
                 price, change_24h_pct, quote_vol_24h, spread_pct,
                 funding_rate, min_notional, veto_codes, tradeable, tier,
-                flag_version)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,2)""",
+                flag_version, oi_notional)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,2,?)""",
             (int(time.time()), sc.coin, sc.venue, 1 if flagged else 0,
              sc.score, sc.lean, sc.direction, sc.earlyness,
              sc.magnitude_parts.get("VOL"), sc.magnitude_parts.get("BOOK"),
@@ -112,7 +117,7 @@ class Store:
              sc.price, sc.change_24h_pct, sc.quote_vol_24h, sc.spread_pct,
              sc.funding_rate, sc.min_notional,
              ",".join(v.code for v in sc.vetoes),
-             1 if sc.tradeable else 0, tier))
+             1 if sc.tradeable else 0, tier, sc.oi_notional))
         self.conn.commit()
         return cur.lastrowid
 

@@ -183,6 +183,21 @@ class TestFormatVol(unittest.TestCase):
         self.assertEqual(model.format_vol("2500000"), "$2.5M")
 
 
+class TestFormatOi(unittest.TestCase):
+    def test_percent_with_notional_base(self):
+        self.assertEqual(model.format_oi(68.3, 12_400), "+68.3% (~$12K)")
+        self.assertEqual(model.format_oi(-9.1, 5_300_000), "-9.1% (~$5.3M)")
+
+    def test_percent_without_base(self):
+        self.assertEqual(model.format_oi(4.2), "+4.2%")
+        self.assertEqual(model.format_oi(4.2, None), "+4.2%")
+
+    def test_missing_percent_is_na_even_with_base(self):
+        self.assertEqual(model.format_oi(None), "n/a")
+        self.assertEqual(model.format_oi(None, 99_000), "n/a")
+        self.assertEqual(model.format_oi("junk", 100), "n/a")
+
+
 class TestFormatFlags(unittest.TestCase):
     def test_watch_rule_and_boundary(self):
         # min_notional > stake -> WATCH

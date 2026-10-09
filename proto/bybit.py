@@ -172,12 +172,16 @@ def klines(symbol, interval="5m", limit=200):
     return bars
 
 
-def oi_change(symbol, window="1h", points=25):
+def oi_state(symbol, window="1h", points=25):
     """
-    Percent change in open interest over ~24h (1h grid, `points` samples).
-    None means "no usable data" and is the designed funding-only path
-    downstream; transport/API failures raise BybitError so a degraded
-    venue stays visible to the caller.
+    Open-interest state over ~24h (1h grid, `points` samples).
+
+    Returns (pct_change_or_None, latest_units_or_None) from ONE request:
+    percent change oldest -> newest sample, plus the newest absolute size in
+    base-asset units. Absolute size lets callers show the dollars behind a
+    percent (a +68% off a $5k base is not a +68% off $5M). None means "no
+    usable data" (funding-only path downstream); transport/API failures raise
+    BybitError so a degraded venue stays visible to the caller.
     """
     d = _get(f"/open-interest?category={CATEGORY}&symbol={symbol}"
              f"&intervalTime={window}&limit={points}")
@@ -191,7 +195,18 @@ def oi_change(symbol, window="1h", points=25):
         if oi > 0:
             samples.append((ts, oi))
     if len(samples) < 2:
-        return None
+        return None, samples[-1][1] if samples else None
     oldest = min(samples)   # (ts, oi): ordered by timestamp
     newest = max(samples)
-    return (newest[1] - oldest[1]) / oldest[1] * 100.0
+    return (newest[1] - oldest[1]) / oldest[1] * 100.0, newest[1]
+
+
+def oi_change(symbol, window="1h", points=25):
+    """
+    Percent change in open interest over ~24h (1h grid, `points` samples).
+    None means "no usable data" and is the designed funding-only path
+    downstream; transport/API failures raise BybitError so a degraded
+    venue stays visible to the caller.
+    """
+    pct, _ = oi_state(symbol, window, points)
+    return pct

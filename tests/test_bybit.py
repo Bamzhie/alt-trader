@@ -333,6 +333,39 @@ def test_oi_change_percent():
         restore()
 
 
+def test_oi_state_returns_pct_and_units_from_one_request():
+    print("=== oi_state: (pct, latest units), one request serves both ===")
+    calls = []
+    payload = {"list": [
+        {"openInterest": "110", "timestamp": "300000"},   # newest first
+        {"openInterest": "105", "timestamp": "200000"},
+        {"openInterest": "100", "timestamp": "100000"},
+    ]}
+
+    def fake(path, **kw):
+        calls.append(path)
+        return payload
+
+    restore = with_get(fake)
+    try:
+        pct, units = bybit.oi_state("XUSDT")
+    finally:
+        restore()
+    check("+10% over the window", pct is not None and abs(pct - 10.0) < 1e-9,
+          str(pct))
+    check("latest absolute units returned", units == 110.0, str(units))
+    check("single request", len(calls) == 1, str(len(calls)))
+
+    restore = with_get(lambda path, **kw: {"list": [{"openInterest": "100",
+                                                     "timestamp": "1"}]})
+    try:
+        pct, units = bybit.oi_state("XUSDT")
+    finally:
+        restore()
+    check("single sample -> (None, last units)", pct is None and units == 100.0,
+          f"{pct},{units}")
+
+
 def run(fn):
     print(f"--- {fn.__name__}")
     try:
@@ -354,7 +387,8 @@ for t in (test_good_kline_payload_parses,
           test_details_paginates_cursor,
           test_depth_pairs_parsed,
           test_funding_parses,
-          test_oi_change_percent):
+          test_oi_change_percent,
+          test_oi_state_returns_pct_and_units_from_one_request):
     run(t)
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))

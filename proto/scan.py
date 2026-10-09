@@ -239,24 +239,30 @@ def _bybit_symbol_set():
         return None
 
 
-def _bybit_oi(coin):
-    """Percent OI change for a Bybit-shared coin, or None (funding-only).
+def _bybit_oi(coin, price):
+    """(pct_change, notional_usdt) for a Bybit-shared coin; (None, None) else.
 
     Reads BYBIT_MAP - filled by the universe refresh - so this lookup never
     issues a Bybit request of its own: an MEXC-only coin or an unknown /
-    degraded map is None by construction. A failed oi_change is COUNTED in
+    degraded map is None by construction. A failed fetch is COUNTED in
     venue health (degraded and marked, never silent - spec SS6) and degrades
     to None, the funding-only path (spec SS4): it never fails the coin.
+
+    Notional is approximate (latest OI units x MEXC last price, marked ~):
+    it exists so a percent can be read against its base - a +68% off a $5k
+    base is not a +68% off $5M. ONE request serves both numbers.
     """
     sym = BYBIT_MAP.get(coin)
     if not sym:
-        return None
+        return None, None
     try:
         from . import bybit
-        return _gated(bybit.oi_change, sym)
+        pct, units = _gated(bybit.oi_state, sym)
+        notion = units * price if units and price and price > 0 else None
+        return pct, notion
     except Exception as e:
         _venue("bybit", e)
-        return None
+        return None, None
 
 
 # Guaranteed scan universe: 80 stake-tradeable + 40 tail + 30 rotation,
@@ -425,13 +431,14 @@ def analyse_one(sym, coin, detail, tk_row, stake, errors=None):
         # OI leg (spec SS4): Bybit open-interest change for shared coins
         # only. MEXC-only coins, an unknown symbol map, or a failed fetch
         # all degrade to None -> funding-only scoring, counted, never fatal.
-        oi_pct = _bybit_oi(coin)
+        oi_pct, oi_notion = _bybit_oi(coin, price)
 
         sc = score_coin(
             coin, bars, bids, asks,
             quote_vol_24h=quote_vol, spread_pct=spread_pct, change_1h_pct=change_1h,
             price=price, change_24h_pct=change_24h,
             funding_rate=funding, funding_cap=fund_cap, oi_change_pct=oi_pct,
+            oi_notional=oi_notion,
             lean_1H=lean_1h, lean_4H=lean_4h,
             min_notional=min_not, venue="MEXC", tier=2)
         return sc

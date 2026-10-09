@@ -85,6 +85,7 @@ class Scorecard:
     tradeable: bool = True
     funding_rate: float = 0.0
     oi_change_pct: Optional[float] = None
+    oi_notional: Optional[float] = None   # ~USDT open interest behind OIΔ%
     price: float = 0.0
     change_24h_pct: float = 0.0
     quote_vol_24h: float = 0.0
@@ -241,7 +242,7 @@ def score_coin(coin, bars, bids, asks, *,
                quote_vol_24h=0.0, spread_pct=0.0, change_1h_pct=0.0,
                price=0.0, change_24h_pct=0.0,
                funding_rate=0.0, funding_cap=0.0018,
-               oi_change_pct=None,
+               oi_change_pct=None, oi_notional=None,
                lean_1H=None, lean_4H=None,
                min_notional=None, venue="MEXC", tier=2):
     """Full scoring pass for one coin. Returns a Scorecard."""
@@ -249,6 +250,7 @@ def score_coin(coin, bars, bids, asks, *,
                    change_24h_pct=change_24h_pct,
                    quote_vol_24h=quote_vol_24h, spread_pct=spread_pct,
                    funding_rate=funding_rate, oi_change_pct=oi_change_pct,
+                   oi_notional=oi_notional,
                    min_notional=min_notional)
 
     apply_vetoes(sc, bars, quote_vol_24h, spread_pct, change_1h_pct,
