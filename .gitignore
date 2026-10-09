@@ -5,3 +5,7 @@ data/
 
 # Qt GUI isolated env (PySide6, ~500MB, reinstallable)
 .venv-qt/
+
+# runtime state
+.last_entries
+data/.last_entries
