@@ -1,4 +1,4 @@
-"""Functional tests for the PySide6 / Qt-Widgets desktop GUI (task Q2).
+"""Functional tests for the PySide6 / Qt-Widgets desktop GUI (tasks Q2 + Q4).
 
 Offscreen by construction: ``QT_QPA_PLATFORM=offscreen`` is set at the very
 top, BEFORE PySide6 is imported, so every window here builds display-free.
@@ -8,14 +8,17 @@ a loud SKIP line and exits 0 — ``tests/run_all.py`` globs ``test_*.py``
 (minus test_app.py) and counts exit 0 as a pass, so this skip guard is what
 keeps that suite green under the system interpreter.
 
-Coverage (mirrors tests/test_gui.py's intent, Qt shapes):
+Coverage (mirrors tests/test_gui.py's intent, Qt shapes, plus the Q4
+mockup-recreation additions):
   1 build        window constructs offscreen with auto_scan=False + temp db,
-                 both worker lanes retired; layout, badges, groups, controls
-                 and initial values present; the ctor's offline "stats" job
-                 round-trips queue -> poll -> render for real
+                 both worker lanes retired; top bar (badges, scan UTC,
+                 countdown, venue pill, gear), rail, toolbar groups (no
+                 Budget group), settings page fields, initial values; the
+                 ctor's offline "stats" job round-trips queue -> poll
   2 table        fake proto.scorer Scorecards: row count/order, exact cells
-                 (tkinter parity), direction tint + banding, WATCH text and
-                 foreground, vetoed split with comma-joined codes
+                 (tkinter parity), direction tint + green ▲/red ▼, WATCH
+                 text and foreground, UNVALIDATED amber pill on FLAGS,
+                 vetoed split with humanized REASON + comma-joined codes
   3 search       Find text narrows rows; Enter with a match selects it (no
                  lookup job); Enter without a match queues a lookup job —
                  asserted on the queue, the retired worker never runs it
@@ -24,13 +27,27 @@ Coverage (mirrors tests/test_gui.py's intent, Qt shapes):
   5 segments     Top 10 / Watch / New: empty digest = guidance + no modal,
                  seeded digest = modal rows; a pick jumps the main selection.
                  QDialog.exec() is driven by QTimer.singleShot (see below)
-  6 outcomes     a stats message renders counts line, direction lines, the
-                 24h hit line and the plans-live line; zero-shape too
+  6 outcomes     Summary tab, Performance tab, full Outcomes page (counts,
+                 per-horizon honest table, equity text summary), zero-shape
   7 snapshot     close writes .last_entries (proto/snapshot), relaunch
                  repopulates instantly; the plain close() path writes too
   8 tripwire     socket.socket / create_connection / getaddrinfo /
                  gethostbyname all raise — and ALLOW_NETWORK stays False:
                  there are NO live tests in this file
+  9 theme        dark navy palette: dark surfaces, bright ink, real contrast
+ 10 rail/pages   rail buttons + gear switch the QStackedWidget; watchlist,
+                 logs (log-file tail) and settings pages are functional
+ 11 detail       rebuilt detail pane: header, subtitle, tiles, key-value
+                 rows with REAL values and honest pending states; NO
+                 confidence metric, NO 24h high/low anywhere
+ 12 veto reason  gui.model.veto_reason is pure + humanizes the REASON column
+ 13 leverage cap dropdown writes the planner cap end-to-end: cache cleared,
+                 plan jobs carry the cap, stale-cap results refused
+ 14 data tools   Export writes the visible table to CSV (temp file); Copy
+                 composes the shared-model detail text (clipboard assert
+                 skipped offscreen — handler + non-empty text asserted)
+ 15 events       in-app event ring buffer: colored dots, max 50, fed by
+                 scan/resolve/collect completions + failures
 
 Network policy: ZERO network. The tripwire is armed before PySide6 is even
 imported; cards are fake Scorecard objects; stores are temp-dir SQLite
@@ -51,6 +68,7 @@ Run:  .venv-qt/bin/python tests/test_qtgui.py   -> ALL PASS, exit 0
 
 import os
 import queue
+import re
 import shutil
 import socket
 import sys
@@ -100,7 +118,7 @@ try:
     from PySide6.QtGui import QShortcut
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import (QApplication, QDialog, QGroupBox, QLabel,
-                                   QPushButton, QTableWidget)
+                                   QListWidget, QPushButton, QTableWidget)
 except ImportError:
     # run_all.py needs "OK"/"ALL PASS" in the output to count exit 0 as a pass.
     print("SKIP  tests/test_qtgui.py — PySide6 is not installed in this "
@@ -111,7 +129,9 @@ except ImportError:
 from gui import model
 from gui.app import (DIR_CHOICES, POLL_MS, SIGNAL_COLUMNS, SIGNAL_HEADINGS,
                      SORT_CHOICES, TICK_MS)
+from proto import planner as pl
 from proto import snapshot as snap
+from proto.planner import MAX_LEVERAGE
 from proto.scorer import Scorecard, Veto
 
 from qtgui import app as qtapp
@@ -180,6 +200,8 @@ def mkcard(coin, score=50.0, direction="LONG", venue="BYBIT", vetoes=(),
 
 
 COIN_COL = SIGNAL_COLUMNS.index("coin")
+DIR_COL = SIGNAL_COLUMNS.index("dir")
+FLAGS_COL = SIGNAL_COLUMNS.index("flags")
 
 
 def make_window(db=None):
@@ -239,6 +261,12 @@ def bg_name(table, r, c):
 
 def fg_name(table, r, c):
     return table.item(r, c).foreground().color().name()
+
+
+def kv_map(win):
+    """The detail pane's SIGNAL DETAILS table as a {key: value} dict."""
+    return {win.det_kv.item(r, 0).text(): win.det_kv.item(r, 1).text()
+            for r in range(win.det_kv.rowCount())}
 
 
 def _visible_dialog():
@@ -317,32 +345,53 @@ def t_build():
           jobs == [], str(jobs))
 
     labels = [l.text() for l in win.findChildren(QLabel)]
-    check("title label", "ALT RADAR · MEXC perp scanner" in labels, str(labels[:4]))
+    check("top-bar title", "ALT RADAR" in labels, str(labels[:6]))
+    check("top-bar subtitle",
+          "MEXC Perpetual Futures Scanner" in labels)
     check("READ-ONLY badge", " READ-ONLY " in labels)
     check("TIER-2 badge", "TIER-2 UNVALIDATED" in labels)
-    for text in ("$", "Coins", "Interval s", "Dir", "Sort"):
+    for text in ("$", "Dir", "Sort", "≥"):
         check(f"label {text!r}", text in labels)
+    check("settings coins label", "Coins (universe + scan size)" in labels)
+    check("settings interval label", "Interval s (auto-scan)" in labels)
+    check("settings db label", "DB path" in labels)
+    check("settings leverage label", "Leverage cap" in labels)
 
     groups = [g.title() for g in win.findChildren(QGroupBox)]
-    for text in ("Scan", "Budget", "Stake", "Find", "View",
+    for text in ("Scan", "Stake", "Leverage cap", "Find", "View",
                  "Flag threshold", "Lists", "Data", "Signals", "Outcomes"):
         check(f"group {text!r}", text in groups, str(groups))
+    check("no Budget group (mockup omission — coins/interval live in Settings)",
+          "Budget" not in groups, str(groups))
     check("vetoed group", any(t.startswith("VETOED — excluded from ranking")
                               for t in groups), str(groups))
     check("detail group", any(t.startswith("Detail — selected coin") for t in groups))
+    check("recent events group", "Recent events" in groups, str(groups))
+    check("maintenance group", "Maintenance" in groups, str(groups))
 
     btns = [b.text() for b in win.findChildren(QPushButton)]
     for text in ("Scan now", "Resume auto-scan", "Collect bars",
-                 "Resolve outcomes", "Refresh stats", "Resolve now",
-                 "★ Top 10", "👁 Watch", "+ New"):
+                 "Resolve outcomes", "Refresh", "Resolve now",
+                 "★ Top 10", "👁 Watch", "+ New", "Export", "Copy"):
         check(f"button {text!r}", text in btns, str(btns))
-    check("two Apply buttons (stake + threshold)", btns.count("Apply") == 2,
-          str(btns))
+    check("Scan now is the accent primary",
+          win.btn_scan.objectName() == "btnPrimary")
+    check("stake Apply button kept", win.btn_apply_stake is not None)
+    check("threshold Apply button kept", win.btn_apply_threshold is not None)
 
     dir_items = tuple(win.cmb_dir.itemText(i) for i in range(win.cmb_dir.count()))
     sort_items = tuple(win.cmb_sort.itemText(i) for i in range(win.cmb_sort.count()))
     check("Dir combo choices", dir_items == DIR_CHOICES, str(dir_items))
     check("Sort combo choices", sort_items == SORT_CHOICES, str(sort_items))
+    lev_items = tuple(win.cmb_lev.itemText(i) for i in range(win.cmb_lev.count()))
+    check("leverage cap choices 10x/20x/50x",
+          lev_items == ("10x", "20x", "50x"), str(lev_items))
+    check("initial leverage cap", win.cmb_lev.currentText() == "50x"
+          and win.leverage_cap == MAX_LEVERAGE)
+    thr_presets = tuple(win.cmb_threshold.itemText(i)
+                        for i in range(win.cmb_threshold.count()))
+    check("threshold presets include the current 24",
+          "24" in thr_presets and "40" in thr_presets, str(thr_presets))
     check("coins spinbox range",
           (win.sp_coins.minimum(), win.sp_coins.maximum())
           == (model.MIN_COINS, model.MAX_COINS))
@@ -356,21 +405,63 @@ def t_build():
     check("initial interval", win.sp_interval.value() == 60)
     check("initial dir", win.cmb_dir.currentText() == "Both")
     check("initial sort", win.cmb_sort.currentText() == "score")
+    check("settings stake mirrors the toolbar", win.ed_stake_s.text() == "0.1")
+    check("settings threshold mirrors the toolbar",
+          win.ed_threshold_s.text() == "24")
+    check("settings db path", win.ed_db.text() == win.db, win.ed_db.text())
+    check("settings leverage mirrors the toolbar",
+          win.cmb_lev_s.currentText() == "50x")
     check("find placeholder", "venue-wide" in win.ed_search.placeholderText(),
           win.ed_search.placeholderText())
     check("Ctrl+Q shortcut present", len(win.findChildren(QShortcut)) >= 1)
+
+    # -- top-bar live widgets ----------------------------------------------
+    check("countdown format (paused with auto-scan off)",
+          win.lbl_countdown.text() == "Next scan: paused",
+          win.lbl_countdown.text())
+    win.auto_scan = True
+    win.last_scan_ts = time.time()
+    win._render_topbar()
+    check("countdown format mm:ss when armed",
+          re.fullmatch(r"Next scan: \d{2}:\d{2}",
+                       win.lbl_countdown.text()) is not None,
+          win.lbl_countdown.text())
+    check("scan UTC stamp after a scan time is set",
+          re.fullmatch(r"Scan: \d{2}:\d{2}:\d{2} UTC",
+                       win.lbl_scan_utc.text()) is not None,
+          win.lbl_scan_utc.text())
+    check("venue pill starts unknown", win.lbl_venue.text() == "MEXC –",
+          win.lbl_venue.text())
+
+    # -- rail ----------------------------------------------------------------
+    check("rail has 5 page buttons", len(win.rail_buttons) == 5,
+          str(list(win.rail_buttons)))
+    check("rail starts on Scanner",
+          win.current_page() == "scanner"
+          and win.rail_buttons["scanner"].isChecked())
+    check("gear button present", win.btn_gear is not None)
 
     for i, col in enumerate(SIGNAL_COLUMNS):
         got = win.tree.horizontalHeaderItem(i).text()
         check(f"heading {col}", got == SIGNAL_HEADINGS[col], got)
     check("signals table starts empty", win.tree.rowCount() == 0)
     check("vetoed table starts empty", win.tree_vetoed.rowCount() == 0)
+    veto_heads = [win.tree_vetoed.horizontalHeaderItem(i).text()
+                  for i in range(win.tree_vetoed.columnCount())]
+    check("vetoed table has REASON column",
+          veto_heads == ["DIR", "COIN", "SCORE", "REASON", "VETO CODES"],
+          str(veto_heads))
     check("detail placeholder",
-          "select a row for the full breakdown" in win.detail.toPlainText())
-    check("detail pane is read-only", win.detail.isReadOnly())
+          win.lbl_det_sub.text() == "select a row for the full breakdown",
+          win.lbl_det_sub.text())
+    check("detail key-value table starts empty", win.det_kv.rowCount() == 0)
+    check("analyst note pane is read-only", win.detail.isReadOnly())
     check("outcomes placeholder",
           win.lbl_outcomes.text() == "no outcomes resolved yet",
           win.lbl_outcomes.text())
+    check("outcomes dock has 2 tabs",
+          [win.out_tabs.tabText(i) for i in range(win.out_tabs.count())]
+          == ["Summary", "Performance"])
     check("status shows the ctor's stats activity",
           win.lbl_activity.text() == "activity: refreshing stats",
           win.lbl_activity.text())
@@ -438,13 +529,24 @@ def t_table():
           bg_name(win.tree, 1, 0) == qtheme.SHORT_BG_ALT,
           bg_name(win.tree, 1, 0))
     check("tints differ", bg_name(win.tree, 0, 0) != bg_name(win.tree, 1, 0))
+    check("LONG arrow is green", fg_name(win.tree, 0, DIR_COL) == qtheme.LONG_FG,
+          fg_name(win.tree, 0, DIR_COL))
+    check("SHORT arrow is red", fg_name(win.tree, 1, DIR_COL) == qtheme.SHORT_FG,
+          fg_name(win.tree, 1, DIR_COL))
     check("WATCH text where due", row0[-1] == "WATCH", row0[-1])
     check("WATCH foreground on the row",
-          fg_name(win.tree, 0, 11) == qtheme.WATCH_FG, fg_name(win.tree, 0, 11))
+          fg_name(win.tree, 0, FLAGS_COL) == qtheme.WATCH_FG,
+          fg_name(win.tree, 0, FLAGS_COL))
+    check("UNVALIDATED FLAGS cell is an amber pill (bg)",
+          bg_name(win.tree, 1, FLAGS_COL) == qtheme.PILL_UNVALIDATED_BG,
+          bg_name(win.tree, 1, FLAGS_COL))
+    check("UNVALIDATED FLAGS cell is an amber pill (fg)",
+          fg_name(win.tree, 1, FLAGS_COL) == qtheme.PILL_UNVALIDATED_FG,
+          fg_name(win.tree, 1, FLAGS_COL))
     check("header counts", "shown 2 · vetoed 0" in win.lbl_header.text(),
           win.lbl_header.text())
 
-    # -- vetoed split --------------------------------------------------------
+    # -- vetoed split with humanized REASON ---------------------------------
     win.set_cards([mkcard("AAA", score=70),
                    mkcard("CCC", score=20, vetoes=("late_move", "thin_book")),
                    mkcard("DDD", score=30, vetoes=("stale",))])
@@ -458,9 +560,11 @@ def t_table():
           == ["DDD", "CCC"])
     v0 = row_cells(win.tree_vetoed, 0)
     v1 = row_cells(win.tree_vetoed, 1)
-    check("DDD veto cells", v0 == ["▲", "DDD", "30.0", "stale"], str(v0))
-    check("CCC veto cells",
-          v1 == ["▲", "CCC", "20.0", "late_move,thin_book"], str(v1))
+    check("DDD veto cells (unknown code = raw fallback)",
+          v0 == ["▲", "DDD", "30.0", "stale", "stale"], str(v0))
+    check("CCC veto cells (primary code humanized)",
+          v1 == ["▲", "CCC", "20.0", "Late move", "late_move,thin_book"],
+          str(v1))
     check("vetoed band tint (row 0)",
           bg_name(win.tree_vetoed, 0, 0) == qtheme.VETO_BG_ALT,
           bg_name(win.tree_vetoed, 0, 0))
@@ -468,8 +572,8 @@ def t_table():
           bg_name(win.tree_vetoed, 1, 0) == qtheme.VETO_BG,
           bg_name(win.tree_vetoed, 1, 0))
     check("vetoed foreground",
-          fg_name(win.tree_vetoed, 0, 3) == qtheme.VETO_FG,
-          fg_name(win.tree_vetoed, 0, 3))
+          fg_name(win.tree_vetoed, 0, 4) == qtheme.VETO_FG,
+          fg_name(win.tree_vetoed, 0, 4))
     check("header counts after split",
           "shown 1 · vetoed 2" in win.lbl_header.text(),
           win.lbl_header.text())
@@ -514,11 +618,13 @@ def t_search():
           win.tree.item(0, 0).data(Qt.ItemDataRole.UserRole) == "QNT"
           and len(win.tree.selectionModel().selectedRows()) == 1)
     check("detail renders the selection",
-          "QNT" in win.detail.toPlainText(), win.detail.toPlainText()[:80])
+          win.lbl_det_coin.text() == "QNT"
+          and "QNT" in win._compose_detail_text())
     check("plan fetch queued on the plan lane", "QNT" in win._plans_pending)
     plan_jobs = drain(win._plan_jobs)
-    check("plan job shape",
-          plan_jobs == [{"coin": "QNT", "stake": win.stake}], str(plan_jobs))
+    check("plan job shape (stake + leverage cap ride along)",
+          plan_jobs == [{"coin": "QNT", "stake": win.stake,
+                         "leverage_cap": win.leverage_cap}], str(plan_jobs))
 
     # -- Enter WITHOUT a match -> one lookup job on the (retired) queue ------
     win.ed_search.setText("zzzzz")
@@ -660,10 +766,12 @@ def t_segments():
           and win.tree.item(sel[0].row(), 0).data(Qt.ItemDataRole.UserRole)
           == "AAA", str([i.row() for i in sel]))
     check("detail shows the picked coin",
-          "AAA" in win.detail.toPlainText(), win.detail.toPlainText()[:80])
+          win.lbl_det_coin.text() == "AAA"
+          and "AAA" in win._compose_detail_text())
     plan_jobs = [j for j in drain(win._plan_jobs) if j.get("coin") == "AAA"]
     check("pick queues the plan fetch",
-          plan_jobs == [{"coin": "AAA", "stake": win.stake}], str(plan_jobs))
+          plan_jobs == [{"coin": "AAA", "stake": win.stake,
+                         "leverage_cap": win.leverage_cap}], str(plan_jobs))
 
     def inspect_watch(dlg):
         check("Watch dialog title", "Watch" in dlg.windowTitle(),
@@ -690,30 +798,34 @@ def t_segments():
 
 
 # ==========================================================================
-# 6. OUTCOMES PANEL
+# 6. OUTCOMES (dock tabs + full page)
 # ==========================================================================
+
+STATS_FIXTURE = {"rows": 10, "flagged": 2, "coins": 5, "longs": 4,
+                 "shorts": 3, "outcomes": 3}
+OUTCOME_FIXTURE = {
+    "counts": {"1h": 1, "4h": 2, "24h": 0, "7d": 0}, "total": 3,
+    "direction": {"LONG": {"count": 2, "avg_return": 5.5, "hit_rate": 0.5},
+                  "SHORT": {"count": 1, "avg_return": -2.0,
+                            "hit_rate": 0.0}},
+}
+HIT24_FIXTURE = {"window_hours": 24, "signals": 7,
+                 "by_horizon": {},
+                 "overall": {"resolved": 4, "wins": 3, "losses": 1,
+                             "pct_won": 75.0, "avg_return": 1.25}}
+PLAN_FIXTURE = {"planned": 10, "stop_hit": 3, "tp1_hit": 5, "tp2_hit": 1,
+                "stop_pct": 30.0, "tp1_pct": 50.0, "tp2_pct": 10.0,
+                "terminal": 2, "t_stop_pct": 50.0, "t_tp1_pct": 50.0,
+                "t_tp2_pct": 0.0}
+
 
 def t_outcomes():
     win = make_window()
-    stats = {"rows": 10, "flagged": 2, "coins": 5, "longs": 4,
-             "shorts": 3, "outcomes": 3}
-    outcome = {
-        "counts": {"1h": 1, "4h": 2, "24h": 0, "7d": 0}, "total": 3,
-        "direction": {"LONG": {"count": 2, "avg_return": 5.5, "hit_rate": 0.5},
-                      "SHORT": {"count": 1, "avg_return": -2.0,
-                                "hit_rate": 0.0}},
-    }
-    hit24 = {"window_hours": 24, "signals": 7,
-             "by_horizon": {},
-             "overall": {"resolved": 4, "wins": 3, "losses": 1,
-                         "pct_won": 75.0, "avg_return": 1.25}}
-    plan = {"planned": 10, "stop_hit": 3, "tp1_hit": 5, "tp2_hit": 1,
-            "stop_pct": 30.0, "tp1_pct": 50.0, "tp2_pct": 10.0,
-            "terminal": 2}
-    win._handle_msg({"kind": "stats", "ok": True, "stats": stats,
-                     "outcome": outcome, "hit24": hit24, "plan": plan})
+    win._handle_msg({"kind": "stats", "ok": True, "stats": STATS_FIXTURE,
+                     "outcome": OUTCOME_FIXTURE, "hit24": HIT24_FIXTURE,
+                     "plan": PLAN_FIXTURE})
 
-    panel = win.lbl_outcomes.text()
+    panel = win.lbl_outcomes.text()               # Summary tab
     check("per-horizon counts line",
           "1h 1 · 4h 2 · 24h 0 · 7d 0   (total 3 resolved)" in panel, panel)
     check("LONG hit-rate line",
@@ -726,6 +838,31 @@ def t_outcomes():
     check("plans-live line",
           "plans live: 10 watched · stop 3 (30%) · TP1 5 (50%) · TP2 1 (10%) · "
           "terminal 2" in panel, panel)
+
+    perf = win.lbl_performance.text()             # Performance tab
+    check("Performance: direction hit rates",
+          "LONG: n=2" in perf and "SHORT: n=1" in perf, perf)
+    check("Performance: terminal plan rates",
+          "terminal 2 — stop 50% / TP1 50% / TP2 0% (terminal plans only)"
+          in perf, perf)
+    check("Performance: 24h flagged line", "24h flagged: 7 signals" in perf,
+          perf)
+
+    page = win.lbl_outcomes_page.text()           # full Outcomes page
+    check("page: counts line", "(total 3 resolved)" in page, page)
+    check("page: direction lines", "LONG: n=2" in page and "SHORT: n=1" in page,
+          page)
+    check("page: equity text summary (sum of resolved signed returns)",
+          "equity (sum of resolved signed returns): +9.00% "
+          "across 3 resolved outcome(s)" in page, page)
+    check("page: plans line", "plans live: 10 watched" in page, page)
+    check("page: honest per-horizon table row count",
+          win.tbl_outcomes.rowCount() == 5, str(win.tbl_outcomes.rowCount()))
+    overall_row = row_cells(win.tbl_outcomes, 4)
+    check("page: overall row from the 24h window",
+          overall_row == ["ALL", "4", "3", "1", "75%", "+1.25%"],
+          str(overall_row))
+
     header = win.lbl_header.text()
     for frag in ("logs 10 rows / 5 coins", "flagged 2", "outcomes 3"):
         check(f"header {frag!r}", frag in header, header)
@@ -746,6 +883,10 @@ def t_outcomes():
     check("zero SHORT line", "SHORT: no resolved outcomes yet" in panel, panel)
     check("zero 24h line", "24h flagged: 0 signals" in panel, panel)
     check("no-plans line", "plans: none resolved yet" in panel, panel)
+    check("zero page equity line",
+          "equity (sum of resolved signed returns): +0.00% "
+          "across 0 resolved outcome(s)" in win.lbl_outcomes_page.text(),
+          win.lbl_outcomes_page.text())
 
     # -- failure surfaces in the status bar, never crashes -------------------
     win._handle_msg({"kind": "stats", "ok": False, "error": "db locked"})
@@ -822,46 +963,6 @@ def t_snapshot():
 # 8. NO-NETWORK TRIPWIRE
 # ==========================================================================
 
-def t_theme():
-    print("== 9 theme: light readable palette, distinct hues, real contrast")
-
-    def lum(hexstr):
-        hexstr = hexstr.lstrip("#")
-        r, g, b = (int(hexstr[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
-
-        def lin(c):
-            return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
-        return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
-
-    def contrast(a, b):
-        la, lb = lum(a), lum(b)
-        hi, lo = max(la, lb), min(la, lb)
-        return (hi + 0.05) / (lo + 0.05)
-
-    check("surface is light (readable base)", lum(qtheme.SURFACE) > 0.7,
-          qtheme.SURFACE)
-    check("body text is ink (dark on light)", lum(qtheme.TEXT) < 0.08,
-          qtheme.TEXT)
-    check("body contrast ≥ 7:1",
-          contrast(qtheme.TEXT, qtheme.SURFACE) >= 7.0,
-          f"{contrast(qtheme.TEXT, qtheme.SURFACE):.1f}:1")
-    check("muted text contrast ≥ 4.5:1",
-          contrast(qtheme.TEXT_MUTED, qtheme.SURFACE) >= 4.5,
-          f"{contrast(qtheme.TEXT_MUTED, qtheme.SURFACE):.1f}:1")
-    check("selected white-on-blue contrast ≥ 4.5:1",
-          contrast(qtheme.SELECT_FG, qtheme.SELECT_BG) >= 4.5,
-          f"{contrast(qtheme.SELECT_FG, qtheme.SELECT_BG):.1f}:1")
-    hues = {qtheme.LONG_BG, qtheme.SHORT_BG, qtheme.VETO_BG,
-            qtheme.SURFACE, qtheme.WATCH_FG, qtheme.ACCENT}
-    check("direction/status hues all distinct", len(hues) == 6, str(hues))
-    check("watch amber readable on surface",
-          contrast(qtheme.WATCH_FG, qtheme.SURFACE) >= 4.5,
-          f"{contrast(qtheme.WATCH_FG, qtheme.SURFACE):.1f}:1")
-    check("error red readable on surface",
-          contrast(qtheme.ERROR_FG, qtheme.SURFACE) >= 4.5,
-          f"{contrast(qtheme.ERROR_FG, qtheme.SURFACE):.1f}:1")
-
-
 def t_tripwire():
     check("ALLOW_NETWORK stays False — this file has no live tests",
           ALLOW_NETWORK is False)
@@ -885,27 +986,459 @@ def t_tripwire():
 
 
 # ==========================================================================
+# 9. THEME: dark navy palette, real contrast
+# ==========================================================================
+
+def t_theme():
+    print("== 9 theme: dark navy palette, bright ink, real contrast")
+
+    def lum(hexstr):
+        hexstr = hexstr.lstrip("#")
+        r, g, b = (int(hexstr[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+        def lin(c):
+            return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+        return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+
+    def contrast(a, b):
+        la, lb = lum(a), lum(b)
+        hi, lo = max(la, lb), min(la, lb)
+        return (hi + 0.05) / (lo + 0.05)
+
+    check("surface is dark navy (terminal base)", lum(qtheme.SURFACE) < 0.15,
+          qtheme.SURFACE)
+    check("app bg darker than panels",
+          lum(qtheme.WINDOW_BG) < lum(qtheme.SURFACE), qtheme.WINDOW_BG)
+    check("body text is bright ink", lum(qtheme.TEXT) > 0.7, qtheme.TEXT)
+    check("body contrast ≥ 7:1",
+          contrast(qtheme.TEXT, qtheme.SURFACE) >= 7.0,
+          f"{contrast(qtheme.TEXT, qtheme.SURFACE):.1f}:1")
+    check("muted contrast ≥ 4.5:1",
+          contrast(qtheme.TEXT_MUTED, qtheme.SURFACE) >= 4.5,
+          f"{contrast(qtheme.TEXT_MUTED, qtheme.SURFACE):.1f}:1")
+    check("muted on banded rows ≥ 4.5:1",
+          contrast(qtheme.TEXT_MUTED, qtheme.SURFACE_ALT) >= 4.5,
+          f"{contrast(qtheme.TEXT_MUTED, qtheme.SURFACE_ALT):.1f}:1")
+    check("selected white-on-navy ≥ 4.5:1",
+          contrast(qtheme.SELECT_FG, qtheme.SELECT_BG) >= 4.5,
+          f"{contrast(qtheme.SELECT_FG, qtheme.SELECT_BG):.1f}:1")
+    hues = {qtheme.LONG_BG, qtheme.SHORT_BG, qtheme.VETO_BG,
+            qtheme.SURFACE, qtheme.WATCH_FG, qtheme.ACCENT}
+    check("direction/status hues all distinct", len(hues) == 6, str(hues))
+    check("watch amber readable on both direction tints",
+          contrast(qtheme.WATCH_FG, qtheme.LONG_BG) >= 4.5
+          and contrast(qtheme.WATCH_FG, qtheme.SHORT_BG) >= 4.5,
+          f"{contrast(qtheme.WATCH_FG, qtheme.LONG_BG):.1f}:1 / "
+          f"{contrast(qtheme.WATCH_FG, qtheme.SHORT_BG):.1f}:1")
+    check("error red readable on surface",
+          contrast(qtheme.ERROR_FG, qtheme.SURFACE) >= 4.5,
+          f"{contrast(qtheme.ERROR_FG, qtheme.SURFACE):.1f}:1")
+    check("LONG arrow readable on the LONG tint",
+          contrast(qtheme.LONG_FG, qtheme.LONG_BG) >= 4.5,
+          f"{contrast(qtheme.LONG_FG, qtheme.LONG_BG):.1f}:1")
+    check("SHORT arrow readable on the SHORT tint",
+          contrast(qtheme.SHORT_FG, qtheme.SHORT_BG) >= 4.5,
+          f"{contrast(qtheme.SHORT_FG, qtheme.SHORT_BG):.1f}:1")
+    check("UNVALIDATED pill text readable on the pill",
+          contrast(qtheme.PILL_UNVALIDATED_FG,
+                   qtheme.PILL_UNVALIDATED_BG) >= 4.5,
+          f"{contrast(qtheme.PILL_UNVALIDATED_FG, qtheme.PILL_UNVALIDATED_BG):.1f}:1")
+    check("info blue readable on surface",
+          contrast(qtheme.INFO_FG, qtheme.SURFACE) >= 4.5,
+          f"{contrast(qtheme.INFO_FG, qtheme.SURFACE):.1f}:1")
+
+
+# ==========================================================================
+# 10. RAIL + PAGES
+# ==========================================================================
+
+def t_rail():
+    win = make_window()
+    names = [k for k, _l, _g in qtapp.RAIL_PAGES]
+    check("rail page keys", list(win.rail_buttons) == names,
+          str(list(win.rail_buttons)))
+    for key in ("watchlist", "outcomes", "logs", "settings"):
+        win.rail_buttons[key].click()
+        check(f"rail click switches to {key}",
+              win.current_page() == key
+              and win.rail_buttons[key].isChecked(),
+              win.current_page())
+        check("exactly one rail button checked",
+              sum(1 for b in win.rail_buttons.values() if b.isChecked()) == 1)
+    win.btn_gear.click()
+    check("gear opens the Settings page",
+          win.current_page() == "settings", win.current_page())
+    win._switch_page("scanner")
+    check("back to Scanner", win.current_page() == "scanner")
+
+    # -- watchlist page: picks.watch_list, real rows -------------------------
+    # fits_stake is margin-based (min_notional / MAX_LEVERAGE <= stake), so
+    # with stake $0.05 only AAA ($5.00 -> 0.10 margin at 50x) is blocked.
+    win.ed_stake.setText("0.05")
+    win._apply_stake("toolbar")
+    win.set_cards([mkcard("AAA", score=70, min_notional=5.0),
+                   mkcard("BBB", score=40, min_notional=0.01)])
+    win._switch_page("watchlist")
+    check("watchlist shows the stake-blocked coin",
+          win.tbl_watchlist.rowCount() == 1
+          and win.tbl_watchlist.item(0, 0).text() == "AAA",
+          str(win.tbl_watchlist.rowCount()))
+    check("watchlist hint mentions the stake",
+          "$0.05" in win.lbl_watchlist_hint.text(),
+          win.lbl_watchlist_hint.text())
+
+    # -- logs page: tails the real log file + shows the event buffer ---------
+    win._switch_page("logs")
+    check("logs page tails logs/app.log (or says so honestly)",
+          win.logs_view.toPlainText() != "", win.logs_view.toPlainText()[:60])
+    win._push_event("info", "rail test event")
+    check("logs page carries the event ring buffer",
+          win.events_log_list.count() == 1
+          and "rail test event" in win.events_log_list.item(0).text())
+
+    # -- settings page: per-field Apply with validation ----------------------
+    win._switch_page("settings")
+    win.ed_stake_s.setText("0.25")
+    win._apply_stake("settings")
+    check("settings stake apply",
+          win.stake == 0.25 and win.ed_stake.text() == "0.25",
+          f"{win.stake} / {win.ed_stake.text()}")
+    win.ed_stake_s.setText("-1")
+    win._apply_stake("settings")
+    check("settings stake validation",
+          win.stake == 0.25 and "stake must be" in win.error_text,
+          win.error_text)
+    win.ed_threshold_s.setText("33")
+    win._apply_threshold("settings")
+    check("settings threshold apply", win.log_threshold == 33,
+          str(win.log_threshold))
+    win.sp_coins.setValue(200)
+    check("settings coins apply", win.coins == 200, str(win.coins))
+    win.sp_interval.setValue(90)
+    check("settings interval apply", win.interval == 90, str(win.interval))
+    newdb = os.path.join(win._test_tmp, "other.db")
+    win.ed_db.setText(newdb)
+    win._apply_db()
+    check("settings db apply", win.db == newdb, win.db)
+    win.ed_db.setText("")
+    win._apply_db()
+    check("settings db validation (empty rejected)",
+          win.db == newdb and "must not be empty" in win.error_text,
+          win.error_text)
+    win.cmb_lev_s.setCurrentText("20x")
+    check("settings leverage apply", win.leverage_cap == 20,
+          str(win.leverage_cap))
+    check("settings leverage syncs the toolbar combo",
+          win.cmb_lev.currentText() == "20x", win.cmb_lev.currentText())
+
+
+# ==========================================================================
+# 11. DETAIL PANE: rebuilt, real values, honest states, no invented metrics
+# ==========================================================================
+
+def t_detail():
+    win = make_window()
+    card = mkcard("AAA", score=70, direction="LONG", venue="MEXC",
+                  price=100.0,
+                  change_24h_pct=3.2, quote_vol_24h=4_300_000,
+                  funding_rate=0.0001, oi_change_pct=12.5,
+                  lean=0.5, earlyness=0.6)
+    win.set_cards([card])
+    check("placeholder before selection",
+          win.lbl_det_sub.text() == "select a row for the full breakdown",
+          win.lbl_det_sub.text())
+
+    win.tree.selectRow(0)
+    check("coin header", win.lbl_det_coin.text() == "AAA",
+          win.lbl_det_coin.text())
+    check("direction badge", "▲ LONG" in win.lbl_det_dir.text(),
+          win.lbl_det_dir.text())
+    check("UNVALIDATED badge visible for a MEXC row",
+          win.lbl_det_unval.isVisible(), "hidden")
+    check("subtitle = Base / Quote (Perpetual)",
+          win.lbl_det_sub.text() == "AAA / USDT (Perpetual)",
+          win.lbl_det_sub.text())
+    check("big mono price", win.lbl_det_price.text() == "100",
+          win.lbl_det_price.text())
+    check("24h% +", win.lbl_det_chg.text() == "+3.2%",
+          win.lbl_det_chg.text())
+    check("volume tile", win.lbl_det_vol.text() == "$4.3M",
+          win.lbl_det_vol.text())
+    check("OI tile without notional degrades to the percent",
+          win.lbl_det_oi.text() == "+12.5%", win.lbl_det_oi.text())
+    check("funding tile", win.lbl_det_funding.text() == "+0.0100%",
+          win.lbl_det_funding.text())
+
+    kv = kv_map(win)
+    check("kv Direction", kv.get("Direction") == "▲ LONG", str(kv))
+    check("kv Score x/100", kv.get("Score") == "70.0 / 100", str(kv))
+    check("kv Early Signal + Good qualifier (>= 0.5)",
+          kv.get("Early Signal") == "0.60 — Good", str(kv))
+    check("kv Lean + Bullish qualifier",
+          kv.get("Lean") == "+0.50 — Bullish", str(kv))
+    check("kv Funding Rate + Positive qualifier",
+          kv.get("Funding Rate") == "+0.0100% — Positive", str(kv))
+    check("kv Time is scan UTC",
+          re.fullmatch(r"\d{2}:\d{2}:\d{2} UTC", kv.get("Time", "")) is not None,
+          str(kv.get("Time")))
+    check("plan-pending honest state",
+          kv.get("Entry Zone") == "fetching…"
+          and kv.get("Leverage") == "fetching… (cap 50x)", str(kv))
+    check("no Confidence metric anywhere (honesty)",
+          not any("onfidence" in k or "onfidence" in v for k, v in kv.items()))
+    check("no 24h High/Low anywhere (honesty)",
+          "HIGH" not in " ".join(kv.keys())
+          and win.lbl_det_vol.objectName() == "tileValue")
+    check("flags section real",
+          win.lbl_det_flags.text() == "UNVALIDATED",
+          win.lbl_det_flags.text())
+
+    # -- a REAL plan (pure planner compute — no network) fills the levels ----
+    plan = pl.build_plan(card, stake=0.10, swing_ref=94.0)
+    win._plan_cache["AAA"] = {"plan": plan, "err": None}
+    win._render_detail()
+    kv = kv_map(win)
+    check("kv Entry Zone from the plan",
+          kv.get("Entry Zone")
+          == f"{plan.entry_low:.8g} – {plan.entry_high:.8g}", str(kv))
+    check("kv Stop Loss from the plan", kv.get("Stop Loss") == f"{plan.stop:.8g}",
+          str(kv))
+    check("kv TP1 from the plan", kv.get("Take Profit 1") == f"{plan.tp1:.8g}",
+          str(kv))
+    check("kv TP2 from the plan", kv.get("Take Profit 2") == f"{plan.tp2:.8g}",
+          str(kv))
+    check("kv Leverage with the operator cap (mode)",
+          kv.get("Leverage") == f"{plan.leverage}x (cap 50x)", str(kv))
+
+    # -- qualifier corners ---------------------------------------------------
+    win.set_cards([mkcard("FRESH", score=10, earlyness=0.4, lean=-0.3,
+                          funding_rate=-0.0002, direction="SHORT")])
+    win.tree.selectRow(0)
+    kv = kv_map(win)
+    check("kv Early Signal Fresh (>= 0.3)",
+          kv.get("Early Signal") == "0.40 — Fresh", str(kv))
+    check("kv Lean Bearish", kv.get("Lean") == "-0.30 — Bearish", str(kv))
+    check("kv Funding Negative",
+          kv.get("Funding Rate") == "-0.0200% — Negative", str(kv))
+    win.set_cards([mkcard("LATE", score=10, earlyness=0.2, lean=0.0,
+                          funding_rate=0.0, direction="LONG")])
+    win.tree.selectRow(0)
+    kv = kv_map(win)
+    check("kv Early Signal Late (else)", kv.get("Early Signal") == "0.20 — Late",
+          str(kv))
+    check("kv Lean Neutral", kv.get("Lean") == "+0.00 — Neutral", str(kv))
+    check("kv Funding Neutral",
+          kv.get("Funding Rate") == "+0.0000% — Neutral", str(kv))
+
+    # -- analyst notes carry veto + warning text ------------------------------
+    # A vetoed card lands in the vetoed table, not the signals table —
+    # select it there (same _on_select path drives the detail pane).
+    win.set_cards([mkcard("NOTE", score=10, vetoes=("low_volume",),
+                          notes=("counter-trend: price above EMA",
+                                 "MTF 1H unavailable — no bonus"))])
+    check("vetoed card landed in the vetoed table",
+          win.tree_vetoed.rowCount() == 1, str(win.tree_vetoed.rowCount()))
+    win.tree_vetoed.selectRow(0)
+    notes = win.detail.toPlainText()
+    check("analyst notes carry the veto text",
+          "⨯ low_volume" in notes, notes)
+    check("analyst notes carry the counter-trend warning",
+          "⚠ counter-trend" in notes, notes)
+    check("analyst notes carry the MTF warning", "⚠ MTF 1H" in notes, notes)
+
+
+# ==========================================================================
+# 12. VETO REASON (pure model function)
+# ==========================================================================
+
+def t_veto_reason():
+    check("low_volume humanized", model.veto_reason("low_volume") == "Low volume")
+    check("late_move humanized", model.veto_reason("late_move") == "Late move")
+    check("wide_spread humanized",
+          model.veto_reason("wide_spread") == "Wide spread")
+    check("thin_history humanized",
+          model.veto_reason("thin_history") == "Thin history")
+    check("unknown code falls back to the raw code",
+          model.veto_reason("mystery_code") == "mystery_code")
+    check("non-string code is stringified, never invented",
+          model.veto_reason(None) == "None")
+
+
+# ==========================================================================
+# 13. LEVERAGE CAP: dropdown -> planner plumbing, end-to-end
+# ==========================================================================
+
+def t_leverage_cap():
+    win = make_window()
+    check("default cap = MAX_LEVERAGE (today's behaviour)",
+          win.leverage_cap == MAX_LEVERAGE == 50, str(win.leverage_cap))
+    win.set_cards([mkcard("AAA", score=70)])
+    win.tree.selectRow(0)
+    check("plan fetch queued under the default cap",
+          drain(win._plan_jobs) == [{"coin": "AAA", "stake": win.stake,
+                                     "leverage_cap": 50}])
+
+    win.cmb_lev.setCurrentText("10x")             # toolbar dropdown
+    check("cap written", win.leverage_cap == 10, str(win.leverage_cap))
+    check("settings combo follows", win.cmb_lev_s.currentText() == "10x")
+    check("plan cache cleared (leverage is embedded in plans)",
+          win._plan_cache == {})
+    check("status names the new cap",
+          "leverage cap 10x" in win.scan_status, win.scan_status)
+    jobs = drain(win._plan_jobs)
+    # The first fetch (drained above) is still in flight, so _ensure_plan
+    # does not double-queue it — the stale, old-cap result is refused and
+    # re-queued right below instead.
+    check("no duplicate queue while the old-cap fetch is in flight",
+          jobs == [] and "AAA" in win._plans_pending,
+          f"jobs={jobs} pending={win._plans_pending}")
+
+    # an in-flight result computed under the OLD cap must be refused
+    win._on_plan({"kind": "plan", "ok": True, "coin": "AAA", "plan": None,
+                  "err": "stale", "leverage_cap": 50})
+    check("stale-cap plan result refused (not cached)",
+          "AAA" not in win._plan_cache, str(win._plan_cache))
+    jobs = drain(win._plan_jobs)
+    check("refetch re-queued after the refusal",
+          jobs and jobs[-1]["leverage_cap"] == 10, str(jobs))
+    win._on_plan({"kind": "plan", "ok": True, "coin": "AAA", "plan": None,
+                  "err": "fine", "leverage_cap": 10})
+    check("current-cap plan result cached", "AAA" in win._plan_cache)
+
+    # the planner honours the cap (pure compute — see also test_planner.py)
+    card = mkcard("CAP", score=70, price=100.0, direction="LONG")
+    p50 = pl.build_plan(card, stake=50.0, swing_ref=99.0)
+    p10 = pl.build_plan(card, stake=50.0, swing_ref=99.0, max_leverage=10)
+    check("tight stop computes 50x at the default cap", p50.leverage == 50,
+          str(p50.leverage))
+    check("tight stop clamps to 10x under a 10x cap", p10.leverage == 10,
+          str(p10.leverage))
+    check("same stop under both caps", abs(p10.stop - p50.stop) < 1e-9)
+
+
+# ==========================================================================
+# 14. DATA TOOLS: Export writes CSV, Copy composes the shared detail text
+# ==========================================================================
+
+def t_data_tools():
+    win = make_window()
+    win.set_cards([mkcard("AAA", score=70), mkcard("BBB", score=40,
+                                                   direction="SHORT")])
+    tmp = tempfile.mkdtemp(prefix="alt-radar-csv-")
+    TMPDIRS.append(tmp)
+    path = os.path.join(tmp, "visible.csv")
+    check("export writes the file", win._export_csv(path) is True)
+    check("export file exists", os.path.exists(path), path)
+    with open(path, newline="", encoding="utf-8") as f:
+        import csv as _csv
+        rows = list(_csv.reader(f))
+    check("csv header = shared SIGNAL_HEADINGS",
+          rows[0] == [SIGNAL_HEADINGS[c] for c in SIGNAL_COLUMNS], str(rows[0]))
+    check("csv carries the visible table exactly",
+          len(rows) == 3 and rows[1] == row_cells(win.tree, 0)
+          and rows[2] == row_cells(win.tree, 1), str(rows))
+    check("export status line",
+          "exported 2 row(s) to" in win.scan_status, win.scan_status)
+    check("export cancelled on an empty path", win._export_csv("") is False)
+
+    # -- Copy: the shared model's detail text (clipboard assert skipped
+    #    offscreen per the brief; the handler + the composed text are real).
+    win.tree.selectRow(0)
+    text = win._compose_detail_text()
+    check("composed detail text is real + non-empty",
+          "AAA" in text and "TRADE PLAN" in text, text[:60])
+    check("copy handler runs",
+          win._copy_detail_text() is True and "copied" in win.scan_status,
+          win.scan_status)
+    win.selected_coin = None
+    win._render_detail()
+    check("copy with no selection is an honest no-op",
+          win._copy_detail_text() is False
+          and "nothing to copy" in win.error_text, win.error_text)
+
+
+# ==========================================================================
+# 15. EVENTS: colored-dot ring buffer fed by job completions + failures
+# ==========================================================================
+
+def t_events():
+    win = make_window()
+    win._push_event("ok", "scan completed — 3 cards")
+    win._push_event("error", "boom")
+    win._push_event("info", "scan queued")
+    check("ring buffer holds the events", len(win.events) == 3
+          and win.events_list.count() == 3, str(len(win.events)))
+    check("newest event first",
+          "scan queued" in win.events_list.item(0).text(),
+          win.events_list.item(0).text())
+    check("info dot is blue",
+          win.events_list.item(0).foreground().color().name()
+          == qtheme.INFO_FG)
+    check("error dot is red",
+          win.events_list.item(1).foreground().color().name()
+          == qtheme.ERROR_FG)
+    check("ok dot is green",
+          win.events_list.item(2).foreground().color().name()
+          == qtheme.LONG_FG)
+    for i in range(60):
+        win._push_event("info", f"e{i}")
+    check("ring buffer capped at 50", len(win.events) == 50
+          and win.events_list.count() == 50, str(len(win.events)))
+
+    # -- fed from job completions + failures (scan/resolve/collect) ----------
+    win2 = make_window()
+    win2._handle_msg({"kind": "scan", "ok": True, "cards": [mkcard("ZZZ")],
+                      "universe": 1, "failed": 0, "errors": {}, "status": "s",
+                      "stats": STATS_FIXTURE})
+    check("scan completion feeds a green event",
+          any(e[1] == "ok" and "scan completed" in e[2] for e in win2.events),
+          str(win2.events))
+    win2._handle_msg({"kind": "resolve", "ok": True, "resolved": 2,
+                      "plans_resolved": 1, "stats": STATS_FIXTURE,
+                      "outcome": OUTCOME_FIXTURE, "hit24": HIT24_FIXTURE,
+                      "plan": PLAN_FIXTURE})
+    check("resolve completion feeds a green event",
+          any("resolved 2" in e[2] for e in win2.events), str(win2.events))
+    win2._handle_msg({"kind": "collect", "ok": True, "coins": 5, "bars": 10})
+    check("collect completion feeds a green event",
+          any("collected bars" in e[2] for e in win2.events), str(win2.events))
+    win2._handle_msg({"kind": "resolve", "ok": False, "error": "db locked"})
+    check("failure feeds a red event",
+          win2.events[-1][1] == "error" and "db locked" in win2.events[-1][2],
+          str(win2.events[-1]))
+
+
+# ==========================================================================
 # runner
 # ==========================================================================
 
 if __name__ == "__main__":
     tests = [
-        ("1 build: offscreen window, temp db, retired lanes, stats round-trip",
+        ("1 build: offscreen window, top bar, rail, retired lanes, round-trip",
          t_build),
-        ("2 table: fake scorecards, order, tints, WATCH, vetoed split",
+        ("2 table: tints, green ▲/red ▼, UNVALIDATED pill, vetoed REASON",
          t_table),
         ("3 search: narrow / Enter selects / Enter queues a lookup job",
          t_search),
         ("4 sort+dir: combos filter and reorder, header click, numeric cells",
          t_sortdir),
         ("5 segments: Top 10 / Watch / New modal dialogs", t_segments),
-        ("6 outcomes: counts + 24h + plans-live from a stats message",
+        ("6 outcomes: Summary + Performance tabs + full page tables",
          t_outcomes),
         ("7 snapshot: close writes .last_entries, relaunch repopulates",
          t_snapshot),
         ("8 tripwire: sockets blocked, no live tests", t_tripwire),
-        ("9 theme: light readable palette, distinct hues, real contrast",
-         t_theme),
+        ("9 theme: dark navy palette, bright ink, real contrast", t_theme),
+        ("10 rail+pages: rail/gear switch pages, settings apply per field",
+         t_rail),
+        ("11 detail: rebuilt pane, real kv values, honest states, no invention",
+         t_detail),
+        ("12 veto reason: pure humanization with a raw fallback", t_veto_reason),
+        ("13 leverage cap: dropdown -> cache clear -> job cap -> stale refusal",
+         t_leverage_cap),
+        ("14 data tools: Export writes CSV, Copy composes shared detail text",
+         t_data_tools),
+        ("15 events: colored-dot ring buffer fed by jobs", t_events),
     ]
     for name, fn in tests:
         print(f"\n== {name}")

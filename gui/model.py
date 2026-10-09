@@ -113,6 +113,27 @@ def format_flags(card, stake):
     return " ".join(flags)
 
 
+# Humanized labels for the vetoed table's REASON column (primary veto code
+# only — proto.scorer.apply_vetoes' codes). Unknown codes pass through
+# unchanged: a label is never invented for a code we do not know.
+VETO_REASONS = {
+    "low_volume": "Low volume",
+    "late_move": "Late move",
+    "wide_spread": "Wide spread",
+    "thin_history": "Thin history",
+}
+
+
+def veto_reason(code):
+    """Human label for one veto code: 'low_volume' -> 'Low volume'.
+
+    Pure (no Tk, no network): falls back to the raw code for anything not
+    in VETO_REASONS so a new scorer code still renders truthfully.
+    """
+    text = str(code)
+    return VETO_REASONS.get(text, text)
+
+
 def filter_cards(cards, dir_filter):
     """Direction filter: 'both' keeps everything, 'long'/'short' selects.
 

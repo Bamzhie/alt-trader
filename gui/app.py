@@ -117,6 +117,10 @@ class Worker(threading.Thread):
             app.args.coins = job["coins"]
             app.args.universe_budget = job["coins"]
             app.args.log_threshold = job["log_threshold"]
+            if job.get("leverage_cap") is not None:
+                # Optional Qt-toolbar plumbing; the tkinter GUI never sends
+                # this key, so its behaviour is byte-identical.
+                app.args.leverage_cap = job["leverage_cap"]
             t0 = time.time()
             app.scan_once()                 # proto scan + score + log path
             return {"kind": "scan", "ok": True, "cards": app.cards,
@@ -177,7 +181,8 @@ class Worker(threading.Thread):
             try:
                 card = scanmod.analyse_one(
                     sym, coin, det_all.get(sym, {}), tk_all.get(sym, {}),
-                    app.args.stake, attach_plans=True)
+                    app.args.stake, attach_plans=True,
+                    max_leverage=getattr(app.args, "leverage_cap", None))
             except Exception as e:
                 return {"kind": "lookup", "ok": False, "coin": coin,
                         "error": f"{type(e).__name__}: {e}"}
@@ -225,6 +230,9 @@ class PlanWorker(threading.Thread):
                     raise RuntimeError("scanner still starting…")
                 if job.get("stake") is not None:
                     app.args.stake = job["stake"]
+                if job.get("leverage_cap") is not None:
+                    # Optional Qt-toolbar plumbing (see Worker scan above).
+                    app.args.leverage_cap = job["leverage_cap"]
                 card = next((c for c in app.cards if c.coin == coin), None)
                 if card is None:
                     msg = {"kind": "plan", "ok": True, "coin": coin,
@@ -234,10 +242,14 @@ class PlanWorker(threading.Thread):
                     plan, info = app.plan_for(card)
                     msg = {"kind": "plan", "ok": True, "coin": coin,
                            "plan": plan,
-                           "err": None if plan is not None else str(info)}
+                           "err": None if plan is not None else str(info),
+                           # echoed so the UI can spot a plan computed under
+                           # a leverage cap that changed mid-flight
+                           "leverage_cap": job.get("leverage_cap")}
             except Exception as e:
                 msg = {"kind": "plan", "ok": False, "coin": coin,
-                       "error": f"{type(e).__name__}: {e}"}
+                       "error": f"{type(e).__name__}: {e}",
+                       "leverage_cap": job.get("leverage_cap")}
             try:
                 msg["venue"] = scanmod.venue_health()
             except Exception:

@@ -399,7 +399,7 @@ def tf_lean(sym, interval, limit=200, min_bars=30):
 
 
 def analyse_one(sym, coin, detail, tk_row, stake, errors=None,
-                attach_plans=False):
+                attach_plans=False, max_leverage=None):
     """Fetch bars + book for one coin and score it. Returns a Scorecard or None.
 
     None is ALWAYS a counted failure: the reason is recorded in
@@ -494,7 +494,13 @@ def analyse_one(sym, coin, detail, tk_row, stake, errors=None,
                 if swing is None:
                     swing = (bars[-1]["l"] if sc.direction == "LONG"
                              else bars[-1]["h"])
-                sc.plan = pl.build_plan(sc, stake=stake, swing_ref=swing)
+                # max_leverage: operator cap (None = planner default, i.e.
+                # the venue maximum — identical behaviour for every caller
+                # that does not thread a cap).
+                kw = ({"max_leverage": max_leverage}
+                      if max_leverage is not None else {})
+                sc.plan = pl.build_plan(sc, stake=stake, swing_ref=swing,
+                                        **kw)
             except (ValueError, IndexError):
                 sc.plan = None
         return sc
@@ -504,7 +510,7 @@ def analyse_one(sym, coin, detail, tk_row, stake, errors=None,
 
 def score_universe(ranked, det, tk, stake, analyse=None, errors=None,
                    stagger=STAGGER_S, max_workers=MAX_WORKERS,
-                   attach_plans=False):
+                   attach_plans=False, max_leverage=None):
     """Concurrent per-coin fetch+score (spec SS3).
 
     12 workers; the first wave of submissions is staggered 100ms apart so
@@ -526,6 +532,9 @@ def score_universe(ranked, det, tk, stake, analyse=None, errors=None,
             kw = {"errors": errors}
             if _takes_plans:
                 kw["attach_plans"] = attach_plans
+                if max_leverage is not None:
+                    # Scan-time attached plans honour the operator's cap.
+                    kw["max_leverage"] = max_leverage
             futs.append(ex.submit(analyse, sym, coin, det.get(sym, {}),
                                   tk.get(sym, {}), stake, **kw))
             if i < max_workers and stagger:

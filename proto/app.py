@@ -110,7 +110,10 @@ class App:
                                errors=errors,
                                stagger=scanmod.STAGGER_S,
                                max_workers=scanmod.MAX_WORKERS,
-                               attach_plans=True)
+                               attach_plans=True,
+                               max_leverage=getattr(
+                                   self.args, "leverage_cap",
+                                   pl.MAX_LEVERAGE))
 
         # Log: flagged rows AND shadow rows (vetoed / sub-threshold). SS6.1a.
         # Flagged = stake-aware actionable AND above threshold (selective,
@@ -175,7 +178,10 @@ class App:
             if swing is None:
                 swing = bars[-1]["l"] if card.direction == "LONG" else bars[-1]["h"]
             return pl.build_plan(card, stake=self.args.stake, swing_ref=swing,
-                                 funding_rate=card.funding_rate), bars
+                                 funding_rate=card.funding_rate,
+                                 max_leverage=getattr(
+                                     self.args, "leverage_cap",
+                                     pl.MAX_LEVERAGE)), bars
         except Exception as e:
             return None, str(e)
 

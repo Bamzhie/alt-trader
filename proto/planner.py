@@ -130,12 +130,14 @@ def copy_counter_trend(sc, plan):
 
 def build_plan(sc, stake, risk_per_trade_pct=2.0, swing_ref=None,
                fee_pct=TAKER_FEE_PCT, funding_rate=0.0, funding_cap=0.0018,
-               hold_hours=24):
+               hold_hours=24, max_leverage=MAX_LEVERAGE):
     """
     Assemble a full plan from a Scorecard.
 
     sc must carry: coin, direction, price, funding_rate, min_notional.
     swing_ref: structural stop reference (swing low for LONG, high for SHORT).
+    max_leverage: operator cap threaded to compute_leverage (default the
+    venue maximum, i.e. today's behaviour exactly — cap plumbing only).
     """
     if not swing_ref:
         p = Plan(coin=sc.coin, direction=sc.direction,
@@ -147,7 +149,8 @@ def build_plan(sc, stake, risk_per_trade_pct=2.0, swing_ref=None,
     entry_mid = (lv["entry_low"] + lv["entry_high"]) / 2
     stop_distance_pct = abs(entry_mid - lv["stop"]) / entry_mid * 100
 
-    lev = compute_leverage(stake, risk_per_trade_pct, stop_distance_pct)
+    lev = compute_leverage(stake, risk_per_trade_pct, stop_distance_pct,
+                           max_leverage=max_leverage)
     under_scaled = lev < MIN_LEVERAGE_FLOOR
 
     # Notional from risk budget: risk_$ = notional * stop_distance; cap by stake

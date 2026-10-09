@@ -161,5 +161,43 @@ p_none = pl.build_plan(sc("LONG", 100.0), stake=50.0, swing_ref=None)
 check("no stop ref -> invalid", not p_none.valid)
 check("no stop ref -> warns", any("structural stop" in w for w in p_none.warnings))
 
+print("\n=== leverage cap plumbing (task Q4, additive) ===")
+# tight stop: LONG at 100 with swing_ref 99 -> stop ~1% below entry, so the
+# physics bound (1/LIQ_BUFFER)/d = 2/0.01 = 200 allows far more than 50x and
+# only the operator cap can bind.
+cap_tight = sc("LONG", 100.0)
+p_cap50 = pl.build_plan(cap_tight, stake=50.0, swing_ref=99.0, max_leverage=50)
+p_cap_def = pl.build_plan(sc("LONG", 100.0), stake=50.0, swing_ref=99.0)
+p_cap10 = pl.build_plan(sc("LONG", 100.0), stake=50.0, swing_ref=99.0,
+                        max_leverage=10)
+check("cap 50: leverage == 50", p_cap50.leverage == 50, str(p_cap50.leverage))
+check("default (no cap arg) == cap 50",
+      p_cap_def.leverage == p_cap50.leverage,
+      f"default={p_cap_def.leverage} cap50={p_cap50.leverage}")
+check("cap 10: leverage <= 10", p_cap10.leverage <= 10, str(p_cap10.leverage))
+check("cap 10: leverage == 10 here (stop allows)", p_cap10.leverage == 10,
+      str(p_cap10.leverage))
+check("cap 10: same stop as uncapped plan",
+      p_cap10.stop == p_cap_def.stop,
+      f"capped={p_cap10.stop} uncapped={p_cap_def.stop}")
+check("cap 10: same entry band as uncapped plan",
+      p_cap10.entry_low == p_cap_def.entry_low)
+check("cap 10: same notional as uncapped plan (stake-bound, not cap-bound)",
+      abs(p_cap10.notional - p_cap_def.notional) < 1e-9,
+      f"capped={p_cap10.notional} uncapped={p_cap_def.notional}")
+
+# wide stop: physics already binds below both caps -> cap never LOOSENS.
+p_wide_def = pl.build_plan(sc("LONG", 100.0), stake=50.0, swing_ref=70.0)
+p_wide_10 = pl.build_plan(sc("LONG", 100.0), stake=50.0, swing_ref=70.0,
+                          max_leverage=10)
+_mid_w = (p_wide_def.entry_low + p_wide_def.entry_high) / 2
+check("wide stop: default leverage unchanged by cap plumbing",
+      p_wide_def.leverage == pl.compute_leverage(
+          50.0, 2.0, abs(_mid_w - p_wide_def.stop) / _mid_w * 100),
+      str(p_wide_def.leverage))
+check("wide stop: cap 10 does not raise leverage",
+      p_wide_10.leverage <= p_wide_def.leverage,
+      f"cap10={p_wide_10.leverage} default={p_wide_def.leverage}")
+
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)

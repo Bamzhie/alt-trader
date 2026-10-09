@@ -1,15 +1,17 @@
 """Design tokens + QSS theme for the ALT RADAR Qt port (PySide6 Widgets).
 
-Light readability-first language (decided with the operator: the dark
-terminal made analysis hard). Near-white surfaces, ink text, DISTINCT
-hues per element type so a glance separates direction, warnings, badges,
-and data: semantic LONG green / SHORT red kept as direction tints (never
-decoration), amber warnings, blue selection + links, gold-tier accents.
-Mono numerals in every data pane. Fusion is the base style; this file
-layers a QSS stylesheet and a light palette on top of it.
+Dark navy trading-terminal language (task Q4 mockup): deep navy app
+surround, lighter navy panels, hairline borders, bright ink text. The ONE
+accent is teal-green (#22c55e) — it fills the primary Scan button and marks
+LONG; SHORT is red (#ef4444); amber (#f59e0b) is reserved for UNVALIDATED /
+Watch / warnings; blue (#38bdf8) is links + info dots. These direction and
+status hues are SEMANTIC (never decoration). Mono numerals in every data
+pane. Fusion is the base style; this file layers a QSS stylesheet and a
+dark QPalette on top of it.
 
 No per-file hex outside this module — every color qtgui/app.py uses is a
-named constant here.
+named constant here. Contrast invariants (enforced by tests/test_qtgui.py):
+body text >= 7:1 on panels, muted >= 4.5:1, selection >= 4.5:1.
 
 The row-tag vocabulary (long / long_alt / short / short_alt / plain /
 vetoed / watch) is SHARED with gui/model.row_tags, which returns names
@@ -24,36 +26,49 @@ from gui.theme import (  # shared tag vocabulary with gui/model.row_tags
     TAG_PLAIN, TAG_PLAIN_ALT, TAG_VETOED, TAG_VETOED_ALT, TAG_WATCH,
 )
 
-# ---- palette (base + semantics): light, distinct, high-contrast ----
-WINDOW_BG = "#e9edf2"       # cool light grey-blue app surround
-SURFACE = "#ffffff"         # panel / table base
-SURFACE_ALT = "#f1f4f8"     # banded row
-HEADER_BG = "#dde4ec"       # table header + raised controls
-HEADER_HOVER = "#ccd6e2"
-BORDER = "#c3ccd8"
-BORDER_STRONG = "#9fabbd"
-TEXT = "#16202c"            # ink navy-black body text
-TEXT_DIM = "#334052"
-TEXT_MUTED = "#5d6b7e"
-SELECT_BG = "#1d4ed8"       # strong blue selection (white text on top)
+# ---- palette (base + semantics): dark navy, high-contrast ink ----
+WINDOW_BG = "#0a1428"       # app surround
+SURFACE = "#0f1e36"         # panel / table base
+SURFACE_ALT = "#0c1930"     # banded row (navy variant)
+HEADER_BG = "#16263f"       # table header + raised controls
+HEADER_HOVER = "#1d3355"
+BORDER = "#1e2f4d"
+BORDER_STRONG = "#2c4370"
+TEXT = "#e8eef7"            # bright ink body text (>= 7:1 on panels)
+TEXT_DIM = "#9fb0c7"        # secondary text (>= 4.5:1 everywhere)
+# NOTE (deviation, documented in the Q4 report): the mockup's #677790 reads
+# 3.7:1 on our panels — below the brief's own >= 4.5:1 muted floor — so the
+# muted token is lifted one step to #7c8ba3 (4.8:1 on SURFACE).
+TEXT_MUTED = "#7c8ba3"
+SELECT_BG = "#1e3a5f"       # selection (white text on top)
 SELECT_FG = "#ffffff"
-ACCENT = "#1d4ed8"          # THE accent — links, focus rings, primary actions
+ACCENT = "#22c55e"          # THE accent: primary Scan fill + links/focus
+ACCENT_FG = "#05200f"       # text on accent-filled buttons (dark on green)
 
-LONG_BG = "#d9f0de"         # distinct LONG green tint
-LONG_BG_ALT = "#c6e8cf"
-SHORT_BG = "#fbdede"        # distinct SHORT red tint
-SHORT_BG_ALT = "#f3c9c5"
-VETO_BG = "#eef0f3"         # neutral grey veto rows
-VETO_BG_ALT = "#e2e5ea"
-VETO_FG = "#5f6b7a"
-WATCH_FG = "#b45309"        # dark amber (contrast-safe on white)
-WARN_FG = "#b45309"
-ERROR_FG = "#b91c1c"
-READONLY_BG = "#fee2e2"
-READONLY_FG = "#b91c1c"
-TIER2_FG = "#92600a"        # bronze tier marker
-STATUS_MUTED_FG = "#5d6b7e"
-DETAIL_BG = "#ffffff"
+LONG_FG = "#22c55e"         # LONG arrow/text — semantic direction green
+SHORT_FG = "#ef4444"        # SHORT arrow/text — semantic direction red
+LONG_BG = "#10281f"         # LONG row tint (green over navy)
+LONG_BG_ALT = "#0d2119"
+SHORT_BG = "#241219"        # SHORT row tint (red over navy)
+SHORT_BG_ALT = "#1f1015"
+VETO_BG = "#161f31"         # neutral navy veto rows
+VETO_BG_ALT = "#121a29"
+VETO_FG = "#8b9ab0"
+WATCH_FG = "#f59e0b"        # amber: Watch / UNVALIDATED / warnings
+WARN_FG = "#f59e0b"
+ERROR_FG = "#f87171"         # status/error red, lifted for ≥4.5:1 on SURFACE
+INFO_FG = "#38bdf8"         # links + info dots
+READONLY_BG = "#4c1115"     # red READ-ONLY badge
+READONLY_FG = "#fca5a5"
+TIER2_FG = "#f59e0b"        # amber tier badge
+TIER2_BG = "#3a2705"
+STATUS_MUTED_FG = "#9fb0c7"
+DETAIL_BG = "#0c192d"       # analyst-note box
+TILE_BG = "#122340"         # stat tiles in the detail pane
+RAIL_BG = "#081020"         # left icon rail
+RAIL_ACTIVE = "#1e3a5f"
+PILL_UNVALIDATED_BG = "#432f0a"   # FLAGS-cell amber pill background
+PILL_UNVALIDATED_FG = "#fbbf24"
 
 # ---- type + rhythm (mirrors gui/theme.py's role names) ----
 ROW_HEIGHT = 26
@@ -94,6 +109,15 @@ def tag_foreground(tags):
         color = TAG_FG.get(tag)
         if color is not None:
             return color
+    return None
+
+
+def direction_foreground(direction):
+    """Arrow/text color for a card direction (semantic, never decoration)."""
+    if direction == "LONG":
+        return LONG_FG
+    if direction == "SHORT":
+        return SHORT_FG
     return None
 
 
@@ -145,8 +169,8 @@ def _qcolor(hexstr):
     return QColor(hexstr)
 
 
-def light_palette():
-    """Fusion-compatible light QPalette (base roles + disabled states)."""
+def dark_palette():
+    """Fusion-compatible dark QPalette (base roles + disabled states)."""
     p = QPalette()
     active = [
         (QPalette.ColorRole.Window, WINDOW_BG),
@@ -159,8 +183,8 @@ def light_palette():
         (QPalette.ColorRole.Button, HEADER_BG),
         (QPalette.ColorRole.ButtonText, TEXT),
         (QPalette.ColorRole.BrightText, TEXT),
-        (QPalette.ColorRole.Link, ACCENT),
-        (QPalette.ColorRole.LinkVisited, ACCENT),
+        (QPalette.ColorRole.Link, INFO_FG),
+        (QPalette.ColorRole.LinkVisited, INFO_FG),
         (QPalette.ColorRole.Highlight, SELECT_BG),
         (QPalette.ColorRole.HighlightedText, SELECT_FG),
         (QPalette.ColorRole.PlaceholderText, TEXT_MUTED),
@@ -190,10 +214,44 @@ QMainWindow, QDialog { background: %(WINDOW_BG)s; }
 QWidget { color: %(TEXT)s; }
 QLabel { color: %(TEXT)s; background: transparent; }
 #headerTitle { font-weight: 700; color: %(TEXT)s; }
+#headerSubtitle { color: %(TEXT_DIM)s; }
 #headerStats { color: %(TEXT_DIM)s; }
 #badgeReadOnly { background: %(READONLY_BG)s; color: %(READONLY_FG)s;
                  font-weight: 700; padding: 2px 7px; border-radius: 3px; }
-#badgeTier2 { color: %(TIER2_FG)s; padding: 2px 5px; }
+#badgeTier2 { background: %(TIER2_BG)s; color: %(TIER2_FG)s;
+              font-weight: 700; padding: 2px 6px; border-radius: 3px; }
+#badgeVenue { background: %(HEADER_BG)s; color: %(TEXT_DIM)s;
+              padding: 2px 8px; border-radius: 9px;
+              border: 1px solid %(BORDER)s; }
+#badgeVenueOk { color: %(LONG_FG)s; }
+#badgeVenueBad { color: %(ERROR_FG)s; }
+#badgeDirLong { background: %(LONG_BG)s; color: %(LONG_FG)s;
+                font-weight: 700; padding: 2px 8px; border-radius: 3px; }
+#badgeDirShort { background: %(SHORT_BG)s; color: %(SHORT_FG)s;
+                 font-weight: 700; padding: 2px 8px; border-radius: 3px; }
+#badgeDirNeutral { background: %(SURFACE_ALT)s; color: %(TEXT_DIM)s;
+                   font-weight: 700; padding: 2px 8px; border-radius: 3px; }
+#detailTitle { font-weight: 700; color: %(TEXT)s; }
+#detailSubtitle { color: %(TEXT_DIM)s; }
+#detailPrice { font-weight: 700; color: %(TEXT)s; }
+#detailChgUp { color: %(LONG_FG)s; font-weight: 700; }
+#detailChgDown { color: %(SHORT_FG)s; font-weight: 700; }
+#tileTitle { color: %(TEXT_MUTED)s; font-size: 9pt; }
+#tileValue { color: %(TEXT)s; font-weight: 600; }
+#kvKey { color: %(TEXT_DIM)s; }
+#sectionLabel { color: %(TEXT_MUTED)s; font-weight: 600; }
+#railButton { background: transparent; border: none; border-radius: 4px;
+              padding: 6px 2px; color: %(TEXT_DIM)s; }
+#railButton:hover { background: %(HEADER_HOVER)s; color: %(TEXT)s; }
+#railButton:checked { background: %(RAIL_ACTIVE)s; color: %(TEXT)s;
+                      font-weight: 700; }
+#btnPrimary { background: %(ACCENT)s; color: %(ACCENT_FG)s;
+              border: 1px solid %(ACCENT)s; border-radius: 3px;
+              padding: 4px 14px; font-weight: 700; }
+#btnPrimary:hover { background: %(LONG_FG)s; border-color: %(LONG_FG)s; }
+#btnPrimary:pressed { background: %(ACCENT)s; }
+#btnPrimary:disabled { background: %(HEADER_BG)s; color: %(TEXT_MUTED)s;
+                       border-color: %(BORDER_STRONG)s; }
 
 /* ---- grouped controls ---- */
 QGroupBox { background: %(SURFACE)s; border: 1px solid %(BORDER)s;
@@ -232,11 +290,12 @@ QComboBox QAbstractItemView { background: %(SURFACE_ALT)s;
 QTableWidget { background: %(SURFACE)s; alternate-background-color: %(SURFACE)s;
                border: 1px solid %(BORDER)s; gridline-color: %(BORDER)s;
                outline: 0; }
-QTableWidget::item { padding: 0 5px; border: none; }
+QTableWidget::item { padding: 0 5px; border: none;
+                     border-bottom: 1px solid %(BORDER)s; }
 QTableWidget::item:selected { background: %(SELECT_BG)s;
                               color: %(SELECT_FG)s; }
 QTableWidget:focus { border-color: %(BORDER_STRONG)s; }
-QHeaderView::section { background: %(HEADER_BG)s; color: %(TEXT_MUTED)s;
+QHeaderView::section { background: %(HEADER_BG)s; color: %(TEXT_DIM)s;
     border: none; border-right: 1px solid %(BORDER)s;
     border-bottom: 1px solid %(BORDER)s; padding: 5px 6px;
     font-weight: 600; }
@@ -246,10 +305,30 @@ QHeaderView::section:checked { background: %(SELECT_BG)s;
                                color: %(SELECT_FG)s; }
 QTableCornerButton::section { background: %(HEADER_BG)s; border: none; }
 
-/* ---- detail pane ---- */
-QTextEdit { background: %(DETAIL_BG)s; border: 1px solid %(BORDER)s;
-            selection-background-color: %(SELECT_BG)s;
-            selection-color: %(SELECT_FG)s; }
+/* ---- detail pane + tiles ---- */
+QTextEdit, QPlainTextEdit { background: %(DETAIL_BG)s;
+    border: 1px solid %(BORDER)s;
+    selection-background-color: %(SELECT_BG)s;
+    selection-color: %(SELECT_FG)s; }
+QFrame#tile { background: %(TILE_BG)s; border: 1px solid %(BORDER)s;
+              border-radius: 4px; }
+
+/* ---- tabs (outcomes dock) ---- */
+QTabWidget::pane { border: 1px solid %(BORDER)s; background: %(SURFACE)s;
+                   top: -1px; }
+QTabBar::tab { background: %(SURFACE_ALT)s; color: %(TEXT_DIM)s;
+    border: 1px solid %(BORDER)s; border-bottom: none;
+    padding: 3px 12px; margin-right: 1px; }
+QTabBar::tab:selected { background: %(SURFACE)s; color: %(TEXT)s;
+                        font-weight: 600; }
+QTabBar::tab:hover { background: %(HEADER_HOVER)s; color: %(TEXT)s; }
+
+/* ---- recent-events list (colored dots are item text) ---- */
+QListWidget { background: %(SURFACE)s; border: 1px solid %(BORDER)s;
+              outline: 0; }
+QListWidget::item { padding: 2px 5px; border-bottom: 1px solid %(BORDER)s; }
+QListWidget::item:selected { background: %(SELECT_BG)s;
+                             color: %(SELECT_FG)s; }
 
 /* ---- status bar ---- */
 QStatusBar { background: %(SURFACE)s; border-top: 1px solid %(BORDER)s; }
@@ -279,25 +358,32 @@ QScrollBar::add-page, QScrollBar::sub-page { background: %(SURFACE)s; }
 QToolTip { background: %(HEADER_BG)s; color: %(SELECT_FG)s;
            border: 1px solid %(BORDER_STRONG)s; padding: 4px 7px; }
 QSplitter { background: %(WINDOW_BG)s; }
+QScrollArea { background: transparent; border: none; }
 """ % {
     "WINDOW_BG": WINDOW_BG, "SURFACE": SURFACE, "SURFACE_ALT": SURFACE_ALT,
     "HEADER_BG": HEADER_BG, "HEADER_HOVER": HEADER_HOVER,
     "BORDER": BORDER, "BORDER_STRONG": BORDER_STRONG,
     "TEXT": TEXT, "TEXT_DIM": TEXT_DIM, "TEXT_MUTED": TEXT_MUTED,
     "SELECT_BG": SELECT_BG, "SELECT_FG": SELECT_FG, "ACCENT": ACCENT,
+    "ACCENT_FG": ACCENT_FG, "LONG_FG": LONG_FG, "SHORT_FG": SHORT_FG,
+    "LONG_BG": LONG_BG, "SHORT_BG": SHORT_BG, "ERROR_FG": ERROR_FG,
     "READONLY_BG": READONLY_BG, "READONLY_FG": READONLY_FG,
-    "TIER2_FG": TIER2_FG, "DETAIL_BG": DETAIL_BG,
+    "TIER2_FG": TIER2_FG, "TIER2_BG": TIER2_BG, "DETAIL_BG": DETAIL_BG,
+    "TILE_BG": TILE_BG, "RAIL_BG": RAIL_BG, "RAIL_ACTIVE": RAIL_ACTIVE,
+    "INFO_FG": INFO_FG,
+    "PILL_UNVALIDATED_BG": PILL_UNVALIDATED_BG,
+    "PILL_UNVALIDATED_FG": PILL_UNVALIDATED_FG,
 }
 
 
 def apply_theme(app):
-    """Install the light readability theme on a QApplication. Idempotent.
+    """Install the dark navy terminal theme on a QApplication. Idempotent.
 
     Fusion is the base style (predictable cross-platform metrics for the
     dense tables); the QSS + palette layer on top supply the look.
     """
     app.setStyle("Fusion")
-    app.setPalette(light_palette())
+    app.setPalette(dark_palette())
     app.setStyleSheet(QSS)
     app.setFont(ui_font())
     return True
