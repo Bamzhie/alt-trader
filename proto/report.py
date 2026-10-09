@@ -76,15 +76,47 @@ def format_report(stats):
     return "\n".join(L)
 
 
+def format_top20(days_stats):
+    """Daily top-20 review table: the 3–7 day analysis view.
+
+    One line per day: date, picks count, then per-horizon resolved + %won.
+    Days whose horizons haven't matured show 0 resolved (pending).
+    """
+    L = ["DAILY TOP-20 · flagged top 20 by score per UTC day"]
+    L.append(f"{'day':<12}{'picks':>6}"
+             + "".join(f"{h+':res/%w':>13}" for h in HORIZONS))
+    for d in days_stats:
+        cells = "".join(
+            f"{d['hits'][h]['resolved']:>7}"
+            f"{d['hits'][h]['pct']:>5.0f}%" for h in HORIZONS)
+        L.append(f"{d['day']:<12}{len(d['picks']):>6}{cells}")
+        top3 = ", ".join(f"{p['coin']}({p['score']:.0f}{_darrow(p)})"
+                         for p in d["picks"][:3])
+        if top3:
+            L.append(f"  top: {top3}")
+    return "\n".join(L)
+
+
+def _darrow(p):
+    return {"LONG": "▲", "SHORT": "▼"}.get(p.get("direction"), "•")
+
+
 def main():
     ap = argparse.ArgumentParser(description="ALT RADAR signal hit-rate")
     ap.add_argument("--db", default="data/signals.db")
     ap.add_argument("--hours", type=float, default=24.0)
+    ap.add_argument("--top20", action="store_true",
+                    help="daily top-20 review instead of windowed hit-rate")
+    ap.add_argument("--days", type=int, default=7)
     args = ap.parse_args()
     from .store import Store
+    from . import picks as picks_mod
     store = Store(args.db)
     try:
-        print(format_report(signal_stats(store, args.hours)))
+        if args.top20:
+            print(format_top20(picks_mod.daily_top20(store, args.days)))
+        else:
+            print(format_report(signal_stats(store, args.hours)))
     finally:
         store.close()
 

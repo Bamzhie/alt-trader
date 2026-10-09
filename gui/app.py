@@ -27,6 +27,7 @@ from types import SimpleNamespace
 
 from proto import collector
 from proto import outcomes as outcomes_mod
+from proto import picks as picks_mod
 from proto import report as report_mod
 from proto import scan as scanmod
 from proto.app import App as ProtoApp
@@ -122,7 +123,13 @@ class Worker(threading.Thread):
                     "errors": dict(app.last_errors), "status": app.status,
                     "log_errors": app.log_errors,
                     "universe_error": app.universe_error,
-                    "stats": app.store.stats(), "elapsed": time.time() - t0}
+                    "stats": app.store.stats(), "elapsed": time.time() - t0,
+                    "digest": {
+                        "picks": picks_mod.top_picks(
+                            app.cards, job["stake"], job["log_threshold"]),
+                        "watch": picks_mod.watch_list(
+                            app.cards, job["stake"]),
+                        "new": picks_mod.new_listings(app.store)}}
         if cmd == "stats":
             return {"kind": "stats", "ok": True, "stats": app.store.stats(),
                     "outcome": model.outcome_summary(app.store),
@@ -233,6 +240,7 @@ class RadarGUI(tk.Tk):
         self.hit24 = report_mod.signal_stats(None, 24)
         self.selected_coin = None
         self._last_errors = {}          # {coin: reason} from the last scan
+        self.digest = {"picks": [], "watch": [], "new": []}
         self._plan_cache = {}           # coin -> {"plan": Plan|None, "err": str|None}
         self._plans_pending = set()
         self._busy = set()              # job kinds in flight
@@ -363,6 +371,107 @@ class RadarGUI(tk.Tk):
         ttk.Button(bar, text="Refresh stats",
                    command=lambda: self._submit("stats")).pack(
             side=tk.LEFT, padx=2)
+        sep()
+        ttk.Button(bar, text="★ Top 10",
+                   command=self._open_picks).pack(side=tk.LEFT, padx=2)
+        ttk.Button(bar, text="👁 Watch",
+                   command=self._open_watch).pack(side=tk.LEFT, padx=2)
+        ttk.Button(bar, text="+ New",
+                   command=self._open_new).pack(side=tk.LEFT, padx=2)
+
+    # ------------------------------------------------------ list modals
+    def _open_list_modal(self, title, columns, rows):
+        """Modal table window. Double-click/Enter jumps the main view.
+
+        `columns`: [(key, heading, width)]; `rows`: list of dicts with at
+        least "coin". Picking a row selects it in the main table (which
+        fetches its plan on the plan lane) and closes the modal.
+        """
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.geometry("620x420")
+        win.transient(self)
+        tree = ttk.Treeview(win, columns=[k for k, _, _ in columns],
+                            show="headings", height=18)
+        for key, heading, width in columns:
+            tree.heading(key, text=heading)
+            tree.column(key, width=width, anchor="center" if key != "coin"
+                        else "w")
+        for r in rows:
+            tree.insert("", tk.END, iid=r["coin"],
+                        values=[r.get(k, "") for k, _, _ in columns])
+        tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        def pick(_event=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            coin = sel[0]
+            if any(c.coin == coin for c in self.cards):
+                self.selected_coin = coin
+                self._ensure_plan(coin)
+                self._render_all()
+            else:
+                self._set_error(f"{coin} is not in the current table")
+                self._render_status()
+            win.destroy()
+
+        tree.bind("<Double-Button-1>", pick)
+        tree.bind("<Return>", pick)
+        ttk.Button(win, text="Open in main view (double-click works too)",
+                   command=lambda: pick()).pack(side=tk.BOTTOM, pady=(0, 8))
+        tree.focus_set()
+
+    def _fmt_ts(self, ts):
+        try:
+            return time.strftime("%m-%d %H:%M", time.localtime(float(ts)))
+        except (TypeError, ValueError):
+            return "?"
+
+    def _open_picks(self):
+        rows = [{"coin": c.coin, "dir": model.direction_arrow(c.direction),
+                 "score": f"{c.score:.1f}", "price": model.format_price(c.price),
+                 "lean": f"{c.lean:+.2f}"}
+                for c in self.digest.get("picks", [])]
+        if not rows:
+            self._set_error("no picks yet — run a scan first")
+            self._render_status()
+            return
+        self._open_list_modal(
+            "★ Top 10 picks — trade-now (actionable, above threshold)",
+            [("coin", "COIN", 130), ("dir", "DIR", 50),
+             ("score", "SCORE", 70), ("price", "PRICE", 110),
+             ("lean", "LEAN", 70)], rows)
+
+    def _open_watch(self):
+        rows = [{"coin": c.coin, "dir": model.direction_arrow(c.direction),
+                 "score": f"{c.score:.1f}",
+                 "min": (f"${c.min_notional:.2f}"
+                         if c.min_notional is not None else "unknown")}
+                for c in self.digest.get("watch", [])]
+        if not rows:
+            self._set_error("watch list empty — nothing stake-blocked")
+            self._render_status()
+            return
+        self._open_list_modal(
+            "👁 Watch — blocked only by stake (tradable as stake compounds)",
+            [("coin", "COIN", 130), ("dir", "DIR", 50),
+             ("score", "SCORE", 70), ("min", "MIN NOTIONAL", 140)], rows)
+
+    def _open_new(self):
+        rows = [{"coin": d["coin"], "seen": self._fmt_ts(d["first_seen"]),
+                 "score": (f"{d['score']:.1f}" if d["score"] is not None
+                           else "n/a"),
+                 "dir": {"LONG": "▲", "SHORT": "▼"}.get(d["direction"], "•")}
+                for d in self.digest.get("new", [])]
+        if not rows:
+            self._set_error("no new listings in the last 7 days")
+            self._render_status()
+            return
+        self._open_list_modal(
+            "+ New listings — first seen within 7 days, by latest score",
+            [("coin", "COIN", 130), ("seen", "FIRST SEEN", 110),
+             ("score", "SCORE", 70), ("dir", "DIR", 50)], rows)
 
     def _build_body(self):
         paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
@@ -692,6 +801,8 @@ class RadarGUI(tk.Tk):
         self.attempted = len(cards) + self.failed
         self._last_errors = dict(msg.get("errors") or {})
         self.scan_status = msg.get("status", "")
+        if msg.get("digest"):
+            self.digest = msg["digest"]
         uni_err = msg.get("universe_error")
         self.mexc_ok = self.universe > 0 and not uni_err
 

@@ -131,6 +131,13 @@ value. Nothing here ever crashes the app.
 | **Collect bars** | Downloads 5m bars for the **full** universe into `data/bars/*.csv.gz` (deduplicated). Feeds the 7-day outcome horizon, which cannot be resolved from REST alone | `collected 5m bars for N coins (+M new bars)` |
 | **Resolve outcomes** | Resolves pending signal outcomes (REST bars for 1h/4h/24h, collector bars for 7d) and refreshes the Outcomes panel | `resolved N pending outcome(s)` |
 | **Refresh stats** | Re-reads DB statistics and the outcome summary into the header and Outcomes panel | — |
+| **★ Top 10** | Opens the picks modal: current scan's top-10 actionable coins (above threshold, fits stake) — the trade-now list | `no picks yet — run a scan first` if empty |
+| **👁 Watch** | Opens the watch modal: best coins blocked only by stake (min notional > stake, or unknown) — tradable as stake compounds | `watch list empty` if none blocked |
+| **+ New** | Opens the new-listings modal: coins first logged within 7 days, by latest score | `no new listings in the last 7 days` if none |
+
+Double-click (or Enter) a modal row to jump it into the main view, which
+fetches its trade plan. The three lists refresh with every scan and live
+in the toolbar (not the crowded first page) as modal buttons by design.
 
 Notes:
 
@@ -269,10 +276,28 @@ SHORT: n=32 · avg signed return -0.31% · hit rate 47%
 * **avg signed return** — mean signed return (%) of those resolved rows.
 * A direction with no resolved rows shows `no resolved outcomes yet`.
 * `Resolve now` runs the resolver without waiting for anything else.
+* **24h flagged line** — `24h flagged: N signals · R resolved · won W /
+  lost L · P% won · avg ±X%`: the rolling hit-rate over flagged signals
+  logged in the last 24 hours. This is the number to watch through the
+  data-collection week.
 
 Bars come from REST for the short horizons and from the collector's
 `data/bars/*.csv.gz` files for `7d` (REST caps at 2000 bars, short of the
 2016 needed) — that is why **Collect bars** matters for 7d coverage.
+
+### The 3–7 day review: daily top-20
+
+The week's analysis focuses on **daily top-20 performance**:
+
+```bash
+python3 -m proto.report --top20 --days 7
+```
+
+Each UTC day contributes its top-20 flagged signals by score, with
+per-horizon resolved/won/% for whatever has matured so far. Read it as:
+which days' picks held up at 4h/24h, and whether any score band or
+direction separates from coin-flip after costs. Unresolved horizons show
+0 (pending) — a young day's 24h column fills in the next day's run.
 
 ## 11. Status bar & messages
 

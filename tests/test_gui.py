@@ -854,6 +854,41 @@ class TestWidgetLayer(unittest.TestCase):
         det = gui.detail.get("1.0", "end")
         self.assertNotIn("fetching", det)
 
+    # ---- 4c. picks / watch / new modals ---------------------------------
+    def test_segment_buttons(self):
+        import tkinter as tk
+        gui = self.make_gui()
+        for label in ("★ Top 10", "👁 Watch", "+ New"):
+            self.assertTrue(self.buttons(label), label)
+
+        # empty digest: guidance error, no modal
+        tops = [w for w in gui.winfo_children() if isinstance(w, tk.Toplevel)]
+        self.assertEqual(tops, [])
+        self.buttons("★ Top 10")[0].invoke()
+        self.assertIn("no picks yet", gui.error_text)
+        self.assertEqual([w for w in gui.winfo_children()
+                          if isinstance(w, tk.Toplevel)], [])
+
+        # seeded digest: modal opens with the coins
+        gui.digest = {
+            "picks": [mkcard("AAA", score=70)],
+            "watch": [mkcard("BBB", score=40, min_notional=5.0)],
+            "new": [{"coin": "CCC", "first_seen": 1_700_000_000,
+                     "score": 60.0, "direction": "SHORT", "ts": 1_700_000_000}],
+        }
+        for label, coin in (("★ Top 10", "AAA"), ("👁 Watch", "BBB"),
+                            ("+ New", "CCC")):
+            self.buttons(label)[0].invoke()
+            wins = [w for w in gui.winfo_children()
+                    if isinstance(w, tk.Toplevel)]
+            self.assertEqual(len(wins), 1, label)
+            kids = wins[0].winfo_children()
+            trees = [w for w in kids
+                     if w.winfo_class() == "Treeview"]
+            self.assertTrue(trees, label)
+            self.assertIn(coin, trees[0].get_children(), label)
+            wins[0].destroy()
+
     # ---- 5. toolbar validation --------------------------------------------
     def test_stake_and_threshold_apply_validation(self):
         gui = self.make_gui()
