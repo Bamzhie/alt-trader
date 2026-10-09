@@ -81,10 +81,12 @@ def format_plan_hits(store):
     p = store.plan_stats() if store is not None else None
     if not p or not p["planned"]:
         return "plans: none resolved yet (logged plans resolve as bars arrive)"
-    return (f"plans: {p['planned']} resolved · stop hit {p['stop_hit']} "
-            f"({p['stop_pct']:.0f}%) · TP1 hit {p['tp1_hit']} "
-            f"({p['tp1_pct']:.0f}%) · TP2 hit {p['tp2_hit']} "
-            f"({p['tp2_pct']:.0f}%)")
+    return (f"plans: {p['planned']} watched (terminal {p['terminal']}) · "
+            f"stop hit {p['stop_hit']} ({p['stop_pct']:.0f}%) · "
+            f"TP1 hit {p['tp1_hit']} ({p['tp1_pct']:.0f}%) · "
+            f"TP2 hit {p['tp2_hit']} ({p['tp2_pct']:.0f}%) · "
+            f"finished-trade stop {p['t_stop_pct']:.0f}% / "
+            f"TP1 {p['t_tp1_pct']:.0f}% / TP2 {p['t_tp2_pct']:.0f}%")
 
 
 def format_top20(days_stats):

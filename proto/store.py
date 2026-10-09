@@ -210,7 +210,10 @@ class Store:
 
         Terminal = stop touched or TP2 touched (the trade is over). Rows
         with only TP1 (or nothing yet) stay in the set so later runs with
-        more bars keep resolving them. Ordered oldest-first.
+        more bars keep resolving them. Ordered least-recently-examined
+        first (unexamined first): with a LIMIT cap, a large unterminated
+        set advances every run instead of reselecting the same oldest rows
+        forever. Then oldest signal first within the same examined state.
         """
         return list(self.conn.execute(
             """SELECT p.signal_id, s.coin, s.direction, s.price, s.ts,
@@ -220,7 +223,8 @@ class Store:
                WHERE s.flagged = 1
                  AND (o.signal_id IS NULL
                       OR (o.stop_hit = 0 AND o.tp2_hit = 0))
-               ORDER BY s.ts ASC LIMIT ?""", (limit,)).fetchall())
+               ORDER BY o.resolved_at ASC, s.ts ASC LIMIT ?""",
+            (limit,)).fetchall())
 
     def log_plan_outcome(self, signal_id, stop_hit, tp1_hit, tp2_hit,
                          bars_to_stop, bars_to_tp1, bars_to_tp2,
@@ -237,19 +241,35 @@ class Store:
         self.conn.commit()
 
     def plan_stats(self):
-        """Stop/TP1/TP2 hit counts over resolved planned signals."""
+        """Stop/TP1/TP2 hit counts over resolved planned signals.
+
+        Two cohorts, because a young plan with untouched levels is pending,
+        not a miss: "all rows" is the to-date touch rate (moves as bars
+        arrive); "terminal" (stop touched OR TP2 touched — the trade is
+        over) is the finished-trade rate. Both are reported; neither is
+        presented as a final win rate while live rows dominate.
+        """
         rows = self.conn.execute(
             "SELECT stop_hit, tp1_hit, tp2_hit FROM plan_outcome").fetchall()
         n = len(rows)
+        base = {"planned": 0, "stop_hit": 0, "tp1_hit": 0, "tp2_hit": 0,
+                "stop_pct": 0.0, "tp1_pct": 0.0, "tp2_pct": 0.0,
+                "terminal": 0, "t_stop_pct": 0.0, "t_tp1_pct": 0.0,
+                "t_tp2_pct": 0.0}
         if not n:
-            return {"planned": 0, "stop_hit": 0, "tp1_hit": 0, "tp2_hit": 0,
-                    "stop_pct": 0.0, "tp1_pct": 0.0, "tp2_pct": 0.0}
+            return base
         sh = sum(r[0] for r in rows)
         t1 = sum(r[1] for r in rows)
         t2 = sum(r[2] for r in rows)
-        return {"planned": n, "stop_hit": sh, "tp1_hit": t1, "tp2_hit": t2,
-                "stop_pct": 100.0 * sh / n, "tp1_pct": 100.0 * t1 / n,
-                "tp2_pct": 100.0 * t2 / n}
+        term = [r for r in rows if r[0] or r[2]]
+        nt = len(term)
+        out = {"planned": n, "stop_hit": sh, "tp1_hit": t1, "tp2_hit": t2,
+               "stop_pct": 100.0 * sh / n, "tp1_pct": 100.0 * t1 / n,
+               "tp2_pct": 100.0 * t2 / n, "terminal": nt,
+               "t_stop_pct": 100.0 * sum(r[0] for r in term) / nt if nt else 0.0,
+               "t_tp1_pct": 100.0 * sum(r[1] for r in term) / nt if nt else 0.0,
+               "t_tp2_pct": 100.0 * sum(r[2] for r in term) / nt if nt else 0.0}
+        return out
 
     def count(self, flagged=None):
         if flagged is None:

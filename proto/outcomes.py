@@ -39,14 +39,18 @@ def plan_touches(direction, stop, tp1, tp2, fut):
             stop_hit = b["h"] >= stop
             t1 = b["l"] <= tp1
             t2 = b["l"] <= tp2
-        if stop_hit and touch["stop"] is None:
-            touch["stop"] = i
-        if not stop_hit:
-            if t1 and touch["tp1"] is None:
-                touch["tp1"] = i
-            if t2 and touch["tp2"] is None:
-                touch["tp2"] = i
-        if touch["stop"] is not None and touch["tp2"] is not None:
+        if stop_hit:
+            # Terminal: the trade is over. Targets hit on EARLIER bars stay
+            # recorded; targets on this or later bars never happened to a
+            # stopped-out position and must not count.
+            if touch["stop"] is None:
+                touch["stop"] = i
+            break
+        if t1 and touch["tp1"] is None:
+            touch["tp1"] = i
+        if t2 and touch["tp2"] is None:
+            touch["tp2"] = i
+        if touch["tp2"] is not None:
             break
     return touch
 
@@ -72,19 +76,26 @@ def resolve_plans(store, symbol_map, data_dir="data/bars"):
         except Exception:
             col = None
         fut_col = [b for b in (col or []) if b["ts"] > ts]
-        bars = None
-        if fut_col:
-            bars = fut_col
-        else:
+        # Gap fill: collection may have started AFTER the signal, leaving
+        # early touches invisible to collector bars alone. If the local
+        # file's earliest bar postdates the signal by more than one 5m
+        # step, merge REST bars for the missing head (REST covers ~7d
+        # back). Collector wins timestamp ties.
+        bars = list(fut_col)
+        col_starts_late = bool(col) and min(b["ts"] for b in col) > ts + 300
+        if not fut_col or col_starts_late:
             if sym not in rest_cache:
                 try:
                     rest_cache[sym] = mexc.klines(sym, "5m",
                                                  limit=REST_MAX_BARS)
                 except Exception:
                     rest_cache[sym] = None
-            bars = rest_cache[sym]
-            if bars:
-                bars = [b for b in bars if b["ts"] > ts]
+            rest_fut = [b for b in (rest_cache[sym] or []) if b["ts"] > ts]
+            if rest_fut:
+                seen = {b["ts"] for b in bars}
+                bars = sorted(bars + [b for b in rest_fut
+                                      if b["ts"] not in seen],
+                              key=lambda b: b["ts"])
         if not bars:
             continue
         touch = plan_touches(direction, stop, tp1, tp2, bars)

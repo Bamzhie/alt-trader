@@ -1091,10 +1091,11 @@ class RadarGUI(tk.Tk):
         try:
             ps = getattr(self, "plan_stats", None) or {"planned": 0}
             if ps.get("planned"):
-                lines.append(f"plans live: {ps['planned']} resolved · stop "
+                lines.append(f"plans live: {ps['planned']} watched · stop "
                              f"{ps['stop_hit']} ({ps['stop_pct']:.0f}%) · TP1 "
                              f"{ps['tp1_hit']} ({ps['tp1_pct']:.0f}%) · TP2 "
-                             f"{ps['tp2_hit']} ({ps['tp2_pct']:.0f}%)")
+                             f"{ps['tp2_hit']} ({ps['tp2_pct']:.0f}%) · "
+                             f"terminal {ps.get('terminal', 0)}")
             else:
                 lines.append("plans: none resolved yet")
         except Exception:

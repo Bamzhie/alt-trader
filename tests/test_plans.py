@@ -32,8 +32,16 @@ bars = [bar(1, 100, 101, 99, 100.5), bar(2, 100.5, 103, 100, 102),
         bar(5, 110, 112, 109, 111)]
 t = outmod.plan_touches("LONG", 95, 110, 120, bars)
 check("stop first at bar 3", t["stop"] == 3, str(t))
-check("tp1 at bar 4", t["tp1"] == 4, str(t))
+check("post-stop TP1 does NOT count (trade was over)",
+      t["tp1"] is None, str(t))
 check("tp2 untouched -> None", t["tp2"] is None, str(t))
+
+# TP1 hit BEFORE the stop stays recorded; the walk then terminates.
+early = [bar(1, 100, 101, 99, 100.5), bar(2, 100.5, 111, 100, 110),
+         bar(3, 110, 111, 94, 100)]
+t0 = outmod.plan_touches("LONG", 95, 110, 120, early)
+check("pre-stop TP1 preserved, stop terminates",
+      t0 == {"stop": 3, "tp1": 2, "tp2": None}, str(t0))
 
 # same bar touches stop AND target -> stop wins (conservative)
 both = [bar(1, 100, 115, 90, 105)]
@@ -79,6 +87,9 @@ check("stats count stop+tp1, not tp2",
       st["planned"] == 1 and st["stop_hit"] == 1 and st["tp1_hit"] == 1
       and st["tp2_hit"] == 0, str(st))
 check("percents", st["stop_pct"] == 100.0 and st["tp2_pct"] == 0.0, str(st))
+check("terminal cohort: 1 finished trade",
+      st["terminal"] == 1 and st["t_stop_pct"] == 100.0
+      and st["t_tp1_pct"] == 100.0, str(st))
 
 sid2 = 8
 store.conn.execute(
@@ -91,6 +102,17 @@ store.log_plan_outcome(sid2, False, True, False, None, 5, None, 50)
 check("tp1-only stays pending (stop still possible)",
       [r[0] for r in store.planned()] == [sid2],
       str(store.planned()))
+store.log_plan_outcome(sid2, False, False, False, None, None, None, 5)
+sid3 = 9
+store.conn.execute(
+    "INSERT INTO signal_log (id, ts, coin, flagged, direction, price)"
+    " VALUES (?,?,?,?,?,?)", (sid3, 1_700_000_200, "Z", 1, "LONG", 10.0))
+store.conn.commit()
+store.log_plan(sid3, pl.Plan(coin="Z", direction="LONG", stop=9.0,
+                             tp1=11.0, tp2=12.0))
+first = store.planned()[0][0]
+check("never-examined plan advances ahead of re-examined one",
+      first == sid3, str([r[0] for r in store.planned()]))
 store.close()
 
 print("\n=== scan attaches score-consistent plans (offline venue) ===")
@@ -151,6 +173,33 @@ check("tp1 hit at bar 3, no stop",
       row == (0, 1, 0, 3, 5), str(row))
 check("tp1-only stays pending", [r[0] for r in s2.planned()] == [21])
 s2.close()
+
+print("\n=== collector gap filled from REST ===")
+import proto.mexc as mexmod
+tmp3 = tempfile.mkdtemp()
+s3 = Store(os.path.join(tmp3, "g.db"))
+s3.conn.execute(
+    "INSERT INTO signal_log (id, ts, coin, flagged, direction, price)"
+    " VALUES (?,?,?,?,?,?)", (31, 1000, "G", 1, "LONG", 100.0))
+s3.conn.commit()
+s3.log_plan(31, pl.Plan(coin="G", direction="LONG", stop=95.0, tp1=200.0,
+                        tp2=300.0))
+# collector starts LATE (ts 5000+): the bar-1 stop touch lives only in REST
+late_col = [bar(5000 + i, 100 + i, 102 + i, 99 + i, 101 + i) for i in range(5)]
+early_rest = [bar(1001, 100, 101, 90, 99)]   # stop touch at bar 1
+orig_read2, orig_kl = colmod.read_bars, mexmod.klines
+colmod.read_bars = lambda data_dir, coin: list(late_col)
+mexmod.klines = lambda sym, interval="5m", limit=2000: list(early_rest)
+try:
+    n = outmod.resolve_plans(s3, {"G": "G_USDT"})
+finally:
+    colmod.read_bars, mexmod.klines = orig_read2, orig_kl
+row = s3.conn.execute(
+    "SELECT stop_hit, tp1_hit, bars_to_stop FROM plan_outcome"
+    " WHERE signal_id=31").fetchone()
+check("gap-filled stop found at bar 1", n == 1 and tuple(row) == (1, 0, 1),
+      (n, row))
+s3.close()
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)
