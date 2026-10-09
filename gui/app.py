@@ -837,12 +837,15 @@ class RadarGUI(tk.Tk):
     def _render_status(self):
         self.var_activity.set(f"activity: {self.activity}")
         self.var_failed.set(f"failed {self.failed}/{self.attempted} of last scan")
+        # BUG FIX (G2): lbl_statusline is bound to var_statusline, and a Label
+        # ignores configure(text=...) while a textvariable is active — the
+        # message must be written through the variable to be visible at all.
         if self.error_text:
-            self.lbl_statusline.configure(foreground=COLOR_ERROR,
-                                          text=self.error_text)
+            self.lbl_statusline.configure(foreground=COLOR_ERROR)
+            self.var_statusline.set(self.error_text)
         else:
-            self.lbl_statusline.configure(foreground="#555555",
-                                          text=self.scan_status)
+            self.lbl_statusline.configure(foreground="#555555")
+            self.var_statusline.set(self.scan_status)
 
     # ------------------------------------------------------------- test seam
     def set_cards(self, cards, status="cards loaded (no scan)"):
