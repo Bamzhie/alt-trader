@@ -528,3 +528,74 @@ rather than fired as one burst.
 **Can I trust the table after a failed scan?** Yes — a failed scan keeps
 the previous table on screen (the status bar says so in red) rather than
 clearing it.
+
+## Episode measurement (opt-in)
+
+Episode measurement is a **separate, forward-only** measurement of flagged
+opportunities. It never changes scores, ranks, flags, vetoes or plan geometry,
+and it never places an order or touches credentials. The interactive ranked
+scan and its reports are untouched; episode metrics are shown separately from
+the legacy scan-observation numbers.
+
+**The unit is an episode, not a scan.** Repeated scans of one sustained setup
+belong to one episode. One episode has exactly one frozen plan, taken from its
+first qualifying observation and never improved later. An opposite-direction
+observation closes the episode and starts a new one. A quiet stretch of 60
+*observed* minutes closes it as `REARM_CONFIRMED`; a qualifying observation in
+that window cancels the re-arm. An observation gap over 15 minutes closes it as
+`COVERAGE_LOST`.
+
+**Observations have three classes.** `QUALIFYING` (flagged, direction set,
+data clean), `NON_QUALIFYING` (not flagged, data clean) and `UNKNOWN` (fetch
+failed or data degraded). `UNKNOWN` never refreshes an episode, never advances
+the re-arm timer and never hides a coverage gap — a failed fetch is unknown,
+not quiet.
+
+**Episode creation is disabled until you enable it.** The measurement
+scheduler records cadence for every eligible coin (independent of the top-N
+rotation). Episodes start only after you explicitly enable the measurement
+epoch, and only when calibration passes: p95 successful-observation gaps
+≤ 10 minutes and p99 ≤ 15 minutes. Set the epoch only after the F-01
+forming-candle fix and the closed-bar collector are deployed, so partial
+pre-fix bars can never be measured.
+
+```bash
+# read-only status: cadence, calibration, epoch
+python3 -m proto.daemon --db data/signals.db --measure-status --no-scan
+
+# explicit operator action (refused until calibration passes)
+python3 -m proto.daemon --db data/signals.db \
+    --enable-measurement-epoch --no-scan
+```
+
+The epoch is stored as `episode_epoch_ts` in `meta`, is never set
+automatically on startup, and once set it never moves — the cohort boundary is
+immutable. Only observations at or after it can create or join an episode.
+
+**Known limitations, stated plainly:**
+
+- **No net P&L, net win rate or simulated trade return is reported.** There is
+  no approved exit policy, so those numbers would be fiction. Terminal stop /
+  TP2 / expiry rates are shown over terminal *filled* plans, with the
+  denominator always stated.
+- **Funding is an estimate** unless funding actually incurred during an
+  episode is recorded; the funding rate at signal time alone cannot establish
+  realised funding cost.
+- **Cost model is `v0.1.0-unstable`**: 0.05% taker per side, slippage unset.
+- **No backfill.** Legacy rows are never turned into episodes; historical
+  episodes are not synthesised. Legacy outcome and plan semantics stay frozen.
+- **Every outcome needs closed, valid, complete 5-minute bars.** Unresolved
+  gaps stay pending while recoverable (six days), then become unavailable.
+  They are never zero-filled.
+
+**Where does my data live?** Everything above lives in the same
+`data/signals.db`, in additive tables (`signal_episode`, `episode_observation`,
+`episode_cursor`, `episode_plan`, `episode_outcome`, `episode_horizon`) and
+additive nullable columns on `signal_log`. Legacy rows keep their meaning and
+their `flag_version`; a legacy-only database opens unchanged and safely.
+
+**Configuration is one config per measurement DB.** Stake, log threshold and
+leverage cap are versioned into a `config_hash`. Mixed configs are tolerated
+and reported as separate cohorts, never merged. GUI and daemon logging the
+same coin under one config is safe: ordering and late-observation rules
+prevent duplicate open episodes.

@@ -51,6 +51,13 @@ def main():
     ap.add_argument("--no-scan", action="store_true",
                     help="skip scan cycles: collector + resolver only (use "
                          "alongside a GUI that already logs signals)")
+    ap.add_argument("--measure-status", action="store_true",
+                    help="print measurement cadence/calibration/epoch status "
+                         "and exit (read-only; never enables the epoch)")
+    ap.add_argument("--enable-measurement-epoch", action="store_true",
+                    help="EXPLICIT operator action: enable episode creation "
+                         "after calibration passes. Refused while calibration "
+                         "fails, and never moves an epoch already set.")
     args = ap.parse_args()
 
     app_args = SimpleNamespace(
@@ -65,6 +72,39 @@ def main():
     measure_cfg = measuremod.measurement_config(
         args.stake, args.log_threshold,
         getattr(args, "leverage_cap", None))
+
+    # --- read-only status / explicit epoch activation (Task 6) ----------
+    # Both run before the daemon loop and exit. Epoch activation is an
+    # explicit operator action only: it is refused while calibration fails
+    # and can never move an epoch that is already set (spec §12).
+    if args.measure_status or args.enable_measurement_epoch:
+        stats = measuremod.cadence_stats(app.store)
+        cal = stats["calibration"]
+        epoch = measuremod.epoch_ts(app.store)
+        print(f"measurement status: coins {stats['coins']} "
+              f"attempts {stats['attempts']} "
+              f"(fail {stats['failures']} degraded {stats['degraded']})")
+        print(f"  observation gaps: p50 {stats['gap_p50_s']}s "
+              f"p95 {stats['gap_p95_s']}s p99 {stats['gap_p99_s']}s "
+              f"(limits p95<=600s p99<=900s)")
+        print(f"  calibration: {'PASS' if cal['pass'] else 'FAIL'}")
+        if epoch is None:
+            print("  epoch: UNSET (episode creation disabled)")
+        else:
+            import datetime as _dt
+            print(f"  epoch: SET at {epoch} "
+                  f"({_dt.datetime.fromtimestamp(epoch).isoformat()})")
+        if args.enable_measurement_epoch:
+            if measuremod.enable_epoch(app.store, time.time()):
+                print("  epoch ENABLED: episode creation is now active.")
+            elif epoch is not None:
+                print("  epoch already set; left unchanged (immutable).")
+            else:
+                print("  epoch NOT enabled: calibration has not passed. Fix "
+                      "the scheduler/universe and re-run calibration.")
+        app.store.close()
+        return
+
     run_id = f"{os.getpid()}-{int(time.time())}"
     n = 0
     print(f"daemon: stake ${args.stake:g} coins {args.coins} "

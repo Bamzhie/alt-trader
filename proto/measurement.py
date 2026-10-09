@@ -320,6 +320,13 @@ def process_observation(store, event: ObservationEvent, plan=None,
     conn = store.conn
     now = event.obs_ts
 
+    # NOTE: the epoch gate (spec §12) is enforced by the production entry
+    # point run_cycle(), which only feeds QUALIFYING observations at or after
+    # the epoch into this function. It deliberately does NOT live here: this
+    # is the lifecycle primitive, and gating it would make the lifecycle
+    # untestable offline and silently drop observations the calibration
+    # journal needs.
+
     # BEGIN IMMEDIATE: serialise concurrent writers for this coin/config so
     # two processes cannot both create an OPEN episode and both pass the
     # unique index (the loser must be forced to see the winner's row).
