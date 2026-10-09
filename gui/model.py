@@ -164,6 +164,27 @@ def split_vetoed(cards):
     return ranked, vetoed
 
 
+def row_tags(direction, index, watch=False, vetoed=False):
+    """Treeview tags for one row: direction tint x even/odd band.
+
+    Pure (no Tk): returns tag names defined in gui/theme.py. Banding alternates
+    strict even/odd by visible index; WATCH layers as foreground-only on top.
+    """
+    from gui import theme as _theme
+    band = "_alt" if index % 2 == 0 else ""
+    if vetoed:
+        tags = [_theme.TAG_VETOED + band]
+    elif direction == "LONG":
+        tags = [_theme.TAG_LONG + band]
+    elif direction == "SHORT":
+        tags = [_theme.TAG_SHORT + band]
+    else:
+        tags = [_theme.TAG_PLAIN + band]
+    if watch:
+        tags.append(_theme.TAG_WATCH)
+    return tuple(tags)
+
+
 def snapshot_cards(rows):
     """Rebuild scorecards from Store.latest_rows() dicts (instant launch).
 

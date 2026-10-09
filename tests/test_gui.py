@@ -266,6 +266,39 @@ class TestFilterCards(unittest.TestCase):
         self.assertEqual(model.filter_cards([], "long"), [])
 
 
+class TestRowTags(unittest.TestCase):
+    def test_direction_band_watch_combinations(self):
+        self.assertEqual(model.row_tags("LONG", 1), ("long",))
+        self.assertEqual(model.row_tags("LONG", 2), ("long_alt",))
+        self.assertEqual(model.row_tags("SHORT", 3), ("short",))
+        self.assertEqual(model.row_tags("SHORT", 4), ("short_alt",))
+        self.assertEqual(model.row_tags("NEUTRAL", 1), ("plain",))
+        self.assertEqual(model.row_tags("NEUTRAL", 2), ("plain_alt",))
+        self.assertEqual(model.row_tags("LONG", 1, watch=True),
+                         ("long", "watch"))
+        self.assertEqual(model.row_tags("LONG", 1, vetoed=True), ("vetoed",))
+        self.assertEqual(model.row_tags("SHORT", 2, vetoed=True),
+                         ("vetoed_alt",))
+
+    def test_tags_resolve_to_backgrounds(self):
+        from gui import theme
+        for tags in (model.row_tags("LONG", 1), model.row_tags("SHORT", 2),
+                     model.row_tags("NEUTRAL", 1), model.row_tags("X", 2),
+                     model.row_tags("LONG", 1, vetoed=True)):
+            self.assertIn(tags[0], theme.TAG_BACKGROUNDS, tags)
+
+
+class TestNoHardcodedColors(unittest.TestCase):
+    def test_app_and_model_use_tokens_only(self):
+        import re
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for name in ("gui/app.py", "gui/model.py"):
+            with open(os.path.join(here, name)) as f:
+                src = f.read()
+            hits = re.findall(r"#[0-9a-fA-F]{6}\b", src)
+            self.assertEqual(hits, [], f"{name}: {hits}")
+
+
 class TestFilterSearch(unittest.TestCase):
     def setUp(self):
         self.cards = [mkcard("QNT"), mkcard("QUANTA"), mkcard("BTC")]
@@ -758,8 +791,11 @@ class TestWidgetLayer(unittest.TestCase):
         self.assertEqual(gui.tree.item("BBB", "values"),
                          ("2", "▼", "BBB", "0.000012", "-1.5%", "$600K", "-0.0200%",
                           "n/a", "-0.30", "0.20", "40.0", "UNVALIDATED"))
-        self.assertEqual(set(gui.tree.item("AAA", "tags")), {"long", "watch"})
-        self.assertEqual(set(gui.tree.item("BBB", "tags")), {"short"})
+        aaa_tags = set(gui.tree.item("AAA", "tags"))
+        self.assertTrue(any(t.startswith("long") for t in aaa_tags), aaa_tags)
+        self.assertIn("watch", aaa_tags)
+        bbb_tags = set(gui.tree.item("BBB", "tags"))
+        self.assertTrue(any(t.startswith("short") for t in bbb_tags), bbb_tags)
         self.assertEqual(gui.scan_status, "cards loaded (no scan)")
         self.assertEqual(gui.error_text, "")
         self.assertIn("shown 2 · vetoed 0", gui.var_header.get())
@@ -778,7 +814,8 @@ class TestWidgetLayer(unittest.TestCase):
                          ("▲", "DDD", "30.0", "stale"))
         self.assertEqual(gui.tree_vetoed.item("CCC", "values"),
                          ("▲", "CCC", "20.0", "late_move,thin_book"))
-        self.assertEqual(set(gui.tree_vetoed.item("CCC", "tags")), {"vetoed"})
+        self.assertTrue(all(t.startswith("vetoed")
+                              for t in gui.tree_vetoed.item("CCC", "tags")))
         self.assertIn("shown 1 · vetoed 2", gui.var_header.get())
 
         # vetoed-only list: ranked table empties, vetoed section still fills

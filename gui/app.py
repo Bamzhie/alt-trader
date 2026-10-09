@@ -44,15 +44,13 @@ POLL_MS = 120      # worker-result drain period
 TICK_MS = 500      # auto-scan scheduler period
 STATS_EVERY_S = 30  # outcomes/plan-hit panel refresh cadence (streaming)
 
-# Row colour tags (brief: long green-tint, short red-tint, vetoed grey,
-# WATCH orange flag text). ttk.Treeview tags are ROW-level — Tk has no
-# per-cell tags — so an orange WATCH colours the row's text.
-TAG_LONG, TAG_SHORT, TAG_VETOED, TAG_WATCH = "long", "short", "vetoed", "watch"
-COLOR_LONG = "#e8f5e9"
-COLOR_SHORT = "#ffebee"
-COLOR_VETOED = "#f0f0f0"
-COLOR_WATCH = "#c2410c"
-COLOR_ERROR = "#b91c1c"
+# Row tags + colors live in gui/theme.py (single source of truth). The
+# TAG_* / COLOR_ERROR names stay importable here for tests and callers.
+from gui import theme as _theme
+
+TAG_LONG, TAG_SHORT, TAG_VETOED, TAG_WATCH = (
+    _theme.TAG_LONG, _theme.TAG_SHORT, _theme.TAG_VETOED, _theme.TAG_WATCH)
+COLOR_ERROR = _theme.ERROR_FG
 
 SIGNAL_COLUMNS = ("rank", "dir", "coin", "price", "ch24", "vol24", "funding",
                   "oi", "lean", "early", "score", "flags")
@@ -256,6 +254,7 @@ class RadarGUI(tk.Tk):
         self.title("ALT RADAR — READ-ONLY MEXC scanner")
         self.geometry("1360x860")
         self.minsize(1100, 640)
+        _theme.apply_theme(self)
         # Operator config — validated at the edge, source of truth for jobs.
         self.stake = model.validate_stake(stake)
         self.coins = model.validate_coins(coins)
@@ -367,11 +366,6 @@ class RadarGUI(tk.Tk):
                   style="Tier2.TLabel").pack(side=tk.LEFT, padx=(0, 10))
         self.var_header = tk.StringVar(value="universe – · shown 0 · vetoed 0")
         ttk.Label(bar, textvariable=self.var_header).pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        style = ttk.Style(self)
-        style.configure("ReadOnly.TLabel", foreground=COLOR_ERROR,
-                        background="#fde8e8")
-        style.configure("Tier2.TLabel", foreground="#92400e")
 
     def _build_toolbar(self):
         # Two rows of labeled groups (was one cramped strip): row 1 runs the
@@ -593,9 +587,11 @@ class RadarGUI(tk.Tk):
         self.tree.configure(yscrollcommand=vsig.set)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsig.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.tag_configure(TAG_LONG, background=COLOR_LONG)
-        self.tree.tag_configure(TAG_SHORT, background=COLOR_SHORT)
-        self.tree.tag_configure(TAG_WATCH, foreground=COLOR_WATCH)
+        for _tag, _bg in _theme.TAG_BACKGROUNDS.items():
+            if _tag in (_theme.TAG_VETOED, _theme.TAG_VETOED_ALT):
+                continue
+            self.tree.tag_configure(_tag, background=_bg)
+        self.tree.tag_configure(_theme.TAG_WATCH, foreground=_theme.WATCH_FG)
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self._bind_scroll(self.tree)
 
@@ -617,8 +613,12 @@ class RadarGUI(tk.Tk):
         self.tree_vetoed.configure(yscrollcommand=vscr.set)
         self.tree_vetoed.pack(side=tk.LEFT, fill=tk.X, expand=True)
         vscr.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree_vetoed.tag_configure(TAG_VETOED, background=COLOR_VETOED,
-                                       foreground="#8d8d8d")
+        self.tree_vetoed.tag_configure(_theme.TAG_VETOED,
+                                       background=_theme.VETO_BG,
+                                       foreground=_theme.VETO_FG)
+        self.tree_vetoed.tag_configure(_theme.TAG_VETOED_ALT,
+                                       background=_theme.VETO_BG_ALT,
+                                       foreground=_theme.VETO_FG)
         self.tree_vetoed.bind("<<TreeviewSelect>>", self._on_select)
         self._bind_scroll(self.tree_vetoed)
 
@@ -632,14 +632,16 @@ class RadarGUI(tk.Tk):
         det_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.detail = tk.Text(det_frame, wrap=tk.WORD, state=tk.DISABLED,
                               font=tkfont.nametofont("TkFixedFont"),
-                              background="#fbfbfb")
+                              background=_theme.DETAIL_BG,
+                              foreground=_theme.TEXT,
+                              relief=tk.FLAT, padx=8, pady=6)
         dscr = ttk.Scrollbar(det_frame, orient=tk.VERTICAL,
                              command=self.detail.yview)
         self.detail.configure(yscrollcommand=dscr.set)
         self.detail.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         dscr.pack(side=tk.RIGHT, fill=tk.Y)
-        self.detail.tag_configure("warn", foreground=COLOR_WATCH)
-        self.detail.tag_configure("veto", foreground="#6b7280")
+        self.detail.tag_configure("warn", foreground=_theme.WARN_FG)
+        self.detail.tag_configure("veto", foreground=_theme.TEXT_MUTED)
         self._bind_scroll(self.detail)
         self._set_detail_text("select a row for the full breakdown")
 
@@ -662,7 +664,7 @@ class RadarGUI(tk.Tk):
             side=tk.LEFT, padx=(14, 0))
         self.var_statusline = tk.StringVar(value="")
         self.lbl_statusline = ttk.Label(bar, textvariable=self.var_statusline,
-                                        foreground="#555555")
+                                        foreground=_theme.STATUS_MUTED_FG)
         self.lbl_statusline.pack(side=tk.LEFT, fill=tk.X, expand=True,
                                  padx=(14, 0))
 
@@ -1117,19 +1119,15 @@ class RadarGUI(tk.Tk):
                 f"{c.change_24h_pct:+.1f}%",
                 model.format_vol(c.quote_vol_24h),
                 f"{c.funding_rate * 100:+.4f}%",
-                model.format_oi(oi, getattr(c, "oi_notional", None)),                f"{c.lean:+.2f}",
+                model.format_oi(oi, getattr(c, "oi_notional", None)),
+                f"{c.lean:+.2f}",
                 f"{c.earlyness:.2f}",
                 f"{c.score:.1f}",
                 flags,
             )
-            tags = []
-            if c.direction == "LONG":
-                tags.append(TAG_LONG)
-            elif c.direction == "SHORT":
-                tags.append(TAG_SHORT)
-            if "WATCH" in flags.split():
-                tags.append(TAG_WATCH)
-            tree.insert("", tk.END, iid=c.coin, values=values, tags=tuple(tags))
+            tags = model.row_tags(c.direction, i,
+                                  watch="WATCH" in flags.split())
+            tree.insert("", tk.END, iid=c.coin, values=values, tags=tags)
 
         if self.selected_coin and tree.exists(self.selected_coin):
             tree.selection_set(self.selected_coin)
@@ -1138,12 +1136,12 @@ class RadarGUI(tk.Tk):
         tree = self.tree_vetoed
         for iid in tree.get_children():
             tree.delete(iid)
-        for c in self._vetoed:
+        for i, c in enumerate(self._vetoed):
             codes = ",".join(v.code for v in c.vetoes)
             tree.insert("", tk.END, iid=c.coin,
                         values=(model.direction_arrow(c.direction), c.coin,
                                 f"{c.score:.1f}", codes),
-                        tags=(TAG_VETOED,))
+                        tags=model.row_tags(c.direction, i, vetoed=True))
         if self.selected_coin and tree.exists(self.selected_coin):
             tree.selection_set(self.selected_coin)
 
@@ -1225,7 +1223,7 @@ class RadarGUI(tk.Tk):
             self.lbl_statusline.configure(foreground=COLOR_ERROR)
             self.var_statusline.set(self.error_text)
         else:
-            self.lbl_statusline.configure(foreground="#555555")
+            self.lbl_statusline.configure(foreground=_theme.STATUS_MUTED_FG)
             self.var_statusline.set(self.scan_status)
 
     # ------------------------------------------------------------- test seam
