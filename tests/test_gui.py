@@ -656,14 +656,13 @@ class TestWidgetLayer(unittest.TestCase):
         return [w for w in self.widgets(ttk.Button) if str(w.cget("text")) == text]
 
     def toolbar(self):
-        for w in self.gui.winfo_children():
-            for c in w.winfo_children():
-                if isinstance(c, ttk.Button) and str(c.cget("text")) == "Scan now":
-                    return w
+        for b in self.buttons("Scan now"):
+            return b.master.master
         raise AssertionError("toolbar not found")
 
     def toolbar_of_type(self, cls):
-        return [c for c in self.toolbar().winfo_children() if type(c) is cls]
+        return [w for w in self.widgets(cls)
+                if isinstance(w.master, ttk.LabelFrame)]
 
     # ---- 1. construction ---------------------------------------------------
     def test_build_withdrawn_window_layout(self):
@@ -680,8 +679,12 @@ class TestWidgetLayer(unittest.TestCase):
         self.assertEqual(labels[0], "ALT RADAR · MEXC perp scanner")
         self.assertIn(" READ-ONLY ", labels)              # permanent badge
         self.assertIn("TIER-2 UNVALIDATED", labels)
-        for text in ("Stake $", "Flag threshold", "Coins", "Interval s", "Dir", "Sort"):
+        for text in ("$", "Coins", "Interval s", "Dir", "Sort"):
             self.assertIn(text, labels)
+        groups = {str(w.cget("text")) for w in self.widgets(ttk.LabelFrame)}
+        for text in ("Scan", "Budget", "Stake", "Find", "View",
+                     "Flag threshold", "Lists", "Data"):
+            self.assertIn(text, groups)
 
         btn_texts = [str(w.cget("text")) for w in self.widgets(ttk.Button)]
         for text in ("Scan now", "Resume auto-scan", "Collect bars",
@@ -952,6 +955,34 @@ class TestWidgetLayer(unittest.TestCase):
         gui.var_search.set("")
         gui._on_search_change()
         self.assertIn("QNT", gui.tree.get_children())
+
+    def test_find_enter_selects_table_match(self):
+        gui = self.make_gui()
+        gui.set_cards([mkcard("QNT", score=70), mkcard("BTC", score=60)])
+        gui.var_search.set("qnt")
+        gui._on_search_commit()
+        self.assertEqual(gui.selected_coin, "QNT")
+        self.assertNotIn("lookup", gui._busy)
+
+    def test_find_enter_without_match_submits_lookup(self):
+        gui = self.make_gui()
+        gui.set_cards([mkcard("BTC", score=60)])
+        gui.var_search.set("qnt")
+        gui._on_search_commit()
+        self.assertIn("lookup", gui._busy)
+        self.assertIn("looking up QNT", gui.scan_status)
+
+    def test_lookup_result_joins_table(self):
+        gui = self.make_gui()
+        gui.set_cards([mkcard("BTC", score=60)])
+        gui._on_lookup({"kind": "lookup", "ok": True, "coin": "QNT",
+                        "card": mkcard("QNT", score=70), "cached": False})
+        self.assertIn("QNT", gui.tree.get_children())
+        self.assertEqual(gui.selected_coin, "QNT")
+        self.assertIn("scored on demand", gui.scan_status)
+        gui._on_lookup({"kind": "lookup", "ok": True, "coin": "ZZZ",
+                        "card": None})
+        self.assertIn("ZZZ", gui.error_text)
 
     def test_scan_prune_keeps_good_plans(self):
         gui = self.make_gui()

@@ -272,6 +272,25 @@ def _bybit_oi(coin, price):
 UNIVERSE_BUDGET = 150
 
 
+def find_symbol(coin, tickers, details):
+    """Raw venue symbol for a coin name, or None.
+
+    Pure lookup over bulk ticker/detail maps: canonical-name match on USDT
+    perps, synthetics excluded. Powers on-demand scoring for coins outside
+    the current scan rotation (the Find box's Enter path).
+    """
+    want = canon(str(coin or ""))
+    if not want:
+        return None
+    for sym in tickers:
+        if not sym.endswith("_USDT"):
+            continue
+        if canon(sym) == want and not is_synthetic(canon(sym),
+                                                   details.get(sym)):
+            return sym
+    return None
+
+
 def build_universe(stake, budget=UNIVERSE_BUDGET, store=None):
     """
     Stake-aware scan universe: disjoint groups that fill `budget`.

@@ -114,6 +114,11 @@ last scan 14:03:22 · logs 4821 rows / 577 coins · flagged 214 · outcomes 96
 
 ## 5. Toolbar — every control
 
+Two rows of labeled groups: row 1 (**Scan**, **Budget**, **Stake**) runs
+the scanner; row 2 (**Find**, **View**, **Flag threshold**, **Lists**,
+**Data**) views and analyses. Set-once config sits right; daily controls
+sit left.
+
 Controls commit as you use them; every accepted change is announced in the
 status bar, every rejected one shows a red message and restores the previous
 value. Nothing here ever crashes the app.
@@ -126,6 +131,7 @@ value. Nothing here ever crashes the app.
 | **Interval s** spinbox | 15–3600. Auto-scan period; live immediately for the scheduler | `auto-scan interval 300s applied` |
 | **Dir** combo | Read-only list: `Both` / `Long` / `Short`. Filters the table instantly — no rescan, no network | — |
 | **Sort** combo | Read-only list: `score`, `early`, `lean`, `move`, `vol` — all descending, identical semantics to the TUI/headless sort keys: highest score, highest earlyness, largest absolute lean, largest absolute 24h move, highest 24h quote volume | — |
+| **Find** entry | Filters the table as you type (coin substring, both sections). **Enter**: jumps to the first match — or, with no match, scores the coin **venue-wide on demand** (the table only holds the current 150-coin rotation, so outsiders like QNT between rotations are fetched live, inserted, and selected) | `looking up QNT venue-wide…` → `QNT scored on demand`, or `QNT: not listed on the venue` |
 | **Scan now** | Queue one scan immediately (works even while paused) | scan status, e.g. `scanned 150 in 34s · universe 150 · failed 0/150` |
 | **Pause auto-scan / Resume auto-scan** | Toggles the scheduler. The button label always shows the action you can take next | `auto-scan paused` / `auto-scan resumed (60s)` |
 | **Collect bars** | Downloads 5m bars for the **full** universe into `data/bars/*.csv.gz` (deduplicated). Feeds the 7-day outcome horizon, which cannot be resolved from REST alone | `collected 5m bars for N coins (+M new bars)` |

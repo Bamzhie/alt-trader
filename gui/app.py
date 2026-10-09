@@ -26,6 +26,7 @@ from tkinter import ttk
 from types import SimpleNamespace
 
 from proto import collector
+from proto import mexc as mexc_mod
 from proto import outcomes as outcomes_mod
 from proto import picks as picks_mod
 from proto import report as report_mod
@@ -66,7 +67,8 @@ SIGNAL_ANCHORS = {"rank": "center", "dir": "center", "coin": "w",
                   "flags": "w"}
 
 ACTIVITY = {"scan": "scanning", "collect": "collecting",
-            "resolve": "resolving", "stats": "refreshing stats"}
+            "resolve": "resolving", "stats": "refreshing stats",
+            "lookup": "looking up"}
 
 
 class Worker(threading.Thread):
@@ -153,6 +155,43 @@ class Worker(threading.Thread):
             counts = collector.collect_full_universe()
             return {"kind": "collect", "ok": True, "coins": len(counts),
                     "bars": sum(counts.values())}
+        if cmd == "lookup":
+            # Venue-wide on-demand scoring for a coin outside the current
+            # rotation (Find box Enter with no table match). Current cards
+            # hit instantly with no network; otherwise one bulk ticker +
+            # detail fetch locates the symbol and a single analyse scores
+            # it. The coin joins app.uni so its plan lane keeps working.
+            coin = scanmod.canon(job.get("coin", ""))
+            card = next((c for c in app.cards if c.coin == coin), None)
+            if card is not None:
+                return {"kind": "lookup", "ok": True, "coin": coin,
+                        "card": card, "cached": True}
+            try:
+                tk_all = mexc_mod.tickers()
+                det_all = mexc_mod.details()
+            except Exception as e:
+                return {"kind": "lookup", "ok": False, "coin": coin,
+                        "error": f"universe unavailable: {e}"}
+            sym = scanmod.find_symbol(coin, tk_all, det_all)
+            if sym is None:
+                return {"kind": "lookup", "ok": True, "coin": coin,
+                        "card": None}
+            try:
+                card = scanmod.analyse_one(
+                    sym, coin, det_all.get(sym, {}), tk_all.get(sym, {}),
+                    app.args.stake, attach_plans=True)
+            except Exception as e:
+                return {"kind": "lookup", "ok": False, "coin": coin,
+                        "error": f"{type(e).__name__}: {e}"}
+            if card is None:
+                err = (app.last_errors or {}).get(coin, "score failed")
+                return {"kind": "lookup", "ok": True, "coin": coin,
+                        "card": None, "error": err}
+            if not any(s == sym for s, _ in app.uni):
+                app.uni.append((sym, coin))
+            app.cards.append(card)
+            return {"kind": "lookup", "ok": True, "coin": coin,
+                    "card": card, "cached": False}
         # NOTE: "plan" jobs run on PlanWorker (own lane), never here — a plan
         # queued behind a ~50s scan starved every click ("fetching…" forever).
         return {"kind": cmd, "ok": False, "error": f"unknown job: {cmd!r}"}
@@ -335,94 +374,108 @@ class RadarGUI(tk.Tk):
         style.configure("Tier2.TLabel", foreground="#92400e")
 
     def _build_toolbar(self):
-        bar = ttk.Frame(self, padding=(8, 2, 8, 5))
-        bar.pack(side=tk.TOP, fill=tk.X)
+        # Two rows of labeled groups (was one cramped strip): row 1 runs the
+        # scanner, row 2 views and analyses. Groups read left-to-right in
+        # frequency of use; set-once config sits right, one click away.
+        row1 = ttk.Frame(self, padding=(8, 2, 8, 0))
+        row1.pack(side=tk.TOP, fill=tk.X)
+        row2 = ttk.Frame(self, padding=(8, 0, 8, 5))
+        row2.pack(side=tk.TOP, fill=tk.X)
 
-        def sep():
-            ttk.Separator(bar, orient=tk.VERTICAL).pack(
-                side=tk.LEFT, fill=tk.Y, padx=8, pady=1)
+        def group(parent, text):
+            return ttk.LabelFrame(parent, text=text, padding=(6, 2, 6, 4))
 
-        ttk.Label(bar, text="Stake $").pack(side=tk.LEFT)
-        self.var_stake = tk.StringVar(value=f"{self.stake:g}")
-        ent_stake = ttk.Entry(bar, textvariable=self.var_stake, width=8)
-        ent_stake.pack(side=tk.LEFT)
-        ent_stake.bind("<Return>", lambda e: self._apply_stake())
-        ttk.Button(bar, text="Apply", command=self._apply_stake,
-                   width=6).pack(side=tk.LEFT, padx=(3, 0))
-        sep()
+        # ---- row 1: run ----
+        g_scan = group(row1, "Scan")
+        g_scan.pack(side=tk.LEFT, padx=(0, 6))
+        self.btn_scan = ttk.Button(g_scan, text="Scan now",
+                                   command=lambda: self._submit("scan"))
+        self.btn_scan.pack(side=tk.LEFT, padx=2)
+        self.btn_auto = ttk.Button(g_scan, text=self._auto_label(),
+                                   command=self._toggle_auto)
+        self.btn_auto.pack(side=tk.LEFT, padx=2)
 
-        ttk.Label(bar, text="Flag threshold").pack(side=tk.LEFT)
-        self.var_threshold = tk.StringVar(value=f"{self.log_threshold:g}")
-        ent_thr = ttk.Entry(bar, textvariable=self.var_threshold, width=6)
-        ent_thr.pack(side=tk.LEFT)
-        ent_thr.bind("<Return>", lambda e: self._apply_threshold())
-        ttk.Button(bar, text="Apply", command=self._apply_threshold,
-                   width=6).pack(side=tk.LEFT, padx=(3, 0))
-        sep()
-
-        ttk.Label(bar, text="Coins").pack(side=tk.LEFT)
+        g_budget = group(row1, "Budget")
+        g_budget.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(g_budget, text="Coins").pack(side=tk.LEFT)
         self.var_coins = tk.StringVar(value=str(self.coins))
-        sp_coins = ttk.Spinbox(bar, from_=model.MIN_COINS, to=model.MAX_COINS,
+        sp_coins = ttk.Spinbox(g_budget, from_=model.MIN_COINS,
+                               to=model.MAX_COINS,
                                textvariable=self.var_coins, width=6,
                                command=lambda *a: self._apply_coins())
-        sp_coins.pack(side=tk.LEFT)
+        sp_coins.pack(side=tk.LEFT, padx=(0, 6))
         self._bind_commit(sp_coins, self._apply_coins)
-        sep()
-
-        ttk.Label(bar, text="Interval s").pack(side=tk.LEFT)
+        ttk.Label(g_budget, text="Interval s").pack(side=tk.LEFT)
         self.var_interval = tk.StringVar(value=str(self.interval))
-        sp_int = ttk.Spinbox(bar, from_=model.MIN_INTERVAL, to=3600,
+        sp_int = ttk.Spinbox(g_budget, from_=model.MIN_INTERVAL, to=3600,
                              textvariable=self.var_interval, width=6,
                              command=lambda *a: self._apply_interval())
         sp_int.pack(side=tk.LEFT)
         self._bind_commit(sp_int, self._apply_interval)
-        sep()
 
-        ttk.Label(bar, text="Dir").pack(side=tk.LEFT)
+        g_stake = group(row1, "Stake")
+        g_stake.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(g_stake, text="$").pack(side=tk.LEFT)
+        self.var_stake = tk.StringVar(value=f"{self.stake:g}")
+        ent_stake = ttk.Entry(g_stake, textvariable=self.var_stake, width=8)
+        ent_stake.pack(side=tk.LEFT)
+        ent_stake.bind("<Return>", lambda e: self._apply_stake())
+        ttk.Button(g_stake, text="Apply", command=self._apply_stake,
+                   width=6).pack(side=tk.LEFT, padx=(3, 0))
+
+        # ---- row 2: view + analyse ----
+        g_find = group(row2, "Find")
+        g_find.pack(side=tk.LEFT, padx=(0, 6))
+        self.var_search = tk.StringVar(value="")
+        ent_search = ttk.Entry(g_find, textvariable=self.var_search, width=16)
+        ent_search.pack(side=tk.LEFT)
+        ent_search.bind("<KeyRelease>", self._on_search_change)
+        ent_search.bind("<Return>", lambda e: self._on_search_commit())
+
+        g_view = group(row2, "View")
+        g_view.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(g_view, text="Dir").pack(side=tk.LEFT)
         self.var_dir = tk.StringVar(value="Both")
-        cb_dir = ttk.Combobox(bar, textvariable=self.var_dir,
+        cb_dir = ttk.Combobox(g_view, textvariable=self.var_dir,
                               values=DIR_CHOICES, state="readonly", width=6)
-        cb_dir.pack(side=tk.LEFT)
+        cb_dir.pack(side=tk.LEFT, padx=(0, 6))
         cb_dir.bind("<<ComboboxSelected>>", self._on_dir_change)
-        sep()
-
-        ttk.Label(bar, text="Sort").pack(side=tk.LEFT)
+        ttk.Label(g_view, text="Sort").pack(side=tk.LEFT)
         self.var_sort = tk.StringVar(value="score")
-        cb_sort = ttk.Combobox(bar, textvariable=self.var_sort,
+        cb_sort = ttk.Combobox(g_view, textvariable=self.var_sort,
                                values=SORT_CHOICES, state="readonly", width=7)
         cb_sort.pack(side=tk.LEFT)
         cb_sort.bind("<<ComboboxSelected>>", self._on_sort_change)
-        sep()
 
-        ttk.Label(bar, text="Find").pack(side=tk.LEFT)
-        self.var_search = tk.StringVar(value="")
-        ent_search = ttk.Entry(bar, textvariable=self.var_search, width=10)
-        ent_search.pack(side=tk.LEFT)
-        ent_search.bind("<KeyRelease>", self._on_search_change)
-        sep()
+        g_thr = group(row2, "Flag threshold")
+        g_thr.pack(side=tk.LEFT, padx=(0, 6))
+        self.var_threshold = tk.StringVar(value=f"{self.log_threshold:g}")
+        ent_thr = ttk.Entry(g_thr, textvariable=self.var_threshold, width=6)
+        ent_thr.pack(side=tk.LEFT)
+        ent_thr.bind("<Return>", lambda e: self._apply_threshold())
+        ttk.Button(g_thr, text="Apply", command=self._apply_threshold,
+                   width=6).pack(side=tk.LEFT, padx=(3, 0))
 
-        self.btn_scan = ttk.Button(bar, text="Scan now",
-                                   command=lambda: self._submit("scan"))
-        self.btn_scan.pack(side=tk.LEFT, padx=2)
-        self.btn_auto = ttk.Button(bar, text=self._auto_label(),
-                                   command=self._toggle_auto)
-        self.btn_auto.pack(side=tk.LEFT, padx=2)
-        ttk.Button(bar, text="Collect bars",
+        g_lists = group(row2, "Lists")
+        g_lists.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(g_lists, text="★ Top 10",
+                   command=self._open_picks).pack(side=tk.LEFT, padx=2)
+        ttk.Button(g_lists, text="👁 Watch",
+                   command=self._open_watch).pack(side=tk.LEFT, padx=2)
+        ttk.Button(g_lists, text="+ New",
+                   command=self._open_new).pack(side=tk.LEFT, padx=2)
+
+        g_data = group(row2, "Data")
+        g_data.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(g_data, text="Collect bars",
                    command=lambda: self._submit("collect")).pack(
             side=tk.LEFT, padx=2)
-        ttk.Button(bar, text="Resolve outcomes",
+        ttk.Button(g_data, text="Resolve outcomes",
                    command=lambda: self._submit("resolve")).pack(
             side=tk.LEFT, padx=2)
-        ttk.Button(bar, text="Refresh stats",
+        ttk.Button(g_data, text="Refresh stats",
                    command=lambda: self._submit("stats")).pack(
             side=tk.LEFT, padx=2)
-        sep()
-        ttk.Button(bar, text="★ Top 10",
-                   command=self._open_picks).pack(side=tk.LEFT, padx=2)
-        ttk.Button(bar, text="👁 Watch",
-                   command=self._open_watch).pack(side=tk.LEFT, padx=2)
-        ttk.Button(bar, text="+ New",
-                   command=self._open_new).pack(side=tk.LEFT, padx=2)
 
     # ------------------------------------------------------ list modals
     def _open_list_modal(self, title, columns, rows):
@@ -716,6 +769,53 @@ class RadarGUI(tk.Tk):
         self._render_table()
         self._render_header()
 
+    def _on_search_commit(self, _event=None):
+        """Enter in Find: table match selects it, else venue-wide lookup.
+
+        The table only holds the current rotation, so a coin outside it
+        (e.g. QNT between rotations) correctly shows an empty table — Enter
+        scores it on demand instead of dead-ending.
+        """
+        q = str(self.var_search.get() or "").strip().upper()
+        if not q:
+            return
+        for iid in list(self.tree.get_children()) + list(
+                self.tree_vetoed.get_children()):
+            if q in iid.upper():
+                self.selected_coin = iid
+                self._ensure_plan(iid)
+                self._render_detail()
+                try:
+                    self.tree.selection_set(iid)
+                    self.tree.see(iid)
+                except tk.TclError:
+                    pass
+                return
+        if self._submit("lookup", coin=q):
+            self.scan_status = f"looking up {q} venue-wide…"
+            self._render_status()
+
+    def _on_lookup(self, msg):
+        coin = msg.get("coin", "?")
+        card = msg.get("card")
+        if card is None:
+            reason = msg.get("error") or "not listed on the venue"
+            self._set_error(f"{coin}: {reason}")
+            self._render_status()
+            return
+        if not any(c.coin == coin for c in self.cards):
+            self.cards.append(card)
+        elif not msg.get("cached"):
+            self.cards = [card if c.coin == coin else c for c in self.cards]
+        self.selected_coin = coin
+        self._ensure_plan(coin)
+        self._render_all()
+        if msg.get("cached"):
+            self.scan_status = f"{coin} was already in the table"
+        else:
+            self.scan_status = f"{coin} scored on demand"
+        self._render_status()
+
     def _toggle_auto(self):
         self.auto_scan = not self.auto_scan
         self.btn_auto.configure(text=self._auto_label())
@@ -824,6 +924,7 @@ class RadarGUI(tk.Tk):
             return
         handler = {"scan": self._on_scan, "stats": self._on_stats,
                    "resolve": self._on_resolve, "collect": self._on_collect,
+                   "lookup": self._on_lookup,
                    "plan": self._on_plan, "ready": self._on_ready}.get(kind)
         if handler is not None:
             handler(msg)

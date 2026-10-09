@@ -422,6 +422,26 @@ def test_degraded_venue_continues():
         restore()
 
 
+def test_find_symbol():
+    print("=== find_symbol: canon match, USDT-only, synthetics excluded ===")
+    tk = {"QNT_USDT": {}, "BTC_USDT": {}, "QNT_USDC": {}, "ETHUSD": {}}
+    det = {"QNT_USDT": {"conceptPlate": ["mc-trade-zone-RWA"]},
+           "BTC_USDT": {"conceptPlate": []}}
+    check("exact coin found",
+          scanmod.find_symbol("QNT", tk, det) == "QNT_USDT")
+    check("case-insensitive", scanmod.find_symbol("qnt", tk, det) == "QNT_USDT")
+    check("non-USDT quote ignored",
+          scanmod.find_symbol("QNT", {"QNT_USDC": {}}, {}) is None)
+    check("unknown coin -> None",
+          scanmod.find_symbol("ZZZ", tk, det) is None)
+    check("blank -> None", scanmod.find_symbol("  ", tk, det) is None)
+    check("synthetic excluded",
+          scanmod.find_symbol(
+              "AAPLSTOCK", {"AAPLSTOCK_USDT": {}},
+              {"AAPLSTOCK_USDT": {"conceptPlate": ["mc-trade-zone-Stock"]}})
+          is None)
+
+
 def test_cli_default_coins_equals_universe_budget():
     """Review finding (Important): `main()` defaulted --coins to 120 while the
     universe budget is 150, so every CLI scan silently dropped the guaranteed
@@ -477,6 +497,7 @@ for t in (test_groups_disjoint_and_fill_150,
           test_tail_prefers_mexc_only_when_bybit_map_available,
           test_missing_detail_row_fails_closed,
           test_cli_scan_advances_pointer,
+          test_find_symbol,
           test_cli_default_coins_equals_universe_budget,
           test_degraded_venue_continues):
     run(t)
