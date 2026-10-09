@@ -204,6 +204,37 @@ def snapshot_label(rows):
         time.strftime("%H:%M", time.localtime(saved_at)), n_coins)
 
 
+def resolve_launch_snapshot(db_path):
+    """("file"|"db"|"empty", cards, plans, label) for instant launch.
+
+    File first (exact last screen, cached plans included), then the DB's
+    latest scan cycle (no plans — they embed live structure), then blank.
+    Only local reads; fully unit-testable.
+    """
+    from proto import snapshot as snap
+    cards, plans, saved_at = snap.load(db_path)
+    if cards:
+        import time as _t
+        label = "saved %s (%d coins)" % (
+            _t.strftime("%H:%M", _t.localtime(saved_at)), len(cards))
+        return "file", cards, plans, label
+    try:
+        from proto.store import Store
+        store = Store(db_path)
+        try:
+            rows = store.latest_rows()
+        finally:
+            try:
+                store.close()
+            except Exception:
+                pass
+    except Exception:
+        return "empty", [], {}, ""
+    if not rows:
+        return "empty", [], {}, ""
+    return "db", snapshot_cards(rows), {}, snapshot_label(rows)
+
+
 def plan_text(card, plan):
     """Full trade-plan text via proto.planner.format_plan (never reimplemented)."""
     if plan is None:

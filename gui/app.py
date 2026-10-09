@@ -274,31 +274,24 @@ class RadarGUI(tk.Tk):
 
 
     def _show_saved_snapshot(self):
-        """Instant launch: render the last saved scan, then go live.
+        """Instant launch: last screen first, live scan replaces it.
 
-        A local SQLite read (~ms) fills the table immediately; the worker's
-        first live scan replaces it when the API fetch finishes. Cached
-        plans are absent (they embed live structure), so the first click
-        fetches on the plan lane. Never fatal: an empty/missing DB just
-        leaves the table blank until the first scan lands.
+        Source order: close-time `.last_entries` file (exact cards + cached
+        plans), then the DB's latest scan cycle, then blank. A local read
+        (~ms); the worker's first live scan replaces everything when the API
+        fetch finishes. Never fatal.
         """
         try:
-            from proto.store import Store
-            store = Store(self.db)
-            try:
-                rows = store.latest_rows()
-            finally:
-                try:
-                    store.close()
-                except Exception:
-                    pass
-            if not rows:
+            source, cards, plans, label = model.resolve_launch_snapshot(self.db)
+            if source == "empty":
                 return
-            self.cards = model.snapshot_cards(rows)
+            self.cards = list(cards)
             self.failed = 0
             self.attempted = len(self.cards)
-            self.scan_status = (f"showing {model.snapshot_label(rows)} — "
-                                f"live scan running…")
+            for coin, entry in (plans or {}).items():
+                if isinstance(entry, dict) and entry.get("plan") is not None:
+                    self._plan_cache[coin] = entry
+            self.scan_status = (f"showing {label} — live scan running…")
             self._render_all()
         except Exception as e:
             self.scan_status = (f"no saved signals ({type(e).__name__}) — "
@@ -745,6 +738,14 @@ class RadarGUI(tk.Tk):
 
     def _on_close(self):
         self._closing = True
+        try:
+            from proto import snapshot as snap
+            snap.save(self.db, self.cards,
+                      plans=self._plan_cache,
+                      meta={"stake": self.stake,
+                            "threshold": self.log_threshold})
+        except Exception:
+            pass
         for q in (self._jobs, self._plan_jobs):
             try:
                 q.put_nowait(None)

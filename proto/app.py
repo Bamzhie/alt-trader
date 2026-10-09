@@ -325,6 +325,15 @@ class App:
     def loop(self, stdscr):
         curses.curs_set(0)
         stdscr.nodelay(True)
+        try:
+            from .snapshot import load as _load
+            saved, _, _ = _load(self.args.db)
+            if saved:
+                self.cards = list(saved)
+                self.status = (f"showing saved ({len(saved)} coins) — "
+                               f"live scan running…")
+        except Exception:
+            pass
         self.refresh_universe()
 
         while True:
@@ -343,6 +352,8 @@ class App:
                 time.sleep(0.4)
                 continue
             if ch in (ord("q"), 27):
+                from . import snapshot as _snap
+                _snap.save(self.args.db, self.cards)
                 return
             if ch == ord("p"):
                 self.paused = not self.paused
@@ -447,6 +458,8 @@ def run_headless(app, iterations=None):
     except KeyboardInterrupt:
         pass
     finally:
+        from . import snapshot as _snap
+        _snap.save(app.args.db, app.cards)
         app.store.close()
     return n
 

@@ -459,6 +459,19 @@ Guidance:
 
 There are no other hidden shortcuts; every action is also a visible button.
 
+## 14b. Instant launch: the close-time snapshot
+
+Closing the app (window close button, `Ctrl+Q`, TUI `q`/`Esc`, headless
+end/`Ctrl+C`) writes exactly what was on screen — cards plus any fetched
+trade plans — to `.last_entries` next to the database. The next launch
+renders that file immediately (no API wait) and the first live scan
+replaces it wholesale. Cached plans show instantly on click and refresh
+quietly underneath.
+
+Order: close-file first, then the DB's latest scan cycle, then blank.
+Stale files (over 7 days), corrupt files, and version mismatches are
+ignored silently. The TUI saves on `q`/`Esc`; the GUI on close/`Ctrl+Q`.
+
 ## 15. FAQ
 
 **Does it trade?** No. Read-only: no order code path, no API keys, no

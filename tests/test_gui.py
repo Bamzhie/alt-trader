@@ -879,6 +879,20 @@ class TestWidgetLayer(unittest.TestCase):
         self.assertEqual(gui.tree.get_children(), ())
         self.assertIn("starting", gui.scan_status)
 
+    def test_close_writes_and_relaunch_reads_snapshot(self):
+        from proto import snapshot as snap
+        gui = self.make_gui()
+        gui.set_cards([mkcard("AAA", score=70), mkcard("BBB", score=40)])
+        gui._plan_cache["AAA"] = {"plan": None, "err": "offline test"}
+        gui._on_close()
+        self.assertTrue(os.path.exists(snap.path_for(gui.db)))
+        # relaunch with the same db: exact screen back, instantly, no scan
+        gui2 = self.make_gui()
+        self.assertIn("AAA", gui2.tree.get_children())
+        self.assertIn("BBB", gui2.tree.get_children())
+        self.assertIn("showing saved", gui2.scan_status)
+        self.assertIn("live scan running", gui2.scan_status)
+
     def test_scan_prune_keeps_good_plans(self):
         gui = self.make_gui()
         gui._plan_cache["AAA"] = {"plan": pl.Plan(coin="AAA",
