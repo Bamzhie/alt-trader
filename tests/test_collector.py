@@ -4,7 +4,7 @@ Contract (plan Task 5 / spec SS5 "Collector coverage"): the collector covers
 EVERY universe coin regardless of the 150-coin scan rotation, via an uncapped
 build_universe(stake=inf, budget=None).
 """
-import os, sys, tempfile
+import os, sys, tempfile, threading
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from proto import collector as col
 FAILURES=[]
@@ -32,6 +32,7 @@ def test_collect_full_universe_covers_every_coin():
     N = 200                      # venue universe; the scan rotation caps at 150
     tdir = tempfile.mkdtemp()
     uni_calls = []
+    started = threading.Barrier(8)
     orig = (scanmod.build_universe, mexcmod.klines)
 
     def fake_build_universe(stake, budget=150, store=None):
@@ -39,6 +40,7 @@ def test_collect_full_universe_covers_every_coin():
         return [(f"COIN{i:03d}_USDT", f"COIN{i:03d}") for i in range(N)]
 
     def fake_klines(sym, interval="5m", limit=200):
+        started.wait(timeout=3)
         return [{"ts": 1700000000, "o": 1.0, "h": 1.1, "l": 0.9, "c": 1.0,
                  "vol": 10.0, "amount": 10.0}]
 

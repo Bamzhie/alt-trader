@@ -1,6 +1,9 @@
 """5m forward bar collector. Starts the Tier-2 validation clock."""
 import csv, gzip, os
+from concurrent.futures import ThreadPoolExecutor
+
 HEADER = ["ts","o","h","l","c","vol","amount"]
+COLLECT_WORKERS = 8
 
 def _path(data_dir, coin):
     return os.path.join(data_dir, f"{coin}.csv.gz")
@@ -33,7 +36,8 @@ def append_bars(data_dir, coin, bars):
             w.writerow({k: b[k] for k in HEADER})
     return len(new)
 
-def collect_full_universe(data_dir="data/bars", limit_per_coin=200):
+def collect_full_universe(data_dir="data/bars", limit_per_coin=200,
+                          max_workers=COLLECT_WORKERS):
     """Fetch 5m bars for EVERY universe coin, regardless of scan rotation.
 
     build_universe(stake=inf, budget=None) is uncapped (spec SS5: the
@@ -43,14 +47,26 @@ def collect_full_universe(data_dir="data/bars", limit_per_coin=200):
     from .scan import build_universe
     from . import mexc
     uni = build_universe(float("inf"), budget=None)
-    counts = {}
-    for sym, coin in uni:
+
+    def collect_one(item):
+        sym, coin = item
         try:
+            # Share the scan/measurement request cap so collector workers
+            # cannot create an unbounded venue burst.
+            from .scan import LIMITER
+            LIMITER.acquire()
             bars = mexc.klines(sym, "5m", limit=limit_per_coin)
         except Exception:
-            continue
+            return None
         try:
-            counts[coin] = append_bars(data_dir, coin, bars)
+            return coin, append_bars(data_dir, coin, bars)
         except Exception:
-            continue
+            return None
+
+    counts = {}
+    with ThreadPoolExecutor(max_workers=max(1, int(max_workers))) as pool:
+        for result in pool.map(collect_one, uni):
+            if result is not None:
+                coin, count = result
+                counts[coin] = count
     return counts

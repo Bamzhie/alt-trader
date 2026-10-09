@@ -15,6 +15,7 @@ import argparse
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 from .app import App
@@ -22,6 +23,7 @@ from . import collector as colmod
 from . import measurement as measuremod
 from . import outcomes as outmod
 from .scan import MAX_WORKERS, build_universe
+from .store import Store
 
 
 def full_symbol_map():
@@ -32,6 +34,26 @@ def full_symbol_map():
         print(f"symbol map refresh failed: {type(e).__name__}: {e}",
               file=sys.stderr, flush=True)
         return {}
+
+
+def resolve_batch(db_path):
+    """Resolve legacy and episode outcomes on an isolated DB connection.
+
+    Outcome resolution can walk thousands of plans. Keeping it off the
+    cadence loop prevents that work from stretching per-coin measurement
+    gaps beyond the calibration limits.
+    """
+    store = Store(db_path)
+    try:
+        symbol_map = full_symbol_map()
+        done = outmod.resolve_pending(store, symbol_map)
+        plans = outmod.resolve_plans(store, symbol_map)
+        episodes = outmod.resolve_episode_plans(
+            store, symbol_map, now=time.time())
+        return {"outcomes": done, "plans": plans,
+                "episode_outcomes": episodes["resolved"]}
+    finally:
+        store.close()
 
 
 def main():
@@ -69,6 +91,9 @@ def main():
     last_collect = 0.0
     last_resolve = 0.0
     last_measure = 0.0
+    resolver_pool = ThreadPoolExecutor(max_workers=1,
+                                       thread_name_prefix="outcome-resolver")
+    resolve_future = None
     measure_cfg = measuremod.measurement_config(
         args.stake, args.log_threshold,
         getattr(args, "leverage_cap", None))
@@ -139,22 +164,29 @@ def main():
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] collect FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
-            if now - last_resolve >= args.resolve_every:
+            if resolve_future is not None and resolve_future.done():
                 try:
-                    if not sym_map:
-                        sym_map = full_symbol_map()
-                    done = outmod.resolve_pending(app.store, sym_map)
-                    pdone = outmod.resolve_plans(app.store, sym_map)
-                    episode_result = outmod.resolve_episode_plans(
-                        app.store, sym_map, now=now)
-                    last_resolve = now
+                    result = resolve_future.result()
                     print(f"[{time.strftime('%H:%M:%S')}] resolve: "
-                          f"{done} new outcomes, {pdone} plan rows, "
-                          f"{episode_result['resolved']} episode outcomes",
+                          f"{result['outcomes']} new outcomes, "
+                          f"{result['plans']} plan rows, "
+                          f"{result['episode_outcomes']} episode outcomes",
                           flush=True)
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] resolve FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
+                resolve_future = None
+            if now - last_resolve >= args.resolve_every:
+                if resolve_future is not None:
+                    print(f"[{time.strftime('%H:%M:%S')}] resolve remains "
+                          "in progress; not starting a duplicate pass",
+                          flush=True)
+                else:
+                    resolve_future = resolver_pool.submit(resolve_batch,
+                                                          args.db)
+                    last_resolve = now
+                    print(f"[{time.strftime('%H:%M:%S')}] resolve started "
+                          "(background)", flush=True)
             # Independent all-eligible measurement cycle (Task 3): cadence +
             # calibration over EVERY eligible coin, separate from the
             # interactive scan and never changing its rankings. Episode
@@ -215,6 +247,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        resolver_pool.shutdown(wait=False, cancel_futures=True)
         try:
             app.store.close()
         except Exception:
