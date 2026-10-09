@@ -113,6 +113,25 @@ p_blocked = pl.build_plan(sc("LONG", 100.0, min_notional=5.0), stake=0.10, swing
 check("min notional > stake -> not tradeable", not p_blocked.tradeable)
 check("min notional warning present", any("min notional" in w for w in p_blocked.warnings))
 
+print("\n=== near-max leverage with a tight stop warns ===")
+p_hot = pl.build_plan(sc("SHORT", 100.0, min_notional=0.01), stake=50.0,
+                      swing_ref=100.5)   # 0.5% stop -> 50x
+check("tight stop computes near-max leverage", p_hot.leverage >= 40,
+      f"lev={p_hot.leverage}")
+check("high-leverage fragility warned",
+      any("near the 50x" in w for w in p_hot.warnings), str(p_hot.warnings))
+check("warning names the stop distance",
+      any("0.50%" in w for w in p_hot.warnings), str(p_hot.warnings))
+p_calm = pl.build_plan(sc("SHORT", 100.0, min_notional=0.01), stake=50.0,
+                       swing_ref=106.0)  # 6% stop -> low leverage
+check("wide stop stays quiet",
+      not any("near the 50x" in w for w in p_calm.warnings),
+      str(p_calm.warnings))
+p_hot_long = pl.build_plan(sc("LONG", 100.0, min_notional=0.01), stake=50.0,
+                           swing_ref=99.5)
+check("warning is direction-symmetric",
+      any("near the 50x" in w for w in p_hot_long.warnings))
+
 print("\n=== funding sign is direction-aware ===")
 p_lf = pl.build_plan(sc("LONG", 100.0, funding=0.001), stake=50.0, swing_ref=94.0,
                      funding_rate=0.001)

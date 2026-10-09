@@ -23,6 +23,7 @@ FUNDING_CYCLE_HOURS = 8
 # liquidation point - conflating the two is what broke the first version.)
 LIQ_BUFFER = 2.0              # stop must cost <= 1/2 of margin
 MAX_LEVERAGE = 50
+HIGH_LEVERAGE_WARN = 40     # at/above this, flag wick/slippage fragility
 MIN_LEVERAGE_FLOOR = 20       # operator's stated band; planner may go BELOW and flag
 
 
@@ -217,6 +218,12 @@ def build_plan(sc, stake, risk_per_trade_pct=2.0, swing_ref=None,
         p.warnings.append(
             f"break-even move {break_even_pct:.2f}% is a large fraction of the "
             f"{stop_distance_pct:.2f}% stop — costs dominate this trade")
+    if lev >= HIGH_LEVERAGE_WARN:
+        p.warnings.append(
+            f"leverage {lev}x is near the {MAX_LEVERAGE}x venue maximum with "
+            f"only a {stop_distance_pct:.2f}% stop — almost no room for wicks "
+            f"or slippage; a fill even slightly past the stop costs far more "
+            f"than the ${max_loss:.4f} max loss")
     for v in sc.vetoes:
         p.warnings.append(f"vetoed: {v.reason}")
     copy_counter_trend(sc, p)
