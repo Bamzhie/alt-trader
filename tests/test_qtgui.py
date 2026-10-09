@@ -822,6 +822,46 @@ def t_snapshot():
 # 8. NO-NETWORK TRIPWIRE
 # ==========================================================================
 
+def t_theme():
+    print("== 9 theme: light readable palette, distinct hues, real contrast")
+
+    def lum(hexstr):
+        hexstr = hexstr.lstrip("#")
+        r, g, b = (int(hexstr[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+        def lin(c):
+            return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+        return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+
+    def contrast(a, b):
+        la, lb = lum(a), lum(b)
+        hi, lo = max(la, lb), min(la, lb)
+        return (hi + 0.05) / (lo + 0.05)
+
+    check("surface is light (readable base)", lum(qtheme.SURFACE) > 0.7,
+          qtheme.SURFACE)
+    check("body text is ink (dark on light)", lum(qtheme.TEXT) < 0.08,
+          qtheme.TEXT)
+    check("body contrast ≥ 7:1",
+          contrast(qtheme.TEXT, qtheme.SURFACE) >= 7.0,
+          f"{contrast(qtheme.TEXT, qtheme.SURFACE):.1f}:1")
+    check("muted text contrast ≥ 4.5:1",
+          contrast(qtheme.TEXT_MUTED, qtheme.SURFACE) >= 4.5,
+          f"{contrast(qtheme.TEXT_MUTED, qtheme.SURFACE):.1f}:1")
+    check("selected white-on-blue contrast ≥ 4.5:1",
+          contrast(qtheme.SELECT_FG, qtheme.SELECT_BG) >= 4.5,
+          f"{contrast(qtheme.SELECT_FG, qtheme.SELECT_BG):.1f}:1")
+    hues = {qtheme.LONG_BG, qtheme.SHORT_BG, qtheme.VETO_BG,
+            qtheme.SURFACE, qtheme.WATCH_FG, qtheme.ACCENT}
+    check("direction/status hues all distinct", len(hues) == 6, str(hues))
+    check("watch amber readable on surface",
+          contrast(qtheme.WATCH_FG, qtheme.SURFACE) >= 4.5,
+          f"{contrast(qtheme.WATCH_FG, qtheme.SURFACE):.1f}:1")
+    check("error red readable on surface",
+          contrast(qtheme.ERROR_FG, qtheme.SURFACE) >= 4.5,
+          f"{contrast(qtheme.ERROR_FG, qtheme.SURFACE):.1f}:1")
+
+
 def t_tripwire():
     check("ALLOW_NETWORK stays False — this file has no live tests",
           ALLOW_NETWORK is False)
@@ -864,6 +904,8 @@ if __name__ == "__main__":
         ("7 snapshot: close writes .last_entries, relaunch repopulates",
          t_snapshot),
         ("8 tripwire: sockets blocked, no live tests", t_tripwire),
+        ("9 theme: light readable palette, distinct hues, real contrast",
+         t_theme),
     ]
     for name, fn in tests:
         print(f"\n== {name}")

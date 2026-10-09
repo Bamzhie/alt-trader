@@ -1,14 +1,15 @@
 """Design tokens + QSS theme for the ALT RADAR Qt port (PySide6 Widgets).
 
-Dark trading-terminal language, ONE theme only (decided in the Q1 brief):
-near-black zinc surfaces, a single restrained accent, semantic LONG green /
-SHORT red kept as direction tints (never decoration), mono numerals in every
-data pane. Fusion is the base style; this file layers a QSS stylesheet and a
-dark palette on top of it.
+Light readability-first language (decided with the operator: the dark
+terminal made analysis hard). Near-white surfaces, ink text, DISTINCT
+hues per element type so a glance separates direction, warnings, badges,
+and data: semantic LONG green / SHORT red kept as direction tints (never
+decoration), amber warnings, blue selection + links, gold-tier accents.
+Mono numerals in every data pane. Fusion is the base style; this file
+layers a QSS stylesheet and a light palette on top of it.
 
 No per-file hex outside this module — every color qtgui/app.py uses is a
-named constant here (the tkinter gui/theme.py enforces the same rule with
-TestNoHardcodedColors for its palette).
+named constant here.
 
 The row-tag vocabulary (long / long_alt / short / short_alt / plain /
 vetoed / watch) is SHARED with gui/model.row_tags, which returns names
@@ -23,36 +24,36 @@ from gui.theme import (  # shared tag vocabulary with gui/model.row_tags
     TAG_PLAIN, TAG_PLAIN_ALT, TAG_VETOED, TAG_VETOED_ALT, TAG_WATCH,
 )
 
-# ---- palette (base + semantics) ----
-WINDOW_BG = "#0a0a0d"       # near-black zinc
-SURFACE = "#121216"         # panel / table base
-SURFACE_ALT = "#17171c"     # banded row
-HEADER_BG = "#1d1d23"       # table header + raised controls
-HEADER_HOVER = "#24242c"
-BORDER = "#26262e"
-BORDER_STRONG = "#2f2f38"
-TEXT = "#d6d6dc"
-TEXT_DIM = "#b6b6c0"
-TEXT_MUTED = "#8a8a93"
-SELECT_BG = "#1f2a3d"       # selection: accent-tinted, restrained
-SELECT_FG = "#e8e8ee"
-ACCENT = "#4f8ef7"          # THE accent — focus rings only
+# ---- palette (base + semantics): light, distinct, high-contrast ----
+WINDOW_BG = "#e9edf2"       # cool light grey-blue app surround
+SURFACE = "#ffffff"         # panel / table base
+SURFACE_ALT = "#f1f4f8"     # banded row
+HEADER_BG = "#dde4ec"       # table header + raised controls
+HEADER_HOVER = "#ccd6e2"
+BORDER = "#c3ccd8"
+BORDER_STRONG = "#9fabbd"
+TEXT = "#16202c"            # ink navy-black body text
+TEXT_DIM = "#334052"
+TEXT_MUTED = "#5d6b7e"
+SELECT_BG = "#1d4ed8"       # strong blue selection (white text on top)
+SELECT_FG = "#ffffff"
+ACCENT = "#1d4ed8"          # THE accent — links, focus rings, primary actions
 
-LONG_BG = "#12261b"
-LONG_BG_ALT = "#0f2017"
-SHORT_BG = "#2a1517"
-SHORT_BG_ALT = "#231214"
-VETO_BG = "#151519"
-VETO_BG_ALT = "#121216"
-VETO_FG = "#77777f"
-WATCH_FG = "#e0a44c"
-WARN_FG = "#e0a44c"
-ERROR_FG = "#f26a6a"
-READONLY_BG = "#2a1315"
-READONLY_FG = "#ff8080"
-TIER2_FG = "#d9a441"
-STATUS_MUTED_FG = "#9a9aa3"
-DETAIL_BG = "#0d0d11"
+LONG_BG = "#d9f0de"         # distinct LONG green tint
+LONG_BG_ALT = "#c6e8cf"
+SHORT_BG = "#fbdede"        # distinct SHORT red tint
+SHORT_BG_ALT = "#f3c9c5"
+VETO_BG = "#eef0f3"         # neutral grey veto rows
+VETO_BG_ALT = "#e2e5ea"
+VETO_FG = "#5f6b7a"
+WATCH_FG = "#b45309"        # dark amber (contrast-safe on white)
+WARN_FG = "#b45309"
+ERROR_FG = "#b91c1c"
+READONLY_BG = "#fee2e2"
+READONLY_FG = "#b91c1c"
+TIER2_FG = "#92600a"        # bronze tier marker
+STATUS_MUTED_FG = "#5d6b7e"
+DETAIL_BG = "#ffffff"
 
 # ---- type + rhythm (mirrors gui/theme.py's role names) ----
 ROW_HEIGHT = 26
@@ -144,8 +145,8 @@ def _qcolor(hexstr):
     return QColor(hexstr)
 
 
-def dark_palette():
-    """Fusion-compatible dark QPalette (base roles + disabled states)."""
+def light_palette():
+    """Fusion-compatible light QPalette (base roles + disabled states)."""
     p = QPalette()
     active = [
         (QPalette.ColorRole.Window, WINDOW_BG),
@@ -229,7 +230,7 @@ QComboBox QAbstractItemView { background: %(SURFACE_ALT)s;
 
 /* ---- tables (item backgrounds come from row tags, not here) ---- */
 QTableWidget { background: %(SURFACE)s; alternate-background-color: %(SURFACE)s;
-               border: 1px solid %(BORDER)s; gridline-color: transparent;
+               border: 1px solid %(BORDER)s; gridline-color: %(BORDER)s;
                outline: 0; }
 QTableWidget::item { padding: 0 5px; border: none; }
 QTableWidget::item:selected { background: %(SELECT_BG)s;
@@ -290,13 +291,13 @@ QSplitter { background: %(WINDOW_BG)s; }
 
 
 def apply_theme(app):
-    """Install the dark terminal theme on a QApplication. Idempotent.
+    """Install the light readability theme on a QApplication. Idempotent.
 
     Fusion is the base style (predictable cross-platform metrics for the
     dense tables); the QSS + palette layer on top supply the look.
     """
     app.setStyle("Fusion")
-    app.setPalette(dark_palette())
+    app.setPalette(light_palette())
     app.setStyleSheet(QSS)
     app.setFont(ui_font())
     return True
