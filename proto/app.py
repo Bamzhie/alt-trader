@@ -21,7 +21,7 @@ from . import mexc
 from . import scan as scanmod
 from . import indicators as ind
 from . import planner as pl
-from .scan import build_universe, score_universe, venue_health
+from .scan import build_universe, score_universe, venue_health, UNIVERSE_BUDGET
 from .store import Store
 
 SORT_KEYS = {
@@ -63,7 +63,12 @@ class App:
     def refresh_universe(self):
         # store passed -> rotation pointer read/advanced each refresh, so the
         # 30-coin rotation window sweeps forward and survives restarts.
-        self.uni = build_universe(self.args.stake, store=self.store)
+        # `universe_budget` is an OPTIONAL front-end hook (the GUI ties it to
+        # its --coins control); absent, the guaranteed 150-coin budget keeps
+        # applying exactly as before.
+        budget = getattr(self.args, "universe_budget", UNIVERSE_BUDGET)
+        self.uni = build_universe(self.args.stake, budget=budget,
+                                  store=self.store)
         self.det = mexc.details()
         self.tk = mexc.tickers()
         self._uni_at = time.time()
