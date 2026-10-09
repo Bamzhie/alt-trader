@@ -394,6 +394,13 @@ class RadarGUI(tk.Tk):
         cb_sort.bind("<<ComboboxSelected>>", self._on_sort_change)
         sep()
 
+        ttk.Label(bar, text="Find").pack(side=tk.LEFT)
+        self.var_search = tk.StringVar(value="")
+        ent_search = ttk.Entry(bar, textvariable=self.var_search, width=10)
+        ent_search.pack(side=tk.LEFT)
+        ent_search.bind("<KeyRelease>", self._on_search_change)
+        sep()
+
         self.btn_scan = ttk.Button(bar, text="Scan now",
                                    command=lambda: self._submit("scan"))
         self.btn_scan.pack(side=tk.LEFT, padx=2)
@@ -705,6 +712,10 @@ class RadarGUI(tk.Tk):
         self._render_table()
         self._render_header()
 
+    def _on_search_change(self, _event=None):
+        self._render_table()
+        self._render_header()
+
     def _toggle_auto(self):
         self.auto_scan = not self.auto_scan
         self.btn_auto.configure(text=self._auto_label())
@@ -988,6 +999,7 @@ class RadarGUI(tk.Tk):
         for iid in tree.get_children():
             tree.delete(iid)
         cards = model.filter_cards(self.cards, self.dir_filter)
+        cards = model.filter_search(cards, self.var_search.get())
         ranked, vetoed = model.split_vetoed(cards)
         ranked = model.sort_cards(ranked, self.sort_key)
         vetoed = model.sort_cards(vetoed, self.sort_key)

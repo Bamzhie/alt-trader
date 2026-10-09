@@ -126,6 +126,18 @@ def filter_cards(cards, dir_filter):
     raise ValueError(f"unknown direction filter: {dir_filter!r}")
 
 
+def filter_search(cards, text):
+    """Coin substring filter (the search box): case-insensitive, trimmed.
+
+    Empty/blank text keeps everything. Never raises — a search that matches
+    nothing simply shows an empty table.
+    """
+    q = str(text or "").strip().upper()
+    if not q:
+        return list(cards)
+    return [c for c in cards if q in str(getattr(c, "coin", "")).upper()]
+
+
 def sort_cards(cards, key):
     """Sort a list with proto.app.SORT_KEYS semantics.
 
@@ -362,7 +374,9 @@ def detail_text(card, plan=None, plan_err=None, stake=None, last_error=None):
         out.append("")
 
     counters = [n for n in notes
-                if isinstance(n, str) and n.startswith("counter-trend:")]
+                if isinstance(n, str) and (n.startswith("counter-trend:") or
+                                           n.startswith("MTF ") or
+                                           n.startswith("DATA "))]
     if counters:
         out.append("WARNINGS")
         for n in counters:

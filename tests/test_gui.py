@@ -264,6 +264,27 @@ class TestFilterCards(unittest.TestCase):
         self.assertEqual(model.filter_cards([], "long"), [])
 
 
+class TestFilterSearch(unittest.TestCase):
+    def setUp(self):
+        self.cards = [mkcard("QNT"), mkcard("QUANTA"), mkcard("BTC")]
+
+    def test_substring_case_insensitive(self):
+        self.assertEqual([c.coin for c in model.filter_search(self.cards, "qnt")],
+                         ["QNT"])
+        self.assertEqual([c.coin for c in model.filter_search(self.cards, "quan")],
+                         ["QUANTA"])
+
+    def test_blank_keeps_everything(self):
+        for blank in ("", "   ", None):
+            out = model.filter_search(self.cards, blank)
+            self.assertEqual([c.coin for c in out], ["QNT", "QUANTA", "BTC"])
+            self.assertIsNot(out, self.cards)
+
+    def test_no_match_is_empty_not_an_error(self):
+        self.assertEqual(model.filter_search(self.cards, "zzz"), [])
+        self.assertEqual(model.filter_search([], "qnt"), [])
+
+
 class TestSortCards(unittest.TestCase):
     def setUp(self):
         # distinct values per sort key so every ordering is unambiguous
@@ -574,7 +595,8 @@ class TestWidgetLayer(unittest.TestCase):
             # Drop StringVars while the interpreter is still alive so their
             # __del__ never races interpreter teardown (stderr noise).
             for name in ("var_header", "var_stake", "var_threshold", "var_coins",
-                         "var_interval", "var_dir", "var_sort", "var_outcomes",
+                         "var_interval", "var_dir", "var_sort", "var_search",
+                         "var_outcomes",
                          "var_activity", "var_failed", "var_statusline"):
                 setattr(gui, name, None)
             gui._on_close()          # sets the stop flag, destroys the window
@@ -918,6 +940,18 @@ class TestWidgetLayer(unittest.TestCase):
                 "gui", "app.py")) as f:
             src = f.read()
         self.assertEqual(src.count("def _on_stats"), 1)
+
+    def test_find_box_filters_table(self):
+        gui = self.make_gui()
+        gui.set_cards([mkcard("QNT", score=70), mkcard("BTC", score=60)])
+        self.assertIn("QNT", gui.tree.get_children())
+        gui.var_search.set("btc")
+        gui._on_search_change()
+        self.assertNotIn("QNT", gui.tree.get_children())
+        self.assertIn("BTC", gui.tree.get_children())
+        gui.var_search.set("")
+        gui._on_search_change()
+        self.assertIn("QNT", gui.tree.get_children())
 
     def test_scan_prune_keeps_good_plans(self):
         gui = self.make_gui()
