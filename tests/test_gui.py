@@ -893,6 +893,32 @@ class TestWidgetLayer(unittest.TestCase):
         self.assertIn("showing saved", gui2.scan_status)
         self.assertIn("live scan running", gui2.scan_status)
 
+    def test_hit_stats_stream(self):
+        gui = self.make_gui()
+        # scan results carry plan stats -> panel line without manual refresh
+        gui._on_scan({"universe": 1, "stats": dict(gui.stats),
+                      "cards": [mkcard("AAA", score=70)],
+                      "failed": 0, "errors": {}, "status": "s",
+                      "plan": {"planned": 10, "stop_hit": 3, "tp1_hit": 5,
+                               "tp2_hit": 1, "stop_pct": 30.0,
+                               "tp1_pct": 50.0, "tp2_pct": 10.0}})
+        panel = gui.var_outcomes.get()
+        self.assertIn("stop 3 (30%)", panel)
+        self.assertIn("TP1 5 (50%)", panel)
+        self.assertIn("TP2 1 (10%)", panel)
+        # auto tick refreshes stats on its own every 30s (no network job)
+        gui._busy.discard("scan")
+        gui.auto_scan = False
+        gui._last_stats_ts = 0.0
+        gui._tick()
+        self.assertIn("stats", gui._busy)
+        # single _on_stats definition (duplicate-handler regression guard)
+        with open(os.path.join(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))),
+                "gui", "app.py")) as f:
+            src = f.read()
+        self.assertEqual(src.count("def _on_stats"), 1)
+
     def test_scan_prune_keeps_good_plans(self):
         gui = self.make_gui()
         gui._plan_cache["AAA"] = {"plan": pl.Plan(coin="AAA",

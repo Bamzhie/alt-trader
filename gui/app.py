@@ -41,6 +41,7 @@ DIR_CHOICES = ("Both", "Long", "Short")
 
 POLL_MS = 120      # worker-result drain period
 TICK_MS = 500      # auto-scan scheduler period
+STATS_EVERY_S = 30  # outcomes/plan-hit panel refresh cadence (streaming)
 
 # Row colour tags (brief: long green-tint, short red-tint, vetoed grey,
 # WATCH orange flag text). ttk.Treeview tags are ROW-level — Tk has no
@@ -124,6 +125,7 @@ class Worker(threading.Thread):
                     "log_errors": app.log_errors,
                     "universe_error": app.universe_error,
                     "stats": app.store.stats(), "elapsed": time.time() - t0,
+                    "plan": app.store.plan_stats(),
                     "digest": {
                         "picks": picks_mod.top_picks(
                             app.cards, job["stake"], job["log_threshold"]),
@@ -243,6 +245,7 @@ class RadarGUI(tk.Tk):
         self.outcome = model.outcome_summary(None)
         self.hit24 = report_mod.signal_stats(None, 24)
         self.plan_stats = {"planned": 0}
+        self._last_stats_ts = 0.0
         self.selected_coin = None
         self._last_errors = {}          # {coin: reason} from the last scan
         self.digest = {"picks": [], "watch": [], "new": []}
@@ -844,6 +847,8 @@ class RadarGUI(tk.Tk):
         self.attempted = len(cards) + self.failed
         self._last_errors = dict(msg.get("errors") or {})
         self.scan_status = msg.get("status", "")
+        if msg.get("plan"):
+            self.plan_stats = msg["plan"]
         if msg.get("digest"):
             self.digest = msg["digest"]
         uni_err = msg.get("universe_error")
@@ -883,14 +888,6 @@ class RadarGUI(tk.Tk):
             self._set_error(f"universe refresh failed: {uni_err} "
                             "(scoring the cached universe)")
         self._render_all()
-
-    def _on_stats(self, msg):
-        self.stats = msg.get("stats") or self.stats
-        self.outcome = msg.get("outcome") or self.outcome
-        if msg.get("hit24"):
-            self.hit24 = msg["hit24"]
-        self._render_header()
-        self._render_outcomes()
 
     def _on_stats(self, msg):
         self.stats = msg.get("stats") or self.stats
@@ -939,6 +936,13 @@ class RadarGUI(tk.Tk):
             if (self.auto_scan and "scan" not in self._busy
                     and time.time() - self.last_scan_ts >= self.interval):
                 self._submit("scan")
+            # Stream the measurement panel: a stats job is one cheap DB read
+            # (no network), so hit-rates move on their own every 30s and on
+            # every scan/resolve — never a manual Refresh to see movement.
+            if ("stats" not in self._busy
+                    and time.time() - self._last_stats_ts >= STATS_EVERY_S):
+                if self._submit("stats"):
+                    self._last_stats_ts = time.time()
             if not self._closing:
                 self.after(TICK_MS, self._tick)
         except tk.TclError:
@@ -1087,9 +1091,10 @@ class RadarGUI(tk.Tk):
         try:
             ps = getattr(self, "plan_stats", None) or {"planned": 0}
             if ps.get("planned"):
-                lines.append(f"plans: {ps['planned']} resolved · stop "
-                             f"{ps['stop_pct']:.0f}% · TP1 {ps['tp1_pct']:.0f}% "
-                             f"· TP2 {ps['tp2_pct']:.0f}%")
+                lines.append(f"plans live: {ps['planned']} resolved · stop "
+                             f"{ps['stop_hit']} ({ps['stop_pct']:.0f}%) · TP1 "
+                             f"{ps['tp1_hit']} ({ps['tp1_pct']:.0f}%) · TP2 "
+                             f"{ps['tp2_hit']} ({ps['tp2_pct']:.0f}%)")
             else:
                 lines.append("plans: none resolved yet")
         except Exception:
