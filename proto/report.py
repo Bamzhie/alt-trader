@@ -76,6 +76,17 @@ def format_report(stats):
     return "\n".join(L)
 
 
+def format_plan_hits(store):
+    """Stop/TP1/TP2 first-touch line over resolved planned signals."""
+    p = store.plan_stats() if store is not None else None
+    if not p or not p["planned"]:
+        return "plans: none resolved yet (logged plans resolve as bars arrive)"
+    return (f"plans: {p['planned']} resolved · stop hit {p['stop_hit']} "
+            f"({p['stop_pct']:.0f}%) · TP1 hit {p['tp1_hit']} "
+            f"({p['tp1_pct']:.0f}%) · TP2 hit {p['tp2_hit']} "
+            f"({p['tp2_pct']:.0f}%)")
+
+
 def format_top20(days_stats):
     """Daily top-20 review table: the 3–7 day analysis view.
 
@@ -117,6 +128,7 @@ def main():
             print(format_top20(picks_mod.daily_top20(store, args.days)))
         else:
             print(format_report(signal_stats(store, args.hours)))
+            print(format_plan_hits(store))
     finally:
         store.close()
 

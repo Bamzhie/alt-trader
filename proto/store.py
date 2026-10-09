@@ -61,6 +61,37 @@ CREATE TABLE IF NOT EXISTS outcome_log (
 );
 CREATE INDEX IF NOT EXISTS idx_outcome_signal ON outcome_log(signal_id);
 
+-- Logged trade plan per flagged signal: the levels the measurement judges.
+-- One row per signal at most (a signal's plan is frozen at log time).
+CREATE TABLE IF NOT EXISTS plan_log (
+    signal_id   INTEGER PRIMARY KEY REFERENCES signal_log(id),
+    direction   TEXT    NOT NULL,
+    entry_low   REAL,
+    entry_high  REAL,
+    stop        REAL,
+    tp1         REAL,
+    tp2         REAL,
+    leverage    INTEGER,
+    notional    REAL,
+    max_loss    REAL,
+    logged_at   INTEGER
+);
+
+-- First-touch outcomes of the logged plan, walked bar by bar.
+-- Same-bar stop+target touch counts the STOP (conservative: fills fail
+-- against you first). NULL touch = not touched in the bars examined.
+CREATE TABLE IF NOT EXISTS plan_outcome (
+    signal_id   INTEGER PRIMARY KEY REFERENCES signal_log(id),
+    stop_hit    INTEGER NOT NULL DEFAULT 0,
+    tp1_hit     INTEGER NOT NULL DEFAULT 0,
+    tp2_hit     INTEGER NOT NULL DEFAULT 0,
+    bars_to_stop INTEGER,
+    bars_to_tp1  INTEGER,
+    bars_to_tp2  INTEGER,
+    bars_examined INTEGER,
+    resolved_at INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -159,6 +190,66 @@ class Store:
              sc.oi_change_pct))
         self.conn.commit()
         return cur.lastrowid
+
+    def log_plan(self, signal_id, plan):
+        """Freeze a flagged signal's trade plan for stop/TP measurement."""
+        import time as _t
+        self.conn.execute(
+            """INSERT OR REPLACE INTO plan_log
+               (signal_id, direction, entry_low, entry_high, stop, tp1, tp2,
+                leverage, notional, max_loss, logged_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (signal_id, plan.direction, plan.entry_low, plan.entry_high,
+             plan.stop, plan.tp1, plan.tp2, plan.leverage, plan.notional,
+             plan.max_loss, int(_t.time())))
+        self.conn.commit()
+
+    def planned(self, limit=2000):
+        """(signal_id, coin, direction, entry/ts..., stop, tp1, tp2, ts)
+        for flagged signals with a logged plan and no TERMINAL outcome.
+
+        Terminal = stop touched or TP2 touched (the trade is over). Rows
+        with only TP1 (or nothing yet) stay in the set so later runs with
+        more bars keep resolving them. Ordered oldest-first.
+        """
+        return list(self.conn.execute(
+            """SELECT p.signal_id, s.coin, s.direction, s.price, s.ts,
+                      p.stop, p.tp1, p.tp2
+               FROM plan_log p JOIN signal_log s ON s.id = p.signal_id
+               LEFT JOIN plan_outcome o ON o.signal_id = p.signal_id
+               WHERE s.flagged = 1
+                 AND (o.signal_id IS NULL
+                      OR (o.stop_hit = 0 AND o.tp2_hit = 0))
+               ORDER BY s.ts ASC LIMIT ?""", (limit,)).fetchall())
+
+    def log_plan_outcome(self, signal_id, stop_hit, tp1_hit, tp2_hit,
+                         bars_to_stop, bars_to_tp1, bars_to_tp2,
+                         bars_examined):
+        import time as _t
+        self.conn.execute(
+            """INSERT OR REPLACE INTO plan_outcome
+               (signal_id, stop_hit, tp1_hit, tp2_hit, bars_to_stop,
+                bars_to_tp1, bars_to_tp2, bars_examined, resolved_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (signal_id, 1 if stop_hit else 0, 1 if tp1_hit else 0,
+             1 if tp2_hit else 0, bars_to_stop, bars_to_tp1, bars_to_tp2,
+             bars_examined, int(_t.time())))
+        self.conn.commit()
+
+    def plan_stats(self):
+        """Stop/TP1/TP2 hit counts over resolved planned signals."""
+        rows = self.conn.execute(
+            "SELECT stop_hit, tp1_hit, tp2_hit FROM plan_outcome").fetchall()
+        n = len(rows)
+        if not n:
+            return {"planned": 0, "stop_hit": 0, "tp1_hit": 0, "tp2_hit": 0,
+                    "stop_pct": 0.0, "tp1_pct": 0.0, "tp2_pct": 0.0}
+        sh = sum(r[0] for r in rows)
+        t1 = sum(r[1] for r in rows)
+        t2 = sum(r[2] for r in rows)
+        return {"planned": n, "stop_hit": sh, "tp1_hit": t1, "tp2_hit": t2,
+                "stop_pct": 100.0 * sh / n, "tp1_pct": 100.0 * t1 / n,
+                "tp2_pct": 100.0 * t2 / n}
 
     def count(self, flagged=None):
         if flagged is None:

@@ -94,9 +94,11 @@ def main():
                     if not sym_map:
                         sym_map = full_symbol_map()
                     done = outmod.resolve_pending(app.store, sym_map)
+                    pdone = outmod.resolve_plans(app.store, sym_map)
                     last_resolve = now
                     print(f"[{time.strftime('%H:%M:%S')}] resolve: "
-                          f"{done} new outcomes", flush=True)
+                          f"{done} new outcomes, {pdone} plan rows",
+                          flush=True)
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] resolve FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)

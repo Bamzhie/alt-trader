@@ -90,6 +90,8 @@ class Scorecard:
     change_24h_pct: float = 0.0
     quote_vol_24h: float = 0.0
     spread_pct: float = 0.0
+    plan: Optional[object] = None   # proto.planner.Plan, attached at scan
+                                    # time for flagged cards (not relogged)
 
     @property
     def actionable(self):

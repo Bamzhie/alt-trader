@@ -285,6 +285,18 @@ Bars come from REST for the short horizons and from the collector's
 `data/bars/*.csv.gz` files for `7d` (REST caps at 2000 bars, short of the
 2016 needed) — that is why **Collect bars** matters for 7d coverage.
 
+### Stop / TP1 / TP2 hits (the main goal)
+
+Every flagged signal freezes its trade plan at score time (`plan_log`:
+entry, stop, TP1, TP2, leverage) — built from the same bars the score
+used, so evidence and levels can't drift apart. The resolver then walks
+forward bars for first touches (`plan_outcome`): stop checked first on
+each bar (a bar touching both counts the stop — fills fail against you
+first), TP1/TP2 after. `plans:` line in this panel and
+`python3 -m proto.report` show stop/TP1/TP2 hit rates. NULL touches mean
+"not touched in the bars examined yet" — later runs keep resolving until
+stop or TP2 hits (terminal), so young plans fill in over hours.
+
 ### The 3–7 day review: daily top-20
 
 The week's analysis focuses on **daily top-20 performance**:

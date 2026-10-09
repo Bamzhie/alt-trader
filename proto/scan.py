@@ -379,7 +379,8 @@ def tf_lean(sym, interval, limit=200, min_bars=30):
     return volume_price_component(bars)[1]
 
 
-def analyse_one(sym, coin, detail, tk_row, stake, errors=None):
+def analyse_one(sym, coin, detail, tk_row, stake, errors=None,
+                attach_plans=False):
     """Fetch bars + book for one coin and score it. Returns a Scorecard or None.
 
     None is ALWAYS a counted failure: the reason is recorded in
@@ -464,13 +465,27 @@ def analyse_one(sym, coin, detail, tk_row, stake, errors=None):
                                 f"bonus (missing evidence, not neutral)")
         if _skew_note is not None:
             sc.notes.append(_skew_note)
+        if attach_plans and sc.direction in ("LONG", "SHORT") and not sc.vetoes:
+            # Score-consistent plan snapshot for the measurement log: swing
+            # from the SAME bars the score used (no extra request, no drift
+            # between evidence and levels). Unplannable geometry -> None.
+            try:
+                swing = (ind.swing_low(bars) if sc.direction == "LONG"
+                         else ind.swing_high(bars))
+                if swing is None:
+                    swing = (bars[-1]["l"] if sc.direction == "LONG"
+                             else bars[-1]["h"])
+                sc.plan = pl.build_plan(sc, stake=stake, swing_ref=swing)
+            except (ValueError, IndexError):
+                sc.plan = None
         return sc
     except Exception as e:
         return fail(f"{type(e).__name__}: {e}")
 
 
 def score_universe(ranked, det, tk, stake, analyse=None, errors=None,
-                   stagger=STAGGER_S, max_workers=MAX_WORKERS):
+                   stagger=STAGGER_S, max_workers=MAX_WORKERS,
+                   attach_plans=False):
     """Concurrent per-coin fetch+score (spec SS3).
 
     12 workers; the first wave of submissions is staggered 100ms apart so
@@ -480,12 +495,20 @@ def score_universe(ranked, det, tk, stake, analyse=None, errors=None,
     in `errors` as {coin: reason} - never silently dropped.
     """
     analyse = analyse or analyse_one
+    # attach_plans rides along only when the analyser accepts it (analyse_one
+    # does; third-party analysers keep the old 6-arg call working).
+    import inspect as _inspect
+    _takes_plans = (analyse is analyse_one or "attach_plans"
+                    in _inspect.signature(analyse).parameters)
     cards = []
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futs = []
         for i, (sym, coin) in enumerate(ranked):
+            kw = {"errors": errors}
+            if _takes_plans:
+                kw["attach_plans"] = attach_plans
             futs.append(ex.submit(analyse, sym, coin, det.get(sym, {}),
-                                  tk.get(sym, {}), stake, errors=errors))
+                                  tk.get(sym, {}), stake, **kw))
             if i < max_workers and stagger:
                 time.sleep(stagger)
         for f in as_completed(futs):

@@ -133,16 +133,20 @@ class Worker(threading.Thread):
         if cmd == "stats":
             return {"kind": "stats", "ok": True, "stats": app.store.stats(),
                     "outcome": model.outcome_summary(app.store),
-                    "hit24": report_mod.signal_stats(app.store, 24)}
+                    "hit24": report_mod.signal_stats(app.store, 24),
+                    "plan": app.store.plan_stats()}
         if cmd == "resolve":
             if not app.uni:                 # need the venue symbol map first
                 app.refresh_universe()
             sym_map = dict((cn, sy) for sy, cn in app.uni)
             n = outcomes_mod.resolve_pending(app.store, sym_map)
+            pdone = outcomes_mod.resolve_plans(app.store, sym_map)
             return {"kind": "resolve", "ok": True, "resolved": n,
                     "stats": app.store.stats(),
                     "outcome": model.outcome_summary(app.store),
-                    "hit24": report_mod.signal_stats(app.store, 24)}
+                    "hit24": report_mod.signal_stats(app.store, 24),
+                    "plan": app.store.plan_stats(),
+                    "plans_resolved": pdone}
         if cmd == "collect":
             counts = collector.collect_full_universe()
             return {"kind": "collect", "ok": True, "coins": len(counts),
@@ -238,6 +242,7 @@ class RadarGUI(tk.Tk):
                       "shorts": 0, "outcomes": 0}
         self.outcome = model.outcome_summary(None)
         self.hit24 = report_mod.signal_stats(None, 24)
+        self.plan_stats = {"planned": 0}
         self.selected_coin = None
         self._last_errors = {}          # {coin: reason} from the last scan
         self.digest = {"picks": [], "watch": [], "new": []}
@@ -887,13 +892,27 @@ class RadarGUI(tk.Tk):
         self._render_header()
         self._render_outcomes()
 
+    def _on_stats(self, msg):
+        self.stats = msg.get("stats") or self.stats
+        self.outcome = msg.get("outcome") or self.outcome
+        if msg.get("hit24"):
+            self.hit24 = msg["hit24"]
+        if msg.get("plan"):
+            self.plan_stats = msg["plan"]
+        self._render_header()
+        self._render_outcomes()
+
     def _on_resolve(self, msg):
         n = int(msg.get("resolved", 0))
         self.stats = msg.get("stats") or self.stats
         self.outcome = msg.get("outcome") or self.outcome
         if msg.get("hit24"):
             self.hit24 = msg["hit24"]
-        self.scan_status = f"resolved {n} pending outcome(s)"
+        if msg.get("plan"):
+            self.plan_stats = msg["plan"]
+        self.scan_status = (f"resolved {n} pending outcome(s)"
+                            + (f", {msg.get('plans_resolved', 0)} plan(s)"
+                               if msg.get("plans_resolved") else ""))
         self._render_all()
 
     def _on_collect(self, msg):
@@ -1063,6 +1082,16 @@ class RadarGUI(tk.Tk):
                          f"{oall['resolved']} resolved · won {oall['wins']} / "
                          f"lost {oall['losses']} · {oall['pct_won']:.0f}% won · "
                          f"avg {oall['avg_return']:+.2f}%")
+        except Exception:
+            pass
+        try:
+            ps = getattr(self, "plan_stats", None) or {"planned": 0}
+            if ps.get("planned"):
+                lines.append(f"plans: {ps['planned']} resolved · stop "
+                             f"{ps['stop_pct']:.0f}% · TP1 {ps['tp1_pct']:.0f}% "
+                             f"· TP2 {ps['tp2_pct']:.0f}%")
+            else:
+                lines.append("plans: none resolved yet")
         except Exception:
             pass
         self.var_outcomes.set("\n".join(lines))

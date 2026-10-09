@@ -21,6 +21,81 @@ REST_MAX_BARS = 2000  # MEXC klines hard cap: 7d (2016 bars) never fits
 _MISSING = object()
 
 
+def plan_touches(direction, stop, tp1, tp2, fut):
+    """First-touch (1-based bars) of stop/TP1/TP2 over future bars.
+
+    Direction-aware (LONG: stop on lows, targets on highs; SHORT mirrored).
+    A bar touching both stop and a target counts the STOP (conservative:
+    adverse fills fail first). Untouched levels return None — never
+    zero-filled, so a later run with more bars can still resolve them.
+    """
+    touch = {"stop": None, "tp1": None, "tp2": None}
+    for i, b in enumerate(fut, 1):
+        if direction == "LONG":
+            stop_hit = b["l"] <= stop
+            t1 = b["h"] >= tp1
+            t2 = b["h"] >= tp2
+        else:
+            stop_hit = b["h"] >= stop
+            t1 = b["l"] <= tp1
+            t2 = b["l"] <= tp2
+        if stop_hit and touch["stop"] is None:
+            touch["stop"] = i
+        if not stop_hit:
+            if t1 and touch["tp1"] is None:
+                touch["tp1"] = i
+            if t2 and touch["tp2"] is None:
+                touch["tp2"] = i
+        if touch["stop"] is not None and touch["tp2"] is not None:
+            break
+    return touch
+
+
+def resolve_plans(store, symbol_map, data_dir="data/bars"):
+    """Walk logged plans bar-by-bar for first touches. Returns rows written.
+
+    Reads Store.planned() (unterminated only: no row yet, or neither stop
+    nor TP2 hit). Prefers collector bars (full local history), falls back
+    to REST. A run rewrites unterminated rows as more bars arrive; terminal
+    rows (stop or TP2 touched) are never revisited.
+    """
+    from . import mexc
+    rows = store.planned()
+    done = 0
+    rest_cache = {}
+    for sid, coin, direction, price, ts, stop, tp1, tp2 in rows:
+        sym = symbol_map.get(coin)
+        if not sym or stop is None or tp1 is None or tp2 is None:
+            continue
+        try:
+            col = collector.read_bars(data_dir, coin)
+        except Exception:
+            col = None
+        fut_col = [b for b in (col or []) if b["ts"] > ts]
+        bars = None
+        if fut_col:
+            bars = fut_col
+        else:
+            if sym not in rest_cache:
+                try:
+                    rest_cache[sym] = mexc.klines(sym, "5m",
+                                                 limit=REST_MAX_BARS)
+                except Exception:
+                    rest_cache[sym] = None
+            bars = rest_cache[sym]
+            if bars:
+                bars = [b for b in bars if b["ts"] > ts]
+        if not bars:
+            continue
+        touch = plan_touches(direction, stop, tp1, tp2, bars)
+        store.log_plan_outcome(
+            sid, touch["stop"] is not None, touch["tp1"] is not None,
+            touch["tp2"] is not None, touch["stop"], touch["tp1"],
+            touch["tp2"], len(bars))
+        done += 1
+    return done
+
+
 def signed_return(entry, later, direction):
     if entry <= 0:
         return 0.0

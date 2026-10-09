@@ -108,11 +108,14 @@ class App:
         cards = score_universe(ranked, self.det, self.tk, self.args.stake,
                                errors=errors,
                                stagger=scanmod.STAGGER_S,
-                               max_workers=scanmod.MAX_WORKERS)
+                               max_workers=scanmod.MAX_WORKERS,
+                               attach_plans=True)
 
         # Log: flagged rows AND shadow rows (vetoed / sub-threshold). SS6.1a.
         # Flagged = stake-aware actionable AND above threshold (selective,
         # not permissive): a None min_notional never flags (fail-closed).
+        # Flagged rows also freeze their trade plan (levels at score time)
+        # so stop/TP1/TP2 hits become measurable facts, not estimates.
         # Log write failures are counted too - never swallowed silently.
         log_errors = 0
         if self.args.write_logs:
@@ -120,7 +123,11 @@ class App:
                 flagged = (sc.is_actionable(self.args.stake)
                            and sc.score >= self.args.log_threshold)
                 try:
-                    self.store.log_signal(sc, flagged=flagged, tier=2)
+                    sid = self.store.log_signal(sc, flagged=flagged, tier=2)
+                    plan = getattr(sc, "plan", None)
+                    if flagged and plan is not None and getattr(
+                            plan, "valid", False):
+                        self.store.log_plan(sid, plan)
                 except Exception:
                     log_errors += 1
 
