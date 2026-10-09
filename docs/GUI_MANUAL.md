@@ -221,7 +221,7 @@ Top to bottom, a detail view contains:
    `⚠ counter-trend: 5m LONG vs 4H SHORT — elevated risk` (a label only,
    never a score penalty).
 10. **TRADE PLAN (review only — this app places no orders)** — the full
-    plan: direction, entry band (limit, inside spread), stop, TP1/TP2 with
+    plan: direction, entry band (limit band, hypothetical — no fill model), stop, TP1/TP2 with
     R-multiples, leverage (with the operator band), position size/margin,
     max loss, costs, break-even, reward:risk, funding note, and any plan
     warnings.
