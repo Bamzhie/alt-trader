@@ -373,6 +373,58 @@ def build_universe(stake, budget=UNIVERSE_BUDGET, store=None):
     return picked
 
 
+# Measurement universe policy (design §4): the full set of MEXC perpetual
+# contracts that pass the existing supported-symbol and structural
+# eligibility filters, independent of the interactive top-N budget and the
+# rotation window. Any change to these filters is a new policy version, which
+# changes the config hash and therefore the episode cohort.
+MEASUREMENT_UNIVERSE_POLICY = "mexc_full_v1"
+
+
+def eligible_pool(tickers, details):
+    """Every eligible (symbol, coin, detail_row), 24h-volume ranked.
+
+    The structural eligibility shared by the measurement universe and the
+    interactive universe: USDT-quoted contracts only, synthetics (equity /
+    index / commodity / FX plates) excluded, deduped by canonical coin name.
+    Deliberately NOT stake-filtered and NOT capped - measurement must cover
+    every eligible coin each cycle, so a coin the interactive scan rotates
+    out of is still measured.
+
+    Deterministic order (volume desc, then symbol) keeps the measurement
+    universe reproducible across cycles and machines.
+    """
+    pool = {}
+    for sym, row in tickers.items():
+        if not sym.endswith("_USDT"):
+            continue
+        coin = canon(sym)
+        if not coin or is_synthetic(coin, details.get(sym)):
+            continue
+        pool.setdefault(coin, []).append((sym, row))
+    out = []
+    for coin, syms in pool.items():
+        # Two symbols canonicalising to one coin: keep the plain COIN_USDT
+        # form (e.g. AAA_USDT over AAA-PERP_USDT) so the choice is stable.
+        sym, row = sorted(syms, key=lambda sr: (len(sr[0]), sr[0]))[0]
+        out.append((sym, coin, details.get(sym) or {}))
+    out.sort(key=lambda sc: (-_fnum(tickers.get(sc[0], {}).get("amount24")),
+                             sc[0]))
+    return out
+
+
+def build_measurement_universe(tickers, details, stake=None):
+    """All-eligible measurement universe as [(symbol, coin, detail_row)].
+
+    Same supported-symbol and structural eligibility filters as the current
+    MEXC universe (see eligible_pool), with no top-N budget and no rotation:
+    `stake` is accepted for interface symmetry with build_universe and is
+    deliberately unused, because a small stake must never shrink the
+    measurement universe (design §4).
+    """
+    return eligible_pool(tickers, details)
+
+
 def _gated(fn, *args, **kw):
     """One venue request, admitted through the venue-wide rate cap."""
     LIMITER.acquire()

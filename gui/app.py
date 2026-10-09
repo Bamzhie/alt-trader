@@ -17,6 +17,7 @@ Threading contract (brief):
 Read-only: no order code path exists in this app, and no keys are held.
 """
 
+import os
 import queue
 import threading
 import time
@@ -26,6 +27,7 @@ from tkinter import ttk
 from types import SimpleNamespace
 
 from proto import collector
+from proto import measurement
 from proto import mexc as mexc_mod
 from proto import outcomes as outcomes_mod
 from proto import picks as picks_mod
@@ -184,6 +186,31 @@ class Worker(threading.Thread):
             counts = collector.collect_full_universe()
             return {"kind": "collect", "ok": True, "coins": len(counts),
                     "bars": sum(counts.values())}
+        if cmd == "measure":
+            # All-eligible measurement cycle (Task 3): cadence/calibration
+            # over EVERY eligible coin, independent of the interactive scan
+            # and never changing its rankings. Runs here in the worker thread
+            # so the UI never blocks. Episode creation stays disabled until
+            # enable_epoch() passes calibration; this path never enables it.
+            if not app.uni:
+                app.refresh_universe()
+            eligible = measurement.measurement_eligible(
+                app.tk, app.det, app.args.stake)
+            counts = measurement.run_cycle(
+                app.store, eligible,
+                config=measurement.measurement_config(
+                    app.args.stake, app.args.log_threshold,
+                    getattr(app.args, "leverage_cap", None)),
+                tickers=app.tk,
+                attempt_id_factory=lambda coin, cycle_ts:
+                measurement.measurement_attempt_id(
+                    coin, cycle_ts, f"{os.getpid()}"))
+            stats = measurement.cadence_stats(app.store)
+            return {"kind": "measure", "ok": True, "counts": counts,
+                    "calibration": stats["calibration"],
+                    "gap_p95_s": stats["gap_p95_s"],
+                    "gap_p99_s": stats["gap_p99_s"],
+                    "coins": stats["coins"]}
         if cmd == "lookup":
             # Venue-wide on-demand scoring for a coin outside the current
             # rotation (Find box Enter with no table match). Current cards

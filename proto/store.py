@@ -44,9 +44,160 @@ CREATE TABLE IF NOT EXISTS signal_log (
     oi_notional     REAL,
     -- OI percent behind OIΔ% (NULL when unavailable; kept so a relaunch
     -- from saved rows still shows the percent, not just funding-only).
-    oi_change_pct   REAL
+    oi_change_pct   REAL,
+    -- Episode metadata (nullable for legacy rows)
+    obs_ts          INTEGER,          -- wall-clock time when result known
+    data_quality    TEXT,             -- "OK" or "DEGRADED"
+    degraded_reasons TEXT,             -- optional degradation reason codes
+    last_bar_ts     INTEGER,          -- most recent bar timestamp seen
+    ticker_ts       INTEGER,          -- ticker snapshot timestamp
+    stake           REAL,             -- operator stake at signal time
+    log_threshold   REAL,             -- threshold at signal time
+    leverage_cap    INTEGER,          -- leverage cap at signal time
+    config_hash     TEXT,             -- config hash for epoch/cohort
+    code_rev        TEXT              -- scorer/planner code version
 );
 CREATE INDEX IF NOT EXISTS idx_signal_ts_coin ON signal_log(ts, coin);
+-- idx_signal_config is created in _migrate() once signal_log.config_hash
+-- is guaranteed to exist: an unguarded index here breaks a legacy DB whose
+-- signal_log predates the column.
+
+-- Episode tables (additive, nullable legacy columns)
+CREATE TABLE IF NOT EXISTS signal_episode (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    coin            TEXT NOT NULL,
+    venue           TEXT NOT NULL DEFAULT 'MEXC',
+    direction       TEXT NOT NULL,         -- LONG or SHORT
+    first_signal_id INTEGER NOT NULL REFERENCES signal_log(id),
+    start_ts        INTEGER NOT NULL,      -- obs_ts of first qualifying observation
+    end_ts          INTEGER,               -- closed timestamp
+    state           TEXT NOT NULL DEFAULT 'OPEN',   -- OPEN, REARMING, CLOSED
+    close_reason    TEXT,                  -- REARM_CONFIRMED, REVERSAL, COVERAGE_LOST
+    after_gap       INTEGER DEFAULT 0,     -- 1 if started after gap
+    last_valid_ts   INTEGER,               -- last QUALIFYING/NON_QUALIFYING obs
+    last_qualifying_ts INTEGER,            -- last QUALIFYING obs
+    rearm_start_ts  INTEGER,               -- when re-arming began
+    close_ts        INTEGER,               -- when the episode closed
+    plan_status     TEXT DEFAULT 'PLANNED', -- PLANNED or NO_PLAN
+    no_plan_reason  TEXT,                  -- reason for NO_PLAN
+    -- Observation counts
+    qualifying_obs  INTEGER DEFAULT 0,
+    non_qualifying_obs INTEGER DEFAULT 0,
+    unknown_obs     INTEGER DEFAULT 0,
+    late_obs        INTEGER DEFAULT 0,
+    -- Version and config
+    config_hash     TEXT,
+    config_json     TEXT,
+    flag_rule_version    INTEGER,
+    plan_rule_version    TEXT,
+    episode_rule_version TEXT,
+    outcome_rule_version TEXT,
+    cost_model_version   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_episode_coin_state ON signal_episode(coin, state);
+CREATE INDEX IF NOT EXISTS idx_episode_config_state ON signal_episode(config_hash, state);
+-- Partial unique index for open/rearming episodes only
+CREATE UNIQUE INDEX IF NOT EXISTS idx_episode_open_unique 
+    ON signal_episode(coin, config_hash) WHERE state IN ('OPEN', 'REARMING');
+
+CREATE TABLE IF NOT EXISTS episode_observation (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    episode_id      INTEGER REFERENCES signal_episode(id),
+    signal_id       INTEGER REFERENCES signal_log(id),
+    coin            TEXT NOT NULL,
+    config_hash     TEXT NOT NULL,
+    obs_ts          INTEGER NOT NULL,
+    obs_class       INTEGER NOT NULL,    -- ObservationClass enum
+    late            INTEGER DEFAULT 0,
+    degraded_reasons TEXT,
+    attempt_id      TEXT,
+    coverage        REAL
+);
+CREATE INDEX IF NOT EXISTS idx_ep_obs_ts_coin ON episode_observation(obs_ts, coin);
+CREATE INDEX IF NOT EXISTS idx_ep_obs_signal ON episode_observation(signal_id);
+
+CREATE TABLE IF NOT EXISTS episode_cursor (
+    coin            TEXT NOT NULL,
+    config_hash     TEXT NOT NULL,
+    last_processed_obs_ts INTEGER NOT NULL,
+    PRIMARY KEY (coin, config_hash)
+);
+
+-- Migration table to track episode epoch
+CREATE TABLE IF NOT EXISTS episode_meta (
+    key   TEXT PRIMARY KEY,
+    value INTEGER   -- epoch_ts
+);
+
+-- Frozen trade plan attached to a PLANNED episode (spec 5.4).
+-- One immutable row per episode: later scans never supply a plan, and a
+-- re-resolver pass must never rewrite the levels it judges.
+CREATE TABLE IF NOT EXISTS episode_plan (
+    episode_id      INTEGER PRIMARY KEY REFERENCES signal_episode(id),
+    signal_id       INTEGER REFERENCES signal_log(id),
+    direction       TEXT    NOT NULL,        -- LONG or SHORT
+    entry_low       REAL    NOT NULL,
+    entry_high      REAL    NOT NULL,
+    stop            REAL    NOT NULL,
+    tp1             REAL    NOT NULL,
+    tp2             REAL    NOT NULL,
+    leverage        INTEGER,
+    notional        REAL,
+    max_loss        REAL,
+    -- Fill-based R multiples for TP1/TP2 (spec 8.3): the reward per unit
+    -- of risk the plan implied, frozen with the plan so a report can quote
+    -- it without recomputing from levels.
+    r_multiple_tp1  REAL,
+    r_multiple_tp2  REAL,
+    warnings        TEXT,
+    frozen_at       INTEGER
+);
+
+-- Forward resolution of one planned episode from closed 5m bars (spec 8).
+-- Terminal statuses are immutable; unresolved work stays pending and is
+-- never zero-filled.
+CREATE TABLE IF NOT EXISTS episode_outcome (
+    episode_id       INTEGER PRIMARY KEY REFERENCES signal_episode(id),
+    -- PENDING_ENTRY | FILLED | UNFILLED | UNAVAILABLE
+    entry_status     TEXT    NOT NULL DEFAULT 'PENDING_ENTRY',
+    fill_bar_open_ts INTEGER,               -- open_ts of the bar that filled
+    fill_price       REAL,                  -- modeled fill (adverse edge)
+    fill_ts          INTEGER,               -- close of the fill bar
+    -- OPEN | STOPPED | TP2 | EXPIRED | UNAVAILABLE
+    -- Nullable: an UNFILLED/UNAVAILABLE entry has no trade to describe, so
+    -- reporting records a NULL trade_status rather than a fake state.
+    trade_status     TEXT    DEFAULT 'OPEN',
+    stop_index       INTEGER,               -- bar index from the fill bar
+    tp1_index        INTEGER,
+    tp2_index        INTEGER,
+    -- Reporting-module column names (spec 11): the SAME bar indices the
+    -- resolver writes above, aliased so episode_report.py reads them by
+    -- its own name. The resolver keeps both in sync on every write; they
+    -- are never written independently.
+    stop_bar_idx     INTEGER,
+    tp1_bar_idx      INTEGER,
+    tp2_bar_idx      INTEGER,
+    tp1_before_stop  INTEGER DEFAULT 0,
+    exit_ts          INTEGER,
+    exit_price       REAL,
+    mfe_pct          REAL,                  -- best excursion from the fill
+    mae_pct          REAL,                  -- worst excursion from the fill
+    resolved_through_ts INTEGER,            -- bar-close watermark of this pass
+    resolved_at      INTEGER
+);
+
+-- Fixed-horizon descriptive returns from the modeled fill (spec 9).
+-- Ignores stops and targets; independent of the plan's hold.
+CREATE TABLE IF NOT EXISTS episode_horizon (
+    episode_id      INTEGER REFERENCES signal_episode(id),
+    horizon         TEXT    NOT NULL,       -- 1h | 4h | 24h | 7d
+    status          TEXT    NOT NULL,       -- PENDING | MATURED | UNAVAILABLE
+    return_pct      REAL,
+    mfe_pct         REAL,
+    mae_pct         REAL,
+    PRIMARY KEY (episode_id, horizon)
+);
+
 CREATE INDEX IF NOT EXISTS idx_signal_flagged ON signal_log(flagged);
 
 -- Current board: exactly one row per coin, upserted every scan. The same
@@ -164,7 +315,90 @@ class Store:
         if "oi_change_pct" not in cols:
             self.conn.execute(
                 "ALTER TABLE signal_log ADD COLUMN oi_change_pct REAL")
+        if "obs_ts" not in cols:
+            self.conn.execute(
+                "ALTER TABLE signal_log ADD COLUMN obs_ts INTEGER")
+        if "data_quality" not in cols:
+            self.conn.execute(
+                "ALTER TABLE signal_log ADD COLUMN data_quality TEXT")
+        if "degraded_reasons" not in cols:
+            self.conn.execute(
+                "ALTER TABLE signal_log ADD COLUMN degraded_reasons TEXT")
+        if "last_bar_ts" not in cols:
+            self.conn.execute(
+                "ALTER TABLE signal_log ADD COLUMN last_bar_ts INTEGER")
+        if "ticker_ts" not in cols:
+            self.conn.execute(
+                "ALTER TABLE signal_log ADD COLUMN ticker_ts INTEGER")
+        if "stake" not in cols:
+            self.conn.execute(
+                "ALTER TABLE signal_log ADD COLUMN stake REAL")
+        if "log_threshold" not in cols:
+            self.conn.execute(
+                "ALTER TABLE signal_log ADD COLUMN log_threshold REAL")
+        if "leverage_cap" not in cols:
+            self.conn.execute(
+                "ALTER TABLE signal_log ADD COLUMN leverage_cap INTEGER")
+        if "config_hash" not in cols:
+            self.conn.execute(
+                "ALTER TABLE signal_log ADD COLUMN config_hash TEXT")
+        if "code_rev" not in cols:
+            self.conn.execute(
+                "ALTER TABLE signal_log ADD COLUMN code_rev TEXT")
+        if "config_hash" in cols:
+            # Safe now: the column exists on both fresh and migrated DBs.
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_signal_config"
+                " ON signal_log(config_hash)")
+        ep_cols = {r[1] for r in
+                   self.conn.execute("PRAGMA table_info(signal_episode)")}
+        for new_col in ("last_valid_ts", "last_qualifying_ts", "rearm_start_ts",
+                        "close_ts"):
+            if new_col not in ep_cols:
+                self.conn.execute(
+                    f"ALTER TABLE signal_episode ADD COLUMN {new_col} INTEGER")
+        if "last_obs_ts" in ep_cols:
+            # One-time backfill from the pre-REARMING schema: last_obs_ts was
+            # advanced only by QUALIFYING/NON_QUALIFYING, which is exactly
+            # last_valid_ts.
+            self.conn.execute(
+                "UPDATE signal_episode SET last_valid_ts = COALESCE("
+                "last_valid_ts, last_obs_ts),"
+                " last_qualifying_ts = COALESCE(last_qualifying_ts,"
+                " last_obs_ts) WHERE last_obs_ts IS NOT NULL")
+        # Indexes on episode_plan/episode_outcome columns are created here,
+        # guarded on column presence: the SCHEMA string runs before any
+        # migration, so an index there would break a legacy DB whose table
+        # predates the column (the config_hash regression).
+        self._migrate_episode_indexes()
         self._backfill_coin_state()
+
+    def _migrate_episode_indexes(self):
+        """Guarded indexes on episode_plan / episode_outcome (spec 11).
+
+        Guarded on column presence so a DB created by an older schema (no
+        signal_id, no r_multiple_*, no *_bar_idx) never hits
+        "no such column" while opening.
+        """
+        plan_cols = {r[1] for r in
+                     self.conn.execute("PRAGMA table_info(episode_plan)")}
+        if "signal_id" in plan_cols:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ep_plan_signal"
+                " ON episode_plan(signal_id)")
+        out_cols = {r[1] for r in
+                    self.conn.execute("PRAGMA table_info(episode_outcome)")}
+        for idx_col in ("trade_status", "entry_status"):
+            if idx_col in out_cols:
+                self.conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS idx_ep_outcome_{idx_col}"
+                    f" ON episode_outcome({idx_col})")
+        hor_cols = {r[1] for r in
+                    self.conn.execute("PRAGMA table_info(episode_horizon)")}
+        if "status" in hor_cols:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ep_horizon_status"
+                " ON episode_horizon(status)")
 
     def _backfill_coin_state(self):
         """One coin_state row per coin from the latest signal_log row.
@@ -500,3 +734,326 @@ class Store:
 
     def close(self):
         self.conn.close()
+
+    # ------------------------------------------------------------------
+    # Episode measurement (Tasks 1-2). Additive: legacy APIs untouched.
+    # ------------------------------------------------------------------
+
+    def record_measurement_observation(self, signal_id, *, obs_ts,
+                                       data_quality, degraded_reasons=None,
+                                       last_bar_ts=None, ticker_ts=None,
+                                       stake=None, log_threshold=None,
+                                       leverage_cap=None, config_hash=None,
+                                       code_rev=None):
+        """Attach measurement metadata to an existing signal_log row.
+
+        Additive: legacy rows keep NULLs. Called once per logged scan card.
+        """
+        self.conn.execute(
+            """UPDATE signal_log SET obs_ts=?, data_quality=?, degraded_reasons=?,
+                   last_bar_ts=?, ticker_ts=?, stake=?, log_threshold=?,
+                   leverage_cap=?, config_hash=?, code_rev=?
+               WHERE id=?""",
+            (int(obs_ts), data_quality, degraded_reasons,
+             int(last_bar_ts) if last_bar_ts is not None else None,
+             int(ticker_ts) if ticker_ts is not None else None,
+             float(stake) if stake is not None else None,
+             float(log_threshold) if log_threshold is not None else None,
+             int(leverage_cap) if leverage_cap is not None else None,
+             config_hash, code_rev, int(signal_id)))
+        self.conn.commit()
+
+    def log_measurement_attempt(self, coin, config_hash, obs_ts,
+                                observation_class, *, signal_id=None,
+                                degraded_reasons=None, coverage=None,
+                                attempt_id=None):
+        """Record one measurement attempt (QUALIFYING/NON_QUALIFYING/UNKNOWN).
+
+        Distinct from the episode lifecycle write: an attempt is a fact about
+        the fetch, so it is journaled even when no episode exists. Returns the
+        inserted row id.
+        """
+        cur = self.conn.execute(
+            """INSERT INTO episode_observation
+                   (episode_id, signal_id, coin, config_hash, obs_ts,
+                    obs_class, late, degraded_reasons, attempt_id, coverage)
+               VALUES (?,?,?,?,?,?,0,?,?,?)""",
+            (None, signal_id, coin, config_hash, int(obs_ts),
+             int(observation_class), degraded_reasons, attempt_id, coverage))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def insert_episode(self, **kw):
+        """Insert a new episode row; returns its id. Caller manages the txn."""
+        cols = ", ".join(kw.keys())
+        marks = ", ".join("?" for _ in kw)
+        cur = self.conn.execute(
+            f"INSERT INTO signal_episode ({cols}) VALUES ({marks})",
+            tuple(kw.values()))
+        return cur.lastrowid
+
+    def update_episode(self, episode_id, **kw):
+        """Update episode fields by id. Caller manages the txn."""
+        sets = ", ".join(f"{k}=?" for k in kw)
+        self.conn.execute(
+            f"UPDATE signal_episode SET {sets} WHERE id=?",
+            tuple(kw.values()) + (episode_id,))
+
+    def get_cursor(self, coin, config_hash):
+        row = self.conn.execute(
+            "SELECT last_processed_obs_ts FROM episode_cursor"
+            " WHERE coin=? AND config_hash=?", (coin, config_hash)).fetchone()
+        return row[0] if row else None
+
+    def set_cursor(self, coin, config_hash, ts):
+        """Monotonic cursor advance: never rewinds."""
+        self.conn.execute(
+            """INSERT INTO episode_cursor (coin, config_hash,
+                    last_processed_obs_ts) VALUES (?,?,?)
+               ON CONFLICT(coin, config_hash) DO UPDATE SET
+                 last_processed_obs_ts =
+                   MAX(episode_cursor.last_processed_obs_ts,
+                       excluded.last_processed_obs_ts)""",
+            (coin, config_hash, int(ts)))
+
+    def stale_open_episodes(self, now, max_gap_s):
+        """Non-closed episodes whose last valid observation is older than the gap.
+
+        last_valid_ts (advanced only by QUALIFYING/NON_QUALIFYING) is the
+        coverage clock, falling back to the cursor, then start_ts. UNKNOWN
+        fetches never advance it, so a run of failures cannot hide a gap.
+        Returns (id, coin, config_hash, last_touch) tuples.
+        """
+        return [row for row in self.conn.execute(
+            """SELECT e.id, e.coin, e.config_hash,
+                      COALESCE(e.last_valid_ts, c.last_processed_obs_ts,
+                               e.start_ts) AS last_touch
+                 FROM signal_episode e
+                 LEFT JOIN episode_cursor c
+                   ON c.coin=e.coin AND c.config_hash=e.config_hash
+                WHERE e.state != 'CLOSED' AND e.close_ts IS NULL
+                ORDER BY e.id""").fetchall()
+                if int(now) - (row[3] or 0) > int(max_gap_s)]
+
+    def link_observation(self, attempt_id, episode_id):
+        """Bind a previously unlinked attempt to an episode."""
+        self.conn.execute(
+            "UPDATE episode_observation SET episode_id=? WHERE attempt_id=?",
+            (episode_id, attempt_id))
+        self.conn.commit()
+
+    @staticmethod
+    def _episode_columns(conn):
+        return [r[1] for r in
+                conn.execute("SELECT * FROM signal_episode LIMIT 0")]
+
+    def open_episode(self, coin, config_hash):
+        """The single non-closed episode row for (coin, config_hash), or None.
+
+        Rows come back as dicts. The invariant enforced by
+        idx_episode_open_unique means there is at most one.
+        """
+        cur = self.conn.execute(
+            "SELECT * FROM signal_episode WHERE coin=? AND config_hash=?"
+            " AND state != 'CLOSED' ORDER BY id DESC LIMIT 1",
+            (coin, config_hash))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return dict(zip(self._episode_columns(self.conn), row))
+
+    # ------------------------------------------------------------------
+    # Episode plan resolver (Task 4). Additive: the legacy plan/outcome
+    # APIs (planned, log_plan, log_plan_outcome, plan_stats,
+    # pending_outcomes, log_outcome, has_outcome) are untouched and read
+    # only the legacy plan_log/plan_outcome/outcome_log tables.
+    # ------------------------------------------------------------------
+
+    # Statuses that are final: once written they are never rewritten, so a
+    # later pass with the same (or fewer) bars cannot undo evidence.
+    #
+    # The ENTRY group splits in two, because entry and trade resolve on
+    # different clocks. UNFILLED and UNAVAILABLE end the row outright (there
+    # is no trade to run), but FILLED is only final for the FILL: a filled
+    # entry with an OPEN trade must keep resolving, so treating FILLED as
+    # row-terminal would freeze every trade at OPEN forever.
+    _TERMINAL_ENTRY = ("UNFILLED", "UNAVAILABLE")
+    _FINAL_FILL = ("FILLED",)
+    _TERMINAL_TRADE = ("STOPPED", "TP2", "EXPIRED", "UNAVAILABLE")
+    _TERMINAL_HORIZON = ("MATURED", "UNAVAILABLE")
+
+    _OUTCOME_FIELDS = ("entry_status", "fill_bar_open_ts", "fill_price",
+                       "fill_ts", "trade_status", "stop_index", "tp1_index",
+                       "tp2_index", "stop_bar_idx", "tp1_bar_idx",
+                       "tp2_bar_idx", "tp1_before_stop", "exit_ts",
+                       "exit_price", "mfe_pct", "mae_pct", "resolved_through_ts")
+
+    # Bar-index fields that exist under two names (resolver: *_index,
+    # reporting: *_bar_idx). A write to one name is mirrored to the other so
+    # both readers always see the same value.
+    _BAR_IDX_ALIASES = {"stop_index": "stop_bar_idx",
+                        "stop_bar_idx": "stop_index",
+                        "tp1_index": "tp1_bar_idx",
+                        "tp1_bar_idx": "tp1_index",
+                        "tp2_index": "tp2_bar_idx",
+                        "tp2_bar_idx": "tp2_index"}
+
+    def insert_episode_plan(self, episode_id, signal_id=None, direction=None,
+                            entry_low=None, entry_high=None, stop=None,
+                            tp1=None, tp2=None, leverage=None, notional=None,
+                            max_loss=None, warnings=None, frozen_at=None):
+        """Freeze the plan attached to a PLANNED episode.
+
+        Immutable by contract (spec 7): an episode has exactly one frozen
+        plan, so a second insert for the same episode is ignored rather than
+        rewriting the levels every later resolver pass judges.
+        """
+        import time as _t
+        self.conn.execute(
+            """INSERT OR IGNORE INTO episode_plan
+               (episode_id, signal_id, direction, entry_low, entry_high,
+                stop, tp1, tp2, leverage, notional, max_loss, warnings,
+                frozen_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (int(episode_id), signal_id, direction, entry_low, entry_high,
+             stop, tp1, tp2, leverage, notional, max_loss, warnings,
+             int(frozen_at) if frozen_at is not None else int(_t.time())))
+        self.conn.commit()
+
+    def episode_plan_row(self, episode_id):
+        """The frozen plan for one episode as a dict, or None."""
+        cur = self.conn.execute("SELECT * FROM episode_plan WHERE episode_id=?",
+                                (int(episode_id),))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return dict(zip([d[0] for d in cur.description], row))
+
+    def upsert_episode_outcome(self, episode_id, **fields):
+        """Write or refine the forward resolution of one planned episode.
+
+        Forward-only (spec 8): a row already in a terminal entry or trade
+        state is never rewritten, and a terminal state is never replaced by
+        a pending one. Unresolved work (PENDING_ENTRY / OPEN) keeps being
+        refined as more closed bars arrive.
+        """
+        unknown = set(fields) - set(self._OUTCOME_FIELDS)
+        if unknown:
+            raise ValueError(
+                f"unknown episode_outcome fields: {sorted(unknown)}")
+
+        # Mirror bar-index writes to the aliased column so both the resolver
+        # (*_index) and the reporting module (*_bar_idx) always read the same
+        # first-touch indices.
+        for name, alias in self._BAR_IDX_ALIASES.items():
+            if name in fields:
+                fields[alias] = fields[name]
+
+        cur = self.conn.execute(
+            "SELECT entry_status, trade_status FROM episode_outcome"
+            " WHERE episode_id=?", (int(episode_id),))
+        row = cur.fetchone()
+
+        # Terminal means each group is final on its own terms: a FILLED entry
+        # with an OPEN trade is NOT terminal, because the trade still has to
+        # resolve. Only a final entry state OR a final trade state freezes
+        # the row - a STOPPED/TP2/EXPIRED/UNAVAILABLE trade ends it, and so
+        # does a UNFILLED or entry-UNAVAILABLE entry (no trade to run).
+        if row is not None and (row[0] in self._TERMINAL_ENTRY
+                                or row[1] in self._TERMINAL_TRADE):
+            return  # terminal rows are immutable
+        if not fields:
+            return
+
+        # A FILLED entry is final for the fill itself, so a later pass may
+        # not rewrite the fill bar, price or time. Refinements then apply to
+        # the trade only.
+        if row is not None and row[0] in self._FINAL_FILL:
+            for k in ("entry_status", "fill_bar_open_ts", "fill_price",
+                      "fill_ts"):
+                fields.pop(k, None)
+            if not fields:
+                return
+
+        if fields.get("entry_status") == "PENDING_ENTRY":
+            # No fill yet: no fill bar, price or time may be recorded.
+            for k in ("fill_bar_open_ts", "fill_price", "fill_ts"):
+                fields.pop(k, None)
+        if fields.get("trade_status") == "OPEN":
+            for k in ("exit_ts", "exit_price"):
+                fields.pop(k, None)
+
+        if row is None:
+            fields.setdefault("entry_status", "PENDING_ENTRY")
+            fields.setdefault("trade_status", "OPEN")
+            cols = ", ".join(fields)
+            marks = ", ".join("?" for _ in fields)
+            self.conn.execute(
+                f"INSERT INTO episode_outcome (episode_id, {cols})"
+                f" VALUES (?, {marks})",
+                (int(episode_id),) + tuple(fields.values()))
+        else:
+            # Never write the same state back over itself.
+            if fields.get("entry_status") == row[0]:
+                fields.pop("entry_status")
+            if fields.get("trade_status") == row[1]:
+                fields.pop("trade_status")
+            if not fields:
+                return
+            sets = ", ".join(f"{k}=?" for k in fields)
+            self.conn.execute(
+                f"UPDATE episode_outcome SET {sets} WHERE episode_id=?",
+                tuple(fields.values()) + (int(episode_id),))
+        self.conn.commit()
+
+    def upsert_episode_horizon(self, episode_id, horizon, status,
+                               return_pct=None, mfe_pct=None, mae_pct=None):
+        """Write one fixed-horizon row for one episode.
+
+        MATURED and UNAVAILABLE are terminal: a horizon that has matured is
+        never downgraded back to PENDING by a later, weaker bar set.
+        """
+        cur = self.conn.execute(
+            "SELECT status FROM episode_horizon WHERE episode_id=?"
+            " AND horizon=?", (int(episode_id), horizon))
+        row = cur.fetchone()
+        if row is not None and row[0] in self._TERMINAL_HORIZON:
+            return
+        self.conn.execute(
+            """INSERT INTO episode_horizon
+               (episode_id, horizon, status, return_pct, mfe_pct, mae_pct)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(episode_id, horizon) DO UPDATE SET
+                 status=excluded.status, return_pct=excluded.return_pct,
+                 mfe_pct=excluded.mfe_pct, mae_pct=excluded.mae_pct""",
+            (int(episode_id), horizon, status, return_pct, mfe_pct, mae_pct))
+        self.conn.commit()
+
+    def episode_outcome_row(self, episode_id):
+        cur = self.conn.execute("SELECT * FROM episode_outcome"
+                                " WHERE episode_id=?", (int(episode_id),))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return dict(zip([d[0] for d in cur.description], row))
+
+    def planned_episodes(self, limit=None):
+        """Episodes with a frozen plan that need forward resolution.
+
+        Only PLANNED episodes: a NO_PLAN episode has no levels to resolve
+        and is never backfilled with one. The legacy plan_log/plan_outcome
+        tables are never read here, so episode metrics stay separate from
+        legacy ones.
+        """
+        sql = """SELECT e.id AS episode_id, e.coin, e.venue, e.direction,
+                        e.start_ts, e.config_hash, e.plan_status,
+                        p.signal_id, p.entry_low, p.entry_high, p.stop,
+                        p.tp1, p.tp2
+                   FROM signal_episode e
+                   JOIN episode_plan p ON p.episode_id = e.id
+                  WHERE e.plan_status = 'PLANNED'
+                  ORDER BY e.id"""
+        cur = self.conn.execute(sql)
+        cols = [d[0] for d in cur.description]
+        out = [dict(zip(cols, r)) for r in cur.fetchall()]
+        return out[:limit] if limit is not None else out

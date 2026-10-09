@@ -12,12 +12,14 @@ GUI (p) or close it while the daemon owns collection.
 """
 
 import argparse
+import os
 import sys
 import time
 from types import SimpleNamespace
 
 from .app import App
 from . import collector as colmod
+from . import measurement as measuremod
 from . import outcomes as outmod
 from .scan import build_universe
 
@@ -41,6 +43,9 @@ def main():
     ap.add_argument("--log-threshold", type=float, default=24.0)
     ap.add_argument("--collect-every", type=int, default=300)
     ap.add_argument("--resolve-every", type=int, default=3600)
+    ap.add_argument("--measure-every", type=int, default=300,
+                    help="seconds between all-eligible measurement cycles"
+                         " (cadence/calibration; independent of the scan)")
     ap.add_argument("--iterations", type=int, default=None,
                     help="stop after N scan cycles (default: forever)")
     ap.add_argument("--no-scan", action="store_true",
@@ -56,6 +61,11 @@ def main():
     sym_map = {}
     last_collect = 0.0
     last_resolve = 0.0
+    last_measure = 0.0
+    measure_cfg = measuremod.measurement_config(
+        args.stake, args.log_threshold,
+        getattr(args, "leverage_cap", None))
+    run_id = f"{os.getpid()}-{int(time.time())}"
     n = 0
     print(f"daemon: stake ${args.stake:g} coins {args.coins} "
           f"scan {args.interval}s collect {args.collect_every}s "
@@ -101,6 +111,40 @@ def main():
                           flush=True)
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] resolve FAILED: "
+                          f"{type(e).__name__}: {e}", flush=True)
+            # Independent all-eligible measurement cycle (Task 3): cadence +
+            # calibration over EVERY eligible coin, separate from the
+            # interactive scan and never changing its rankings. Episode
+            # creation stays disabled until enable_epoch() passes
+            # calibration (spec §12, §17); this loop never enables it.
+            if now - last_measure >= args.measure_every:
+                try:
+                    app.maybe_refresh_universe()   # cached 10min, no extra load
+                    tk, det = app.tk, app.det
+                    eligible = measuremod.measurement_eligible(
+                        tk, det, args.stake)
+                    counts = measuremod.run_cycle(
+                        app.store, eligible, config=measure_cfg,
+                        now_fn=time.time, tickers=tk,
+                        attempt_id_factory=lambda coin, cycle_ts:
+                        measuremod.measurement_attempt_id(
+                            coin, cycle_ts, run_id))
+                    last_measure = now
+                    stats = measuremod.cadence_stats(app.store)
+                    print(f"[{time.strftime('%H:%M:%S')}] measure: "
+                          f"attempted {counts['attempted']} "
+                          f"qual {counts['qualifying']} "
+                          f"non-qual {counts['non_qualifying']} "
+                          f"unknown {counts['unknown']} "
+                          f"(fail {counts['failed']} "
+                          f"degraded {counts['degraded']}) "
+                          f"sweep {counts['sweep_closed']} · "
+                          f"calibration "
+                          f"{'PASS' if stats['calibration']['pass'] else 'FAIL'}"
+                          f" p95 {stats['gap_p95_s']}s "
+                          f"p99 {stats['gap_p99_s']}s", flush=True)
+                except Exception as e:
+                    print(f"[{time.strftime('%H:%M:%S')}] measure FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
             n += 1
             if args.iterations is not None and n >= args.iterations:
