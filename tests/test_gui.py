@@ -583,6 +583,12 @@ class TestWidgetLayer(unittest.TestCase):
             frames = sys._current_frames()
             stack = traceback.format_stack(frames.get(gui._worker.ident))
             self.fail("worker thread did not retire; stack:\n" + "".join(stack))
+        # Retire the plan lane too: plan jobs queued by these tests must never
+        # execute (=> no network), only accumulate for assertion.
+        gui._plan_jobs.put(None)
+        gui._plan_worker.join(timeout=10)
+        if gui._plan_worker.is_alive():
+            self.fail("plan worker thread did not retire")
         return gui
 
     def pump_until(self, cond, timeout=10.0, step=0.02):
@@ -783,6 +789,55 @@ class TestWidgetLayer(unittest.TestCase):
         det = gui.detail.get("1.0", "end")
         self.assertIn("VETOES", det)
         self.assertIn("⨯ late_move: test reason", det)
+
+    # ---- 4b. plan lane never blocks behind scans (regression) ---------------
+    def _drain(self, q):
+        out = []
+        try:
+            while True:
+                out.append(q.get_nowait())
+        except Exception:
+            pass
+        return out
+
+    def test_plan_uses_dedicated_lane(self):
+        """Plan fetches must not queue behind ~50s scans (worker lane).
+
+        Regression test: clicks used to sit in the scan queue ("fetching…"
+        until the running scan finished and the next one re-wiped the cache).
+        """
+        gui = self.make_gui()
+        self._drain(gui._jobs)
+        self._drain(gui._plan_jobs)
+        gui._ensure_plan("ZZZ")
+        plan_jobs = self._drain(gui._plan_jobs)
+        scan_jobs = self._drain(gui._jobs)
+        self.assertEqual(len(plan_jobs), 1)
+        self.assertEqual(plan_jobs[0].get("coin"), "ZZZ")
+        self.assertEqual(scan_jobs, [])
+
+    def test_scan_keeps_cached_plan_for_present_coin(self):
+        """A finished scan must not wipe a visible plan back to fetching."""
+        gui = self.make_gui()
+        gui._plan_cache["AAA"] = {"plan": None, "err": "old"}
+        gui._plan_cache["ZZZ"] = {"plan": None, "err": "gone"}
+        gui.selected_coin = "AAA"
+        self._drain(gui._plan_jobs)
+        gui._on_scan({"universe": 2, "stats": dict(gui.stats),
+                      "cards": [mkcard("AAA", score=70),
+                                mkcard("BBB", score=40)],
+                      "failed": 0, "errors": {}, "status": "test scan"})
+        # present coin: old plan stays visible (no flash to fetching…)
+        self.assertIn("AAA", gui._plan_cache)
+        self.assertEqual(gui._plan_cache["AAA"]["err"], "old")
+        # departed coin: cache entry dropped
+        self.assertNotIn("ZZZ", gui._plan_cache)
+        # selected coin: silent background refresh queued on the plan lane
+        refresh = [j for j in self._drain(gui._plan_jobs)
+                   if j.get("coin") == "AAA"]
+        self.assertEqual(len(refresh), 1)
+        det = gui.detail.get("1.0", "end")
+        self.assertNotIn("fetching", det)
 
     # ---- 5. toolbar validation --------------------------------------------
     def test_stake_and_threshold_apply_validation(self):

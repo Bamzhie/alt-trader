@@ -137,21 +137,59 @@ class Worker(threading.Thread):
             counts = collector.collect_full_universe()
             return {"kind": "collect", "ok": True, "coins": len(counts),
                     "bars": sum(counts.values())}
-        if cmd == "plan":
-            coin = job.get("coin")
-            if job.get("stake") is not None:
-                # Plans embed the stake (size/leverage), so the CURRENT one
-                # is applied here — single worker thread owns app.args.
-                app.args.stake = job["stake"]
-            card = next((c for c in app.cards if c.coin == coin), None)
-            if card is None:
-                return {"kind": "plan", "ok": True, "coin": coin, "plan": None,
-                        "err": "coin is no longer in the last scan"}
-            plan, info = app.plan_for(card)  # (plan, bars) or (None, error)
-            err = None if plan is not None else str(info)
-            return {"kind": "plan", "ok": True, "coin": coin,
-                    "plan": plan, "err": err}
+        # NOTE: "plan" jobs run on PlanWorker (own lane), never here — a plan
+        # queued behind a ~50s scan starved every click ("fetching…" forever).
         return {"kind": cmd, "ok": False, "error": f"unknown job: {cmd!r}"}
+
+
+class PlanWorker(threading.Thread):
+    """Dedicated lane for trade-plan fetches.
+
+    The main Worker runs scans serially (~50s+ each), so plan jobs queued
+    behind a scan starved: every click waited behind the running scan, and
+    each finished scan wiped the cache, re-queuing the plan behind the NEXT
+    scan — a perpetual "fetching…". Plans are stateless HTTP + pure compute
+    (no Store access), so they safely run on their own thread and resolve
+    in ~1-2s even mid-scan. Reads Worker.app (cards/uni replaced atomically
+    by assignment; worst case a slightly stale symbol map).
+    """
+
+    def __init__(self, worker, jobs, results):
+        super().__init__(name="radar-gui-plans", daemon=True)
+        self.worker = worker
+        self.jobs = jobs
+        self.results = results
+
+    def run(self):
+        while True:
+            job = self.jobs.get()
+            if job is None:
+                break
+            coin = job.get("coin")
+            try:
+                app = self.worker.app
+                if app is None:
+                    raise RuntimeError("scanner still starting…")
+                if job.get("stake") is not None:
+                    app.args.stake = job["stake"]
+                card = next((c for c in app.cards if c.coin == coin), None)
+                if card is None:
+                    msg = {"kind": "plan", "ok": True, "coin": coin,
+                           "plan": None,
+                           "err": "coin is no longer in the last scan"}
+                else:
+                    plan, info = app.plan_for(card)
+                    msg = {"kind": "plan", "ok": True, "coin": coin,
+                           "plan": plan,
+                           "err": None if plan is not None else str(info)}
+            except Exception as e:
+                msg = {"kind": "plan", "ok": False, "coin": coin,
+                       "error": f"{type(e).__name__}: {e}"}
+            try:
+                msg["venue"] = scanmod.venue_health()
+            except Exception:
+                pass
+            self.results.put(msg)
 
 
 class RadarGUI(tk.Tk):
@@ -198,6 +236,7 @@ class RadarGUI(tk.Tk):
 
         self._jobs = queue.Queue()      # UI -> worker
         self._results = queue.Queue()   # worker -> UI
+        self._plan_jobs = queue.Queue()  # UI -> plan lane (never scan-blocked)
 
         self._build_header()
         self._build_toolbar()
@@ -212,6 +251,9 @@ class RadarGUI(tk.Tk):
             db=self.db, write_logs=True)
         self._worker = Worker(worker_args, self._jobs, self._results)
         self._worker.start()
+        self._plan_worker = PlanWorker(self._worker, self._plan_jobs,
+                                       self._results)
+        self._plan_worker.start()
 
         self.after(POLL_MS, self._poll)
         self.after(TICK_MS, self._tick)
@@ -534,18 +576,30 @@ class RadarGUI(tk.Tk):
         self._render_detail()
 
     def _ensure_plan(self, coin):
-        """Fetch the trade plan off-thread (network), unless already known."""
+        """Fetch the trade plan on the plan lane (never scan-blocked)."""
         if coin in self._plan_cache or coin in self._plans_pending:
             return
         self._plans_pending.add(coin)
-        self._jobs.put({"cmd": "plan", "coin": coin, "stake": self.stake})
+        self._plan_jobs.put({"coin": coin, "stake": self.stake})
+
+    def _refresh_plan_quietly(self, coin):
+        """Re-fetch a cached plan without flashing 'fetching…'.
+
+        The old plan stays visible until the new one arrives (_on_plan
+        overwrites the cache and re-renders). No-op if a fetch is in flight.
+        """
+        if coin in self._plans_pending:
+            return
+        self._plans_pending.add(coin)
+        self._plan_jobs.put({"coin": coin, "stake": self.stake})
 
     def _on_close(self):
         self._closing = True
-        try:
-            self._jobs.put_nowait(None)
-        except Exception:
-            pass
+        for q in (self._jobs, self._plan_jobs):
+            try:
+                q.put_nowait(None)
+            except Exception:
+                pass
         self.destroy()
 
     # -------------------------------------------------- jobs and results
@@ -647,11 +701,18 @@ class RadarGUI(tk.Tk):
 
         self.error_text = ""
         self.cards = cards
-        self._plan_cache.clear()
+        # Keep cached plans for coins still present (kills the perpetual
+        # "fetching…" where every scan wiped the plan behind the next scan);
+        # drop coins that left the table. Silently refresh the selected coin.
         coins = {c.coin for c in cards}
+        for coin in list(self._plan_cache):
+            if coin not in coins:
+                del self._plan_cache[coin]
         if self.selected_coin and self.selected_coin not in coins:
             self.selected_coin = None
-        if self.selected_coin:
+        if self.selected_coin and self.selected_coin in self._plan_cache:
+            self._refresh_plan_quietly(self.selected_coin)
+        elif self.selected_coin:
             self._ensure_plan(self.selected_coin)
         if uni_err:
             self._set_error(f"universe refresh failed: {uni_err} "
