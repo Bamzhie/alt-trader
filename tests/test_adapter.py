@@ -133,6 +133,94 @@ try:
 except Exception as e:
     check("good payload parses", False, str(e))
 
+print("\n=== window is interval-aware and truncated to limit ===")
+try:
+    seen = {}
+
+    class FakeMexcW:
+        @staticmethod
+        def _get(path, **kw):
+            seen["path"] = path
+            n = 5
+            return {"time": list(range(100, 100 + n)),
+                    "open": [1.0] * n, "high": [1.5] * n, "low": [0.5] * n,
+                    "close": [1.1] * n, "vol": [10] * n, "amount": [11] * n}
+    orig = mexc._get
+    mexc._get = FakeMexcW._get
+    try:
+        bars = mexc.klines("X_USDT", "5m", limit=3)
+    finally:
+        mexc._get = orig
+    check("truncated to limit (keeps most recent)",
+          [b["ts"] for b in bars] == [102, 103, 104], str([b["ts"] for b in bars]))
+    import re as _re
+    m = _re.search(r"start=(\d+)&end=(\d+)", seen["path"])
+    span = int(m.group(2)) - int(m.group(1))
+    check("5m window spans limit*300s (+1 spare), not limit*3600s",
+          span == 3 * 300 + 300, f"span={span}")
+except Exception as e:
+    check("interval-aware window", False, str(e))
+
+print("\n=== still-forming bar is dropped, history kept ===")
+try:
+    import time as _t
+    now = int(_t.time())
+
+    class FakeMexcF:
+        @staticmethod
+        def _get(path, **kw):
+            # two closed 5m bars + one forming right now
+            return {"time": [now - 900, now - 600, now - 60],
+                    "open": [1.0] * 3, "high": [1.5] * 3, "low": [0.5] * 3,
+                    "close": [1.1] * 3, "vol": [10] * 3, "amount": [11] * 3}
+    orig = mexc._get
+    mexc._get = FakeMexcF._get
+    try:
+        bars = mexc.klines("X_USDT", "5m", limit=200)
+    finally:
+        mexc._get = orig
+    check("forming bar dropped",
+          [b["ts"] for b in bars] == [now - 900, now - 600],
+          str([b["ts"] for b in bars]))
+except Exception as e:
+    check("forming bar dropped", False, str(e))
+
+print("\n=== non-finite and inconsistent bars rejected ===")
+try:
+    class FakeMexcN:
+        which = "nan"
+
+        @staticmethod
+        def _get(path, **kw):
+            import math as _m
+            if FakeMexcN.which == "nan":
+                cl = [1.1, float("nan"), 3.2]
+            else:  # open outside [low, high], but high >= low
+                cl = [1.1, 2.2, 2.6]
+            hi = [1.5, 2.5, 2.8] if FakeMexcN.which != "nan" else [1.5, 2.5, 3.5]
+            return {"time": [100, 200, 300],
+                    "open": [1.0, 2.0, 3.0], "high": hi, "low": [0.5, 1.5, 2.5],
+                    "close": cl, "vol": [10, 20, 30], "amount": [11, 44, 96]}
+    orig = mexc._get
+    mexc._get = FakeMexcN._get
+    try:
+        FakeMexcN.which = "nan"
+        try:
+            mexc.klines("X_USDT")
+            check("NaN close rejected", False, "silently accepted")
+        except mexc.MexcError:
+            check("NaN close rejected", True)
+        FakeMexcN.which = "inconsistent"
+        try:
+            mexc.klines("X_USDT")
+            check("open outside [low, high] rejected", False, "silently accepted")
+        except mexc.MexcError:
+            check("open outside [low, high] rejected", True)
+    finally:
+        mexc._get = orig
+except Exception as e:
+    check("bar invariance checks", False, str(e))
+
 print("\n=== out-of-order payload is rejected, not silently sorted ===")
 try:
     class FakeMexc5:

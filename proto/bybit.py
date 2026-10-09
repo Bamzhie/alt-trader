@@ -13,6 +13,7 @@ Shapes verified against the live public API (read-only, no keys):
 """
 
 import json
+import math
 import time
 import urllib.error
 import urllib.request
@@ -164,10 +165,21 @@ def klines(symbol, interval="5m", limit=200):
         for r in rows
     ]
     bars.sort(key=lambda b: b["ts"])
+    # Drop the still-forming bar (mutable close/high/low/volume) so scoring
+    # sees history only. Needs this call's interval length + wall clock.
+    _, _secs = INTERVALS[interval]
+    _now = int(time.time())
+    while bars and bars[-1]["ts"] + _secs > _now:
+        bars.pop()
 
-    # Sanity on the parsed values themselves.
+    # Sanity on the parsed values themselves: finite, internally
+    # consistent (low <= body <= high), positive close.
     for b in bars:
-        if b["c"] <= 0 or b["h"] < b["l"]:
+        if (b["c"] <= 0 or b["h"] < b["l"]
+                or not all(math.isfinite(b[k])
+                           for k in ("o", "h", "l", "c", "vol", "amount"))
+                or not (b["l"] <= min(b["o"], b["c"])
+                        and max(b["o"], b["c"]) <= b["h"])):
             raise BybitError(f"{symbol}: implausible bar {b}")
     return bars
 

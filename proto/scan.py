@@ -365,11 +365,14 @@ def tf_lean(sym, interval, limit=200, min_bars=30):
 
     None means "no evidence": a failed fetch or a thin history degrades to
     no-bonus scoring instead of dropping the coin, mirroring the way a
-    missing Bybit map degrades the universe tail.
+    missing Bybit map degrades the universe tail. Transport failures are
+    COUNTED in MEXC venue health (visible, never silent); the caller notes
+    which timeframe went missing on the card.
     """
     try:
         bars = _gated(mexc.klines, sym, interval, limit=limit)
-    except Exception:
+    except Exception as e:
+        _venue("mexc", e)
         return None
     if not bars or len(bars) < min_bars:
         return None
@@ -424,6 +427,20 @@ def analyse_one(sym, coin, detail, tk_row, stake, errors=None):
 
         min_not = mexc.min_notional(sym, detail, price)
 
+        # Staleness guard (F-02): ticker snapshot (refreshed on a TTL) can lag
+        # the freshly fetched candles/book. A >1% price skew is noted on the
+        # card so direction/levels are never read as fresher than they are.
+        # (Funding has no fresher source; it rides the same snapshot.)
+        _skew_note = None
+        if bars:
+            _close = bars[-1]["c"]
+            if _close > 0:
+                _skew = abs(price - _close) / _close * 100
+                if _skew > 1.0:
+                    _skew_note = (f"DATA ticker/candle skew {_skew:.1f}% — price, "
+                                  f"24h move, volume and funding come from "
+                                  f"the cached snapshot, candles/book are fresh")
+
         # Funding comes free on the bulk ticker row - no extra request.
         funding = float(tk_row.get("fundingRate") or 0.0)
         fund_cap = float(tk_row.get("maxFundingRate") or 0.0018)
@@ -441,6 +458,12 @@ def analyse_one(sym, coin, detail, tk_row, stake, errors=None):
             oi_notional=oi_notion,
             lean_1H=lean_1h, lean_4H=lean_4h,
             min_notional=min_not, venue="MEXC", tier=2)
+        for iv, lean in (("1H", lean_1h), ("4H", lean_4h)):
+            if lean is None:
+                sc.notes.append(f"MTF {iv} unavailable — scored with no MTF "
+                                f"bonus (missing evidence, not neutral)")
+        if _skew_note is not None:
+            sc.notes.append(_skew_note)
         return sc
     except Exception as e:
         return fail(f"{type(e).__name__}: {e}")

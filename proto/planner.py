@@ -239,7 +239,7 @@ def format_plan(p, sc=None):
 
     lines = []
     lines.append(f"  Direction      {arrow} {p.direction}")
-    lines.append(f"  Entry          {p.entry_low:.8g} – {p.entry_high:.8g}   (limit, inside spread)")
+    lines.append(f"  Entry          {p.entry_low:.8g} – {p.entry_high:.8g}   (limit band, hypothetical — no fill model)")
     lines.append(f"  Stop loss      {p.stop:.8g}   ({stop_desc})")
     lines.append(f"  TP1            {p.tp1:.8g}   (2R)  → cover 50%")
     lines.append(f"  TP2            {p.tp2:.8g}   (5R)  → cover 30%, trail rest")

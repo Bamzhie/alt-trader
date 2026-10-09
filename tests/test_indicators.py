@@ -92,6 +92,21 @@ mu, md = ind.macd_histogram(cu), ind.macd_histogram(cd)
 check("macd_histogram opposes on curved mirrored series", mu * md < 0,
       f"up={mu:.4f} down={md:.4f}")
 
+# Tail-alignment reference: the histogram must equal an explicit
+# shared-timeline computation (fast leg truncated to slow's tail), not an
+# index-0 pairing. Catches zero-pad / zip-misalignment regressions.
+ref_closes = [100 + i * 0.7 + (i % 5) for i in range(60)]
+ref_bars = make_bars(ref_closes)
+fe, se = ind.ema(ref_closes, 12), ind.ema(ref_closes, 26)
+fe = fe[-len(se):]
+ref_macd = [a - b for a, b in zip(fe, se)]
+ref_sig = ind.ema(ref_macd, 9)
+ref_atr = ind.atr(ref_bars, 14)[-1]
+ref_hist = max(-1.0, min(1.0, (ref_macd[-1] - ref_sig[-1]) / ref_atr * 4))
+check("macd_histogram matches tail-aligned reference",
+      abs(ind.macd_histogram(ref_bars) - ref_hist) < 1e-9,
+      f"got={ind.macd_histogram(ref_bars):.6f} ref={ref_hist:.6f}")
+
 print("\n=== symmetry: exact price mirror (1/x) negates directional signals ===")
 # A choppy series so signals aren't degenerate at the range edges.
 base = [100 + 8 * random.uniform(-1, 1) + 0.35 * i for i in range(150)]

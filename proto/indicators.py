@@ -96,8 +96,15 @@ def macd_histogram(bars, fast=12, slow=26, signal=9):
     if len(c) < slow + signal + 2:
         return 0.0
     fast_ema, slow_ema = ema(c, fast), ema(c, slow)
-    if len(fast_ema) < len(slow_ema):
-        fast_ema = [0.0] * (len(slow_ema) - len(fast_ema)) + fast_ema
+    # Common-timeline alignment: slow_ema[i] and fast_ema[j] describe different
+    # candle indices (seeds at fast-1 vs slow-1), so pairing from index 0 —
+    # or, worse, zero-padding the fast leg — contaminates the signal-line
+    # warm-up. Align on the shared tail: fast[-len(slow):] starts at the same
+    # candle slow[0] does.
+    if len(fast_ema) > len(slow_ema):
+        fast_ema = fast_ema[-len(slow_ema):]
+    elif len(slow_ema) > len(fast_ema):
+        slow_ema = slow_ema[-len(fast_ema):]
     macd = [a - b for a, b in zip(fast_ema, slow_ema)]
     sig = ema(macd, signal)
     if not sig:

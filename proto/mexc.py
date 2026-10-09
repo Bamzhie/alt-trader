@@ -10,6 +10,7 @@ Design rules learned the hard way during spec probing:
 """
 
 import json
+import math
 import time
 import urllib.error
 import urllib.request
@@ -92,11 +93,14 @@ def klines(symbol, interval="5m", limit=200):
     """
     if interval not in INTERVALS:
         raise ValueError(f"unknown interval {interval!r}; known: {sorted(INTERVALS)}")
-    mexc_iv, _ = INTERVALS[interval]
+    mexc_iv, secs = INTERVALS[interval]
     limit = max(1, min(limit, MAX_BARS))
 
     now = int(time.time())
-    start = now - limit * 3600  # generous window; MEXC clamps to MAX_BARS
+    # Interval-aware window: limit bars of `secs` each (plus one spare bar so
+    # boundary timing never short-changes coverage). The old limit*3600 asked
+    # ~200h for every timeframe — ~50 bars at 4h, ~2400 at 5m.
+    start = now - limit * secs - secs
     d = _get(f"/kline/{symbol}?interval={mexc_iv}&start={start}&end={now}")
 
     if not d:
@@ -134,10 +138,24 @@ def klines(symbol, interval="5m", limit=200):
         for i in range(n)
     ]
     bars.sort(key=lambda b: b["ts"])
+    # Drop the still-forming bar: a candle whose interval hasn't closed has a
+    # mutable close/high/low/volume, so scoring it makes signals unstable
+    # mid-bar and unreproducible at close. Keep history only.
+    while bars and bars[-1]["ts"] + secs > now:
+        bars.pop()
+    # Honor the requested count: the window above is deliberately generous,
+    # so keep the most recent `limit` bars (oldest-first preserved).
+    if len(bars) > limit:
+        bars = bars[-limit:]
 
-    # Sanity on the parsed values themselves.
+    # Sanity on the parsed values themselves: finite, internally
+    # consistent (low <= body <= high), positive close.
     for b in bars:
-        if b["c"] <= 0 or b["h"] < b["l"]:
+        if (b["c"] <= 0 or b["h"] < b["l"]
+                or not all(math.isfinite(b[k])
+                           for k in ("o", "h", "l", "c", "vol", "amount"))
+                or not (b["l"] <= min(b["o"], b["c"])
+                        and max(b["o"], b["c"]) <= b["h"])):
             raise MexcError(f"{symbol}: implausible bar {b}")
     return bars
 

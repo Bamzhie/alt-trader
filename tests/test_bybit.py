@@ -145,6 +145,26 @@ def test_empty_klines_not_an_error():
         check(f"empty {sorted(payload)} -> []", ok)
 
 
+def test_forming_bar_dropped():
+    print("=== forming bar dropped, closed history kept ===")
+    import time as _t
+    now = int(_t.time())
+
+    def row(ms, px="1.0"):
+        return [str(ms), px, "1.5", "0.5", "1.1", "10", "11"]
+
+    payload = {"list": [row((now - 60) * 1000), row((now - 600) * 1000),
+                        row((now - 900) * 1000)]}  # newest-first, as v5 sends
+    restore = with_get(lambda path, **kw: payload)
+    try:
+        bars = bybit.klines("XUSDT", "5m", limit=200)
+    finally:
+        restore()
+    check("forming bar dropped",
+          [b["ts"] for b in bars] == [now - 900, now - 600],
+          str([b["ts"] for b in bars]))
+
+
 def test_unknown_interval_and_limit_clamp():
     print("=== unknown interval raises ValueError; limit clamps to 1..1000 ===")
     try:
@@ -388,6 +408,7 @@ for t in (test_good_kline_payload_parses,
           test_depth_pairs_parsed,
           test_funding_parses,
           test_oi_change_percent,
+          test_forming_bar_dropped,
           test_oi_state_returns_pct_and_units_from_one_request):
     run(t)
 

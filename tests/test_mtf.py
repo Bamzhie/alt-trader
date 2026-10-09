@@ -162,13 +162,14 @@ TK = {"lastPrice": 100.0, "amount24": 5_000_000.0, "riseFallRate": 0.03,
 DETAIL = {"minVol": 1, "contractSize": 0.05}
 
 
-def run_analyse(klines_fn):
+def run_analyse(klines_fn, tk_row=None):
     """analyse_one against a patched venue feed. Returns the Scorecard."""
     orig = (scanmod.mexc.klines, scanmod.mexc.depth)
     scanmod.mexc.klines = klines_fn
     scanmod.mexc.depth = lambda sym, limit=20: (BIDS, ASKS)
     try:
-        return scanmod.analyse_one("TEST_USDT", "TEST", DETAIL, TK, 0.10)
+        return scanmod.analyse_one("TEST_USDT", "TEST", DETAIL,
+                                   tk_row or TK, 0.10)
     finally:
         scanmod.mexc.klines, scanmod.mexc.depth = orig
 
@@ -211,6 +212,46 @@ if sc_none is not None and sc_all is not None and sc_dn is not None:
           and any(n.startswith("counter-trend: 5m LONG vs 4H SHORT")
                   for n in sc_dn.notes),
           f"score={sc_dn.score} vs {sc_none.score}; {sc_dn.notes}")
+    check("missing TFs noted as missing (not neutral)",
+          any(n.startswith("MTF 1H unavailable") for n in sc_none.notes)
+          and any(n.startswith("MTF 4H unavailable") for n in sc_none.notes),
+          str(sc_none.notes))
+    check("venue health counts the failed higher-TF fetches",
+          scanmod.venue_health().get("mexc", {}).get("fails", 0) >= 2,
+          str(scanmod.venue_health()))
+
+print("\n=== stale ticker snapshot is flagged, not silently mixed ===")
+
+TK_FRESH = dict(TK, lastPrice=bars_up[-1]["c"])
+sc_fresh = run_analyse(klines_all_bullish, TK_FRESH)
+check("fresh ticker carries no skew note",
+      sc_fresh is not None
+      and not any(n.startswith("DATA ") for n in sc_fresh.notes),
+      str(sc_fresh.notes if sc_fresh else None))
+
+
+def klines_for_skew(sym, interval="5m", limit=200):
+    return bars_up   # closes ~156; TK lastPrice 100 -> ~36% skew
+
+
+TK_STALE = dict(TK, lastPrice=100.0)
+
+
+def run_analyse_stale():
+    orig = (scanmod.mexc.klines, scanmod.mexc.depth)
+    scanmod.mexc.klines = klines_for_skew
+    scanmod.mexc.depth = lambda sym, limit=20: (BIDS, ASKS)
+    try:
+        return scanmod.analyse_one("TEST_USDT", "TEST", DETAIL, TK_STALE, 0.10)
+    finally:
+        scanmod.mexc.klines, scanmod.mexc.depth = orig
+
+
+sc_skew = run_analyse_stale()
+check("stale ticker flagged with skew magnitude",
+      sc_skew is not None
+      and any(n.startswith("DATA ticker/candle skew") for n in sc_skew.notes),
+      str(sc_skew.notes if sc_skew else None))
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)

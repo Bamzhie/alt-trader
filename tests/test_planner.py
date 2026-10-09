@@ -141,6 +141,12 @@ check("positive funding: long pays (higher cost)",
       p_lf.costs > p_sf.costs, f"long={p_lf.costs} short={p_sf.costs}")
 check("positive funding note says shorts receive",
       "RECEIVE" in p_sf.funding_note, p_sf.funding_note)
+p_card = sc("LONG", 100.0, funding=0.001)
+p_via_card = pl.build_plan(p_card, stake=50.0, swing_ref=94.0,
+                           funding_rate=p_card.funding_rate)
+check("app path: card funding reaches costs (not the zero default)",
+      abs(p_via_card.costs - p_lf.costs) < 1e-12,
+      f"via-card={p_via_card.costs} explicit={p_lf.costs}")
 
 print("\n=== vetoes propagate into plan warnings ===")
 sc_v = sc("LONG", 100.0)

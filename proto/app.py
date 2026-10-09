@@ -35,7 +35,7 @@ SORT_KEYS = {
 # Universe feed cache (spec SS3): tickers+details+Bybit map refresh at most
 # every 10 minutes in memory. Excluded from the 90s scan gate - only the
 # per-coin fetch+score in scan_once is inside that budget.
-UNIVERSE_TTL = 600
+UNIVERSE_TTL = 180
 
 
 class App:
@@ -166,7 +166,8 @@ class App:
                      else ind.swing_high(bars))
             if swing is None:
                 swing = bars[-1]["l"] if card.direction == "LONG" else bars[-1]["h"]
-            return pl.build_plan(card, stake=self.args.stake, swing_ref=swing), bars
+            return pl.build_plan(card, stake=self.args.stake, swing_ref=swing,
+                                 funding_rate=card.funding_rate), bars
         except Exception as e:
             return None, str(e)
 
@@ -298,7 +299,9 @@ class App:
         # they reach plan warnings when a plan exists; show them here too so
         # an unplannable coin still carries the risk label.
         for n in card.notes:
-            if isinstance(n, str) and n.startswith("counter-trend:"):
+            if isinstance(n, str) and (n.startswith("counter-trend:") or
+                                       n.startswith("MTF ") or
+                                       n.startswith("DATA ")):
                 put(f"  ⚠ {n}", curses.A_BOLD)
         put("")
 
