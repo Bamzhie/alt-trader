@@ -1,12 +1,11 @@
 """ALT RADAR desktop GUI — PySide6 / Qt Widgets port of gui/ (tkinter).
 
-Layout (task Q4, mockup recreation): top bar (logo · badges · scan UTC ·
-live countdown · venue pill · settings gear) · left icon rail switching a
-QStackedWidget (Scanner / Watchlist / Outcomes / Logs / Settings) · grouped
-toolbar · signals table · vetoed section with a REASON column · rebuilt
-detail pane (header + tiles + key-value signal details + analyst notes) ·
-outcomes dock with Summary/Performance tabs + recent-events list · status
-bar. Dark navy terminal palette (qtgui/theme.py).
+Layout: top bar (logo · badges · scan UTC · live countdown · venue pill ·
+settings gear) · left icon rail switching Scanner / Watchlist / Outcomes /
+Logs / Settings · compact toolbar · signals table · vetoed section · rebuilt
+detail pane · daily outcomes dock. Watchlist and outcomes use in-page tabs;
+the full outcomes page separates rolling 24-hour from cumulative cohorts.
+Dark navy terminal palette (qtgui/theme.py).
 
 Reuse contract (task Q1 brief, still in force): this module contains NO
 scanner logic.
@@ -45,7 +44,7 @@ from types import SimpleNamespace
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QBrush, QKeySequence, QPainter, QPixmap, \
     QShortcut, QTextCharFormat, QTextCursor
-from PySide6.QtWidgets import QApplication, QButtonGroup, QComboBox, QDialog, \
+from PySide6.QtWidgets import QApplication, QButtonGroup, QComboBox, \
     QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, \
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QPlainTextEdit, \
     QPushButton, QSpinBox, QSplitter, QStatusBar, QStackedWidget, QTableWidget, \
@@ -174,8 +173,10 @@ class RadarWindow(QMainWindow):
             pass
 
         self.setWindowTitle("ALT RADAR — READ-ONLY MEXC scanner")
-        self.resize(1360, 860)
-        self.setMinimumSize(1100, 640)
+        self.resize(1440, 920)
+        # Keep both scanner columns usable on smaller screens while allowing
+        # the operator to resize the window below the original wide minimum.
+        self.setMinimumSize(960, 600)
 
         # Operator config — validated at the edge, source of truth for jobs.
         self.stake = model.validate_stake(stake)
@@ -207,7 +208,9 @@ class RadarWindow(QMainWindow):
                       "shorts": 0, "outcomes": 0}
         self.outcome = model.outcome_summary(None)
         self.hit24 = report_mod.signal_stats(None, 24)
+        self.hit_all = report_mod.signal_stats(None, None)
         self.plan_stats = {"planned": 0}
+        self.plan24 = {"planned": 0, "plans_logged": 0, "coins": 0}
         self._last_stats_ts = 0.0
         self.selected_coin = None
         self._last_errors = {}          # {coin: reason} from the last scan
@@ -216,6 +219,8 @@ class RadarWindow(QMainWindow):
         self._plans_pending = set()
         self._busy = set()              # job kinds in flight
         self._closing = False
+        self._launch_snapshot_at = 0.0
+        self._has_live_scan = False
         self._refilling = False         # blocks selection signals during fill
         self._hdr_section = None        # header-sort state (fresh-click order)
         self.events = []                # (ts, level, text) ring buffer, max 50
@@ -235,6 +240,7 @@ class RadarWindow(QMainWindow):
             universe_budget=self.coins, log_threshold=self.log_threshold,
             db=self.db, write_logs=True, leverage_cap=self.leverage_cap)
         self._show_saved_snapshot()
+        self._render_outcomes()
         self._worker = Worker(worker_args, self._jobs, self._results)
         self._worker.start()
         self._plan_worker = PlanWorker(self._worker, self._plan_jobs,
@@ -257,13 +263,14 @@ class RadarWindow(QMainWindow):
     def _show_saved_snapshot(self):
         """Instant launch: last screen first, live scan replaces it.
 
-        Source order (identical to tkinter): close-time `.last_entries`
-        file, then the DB's latest scan cycle, then blank. Local reads
-        only; never fatal.
+        Read only the tiny close-time file here. The newest SQLite scan is
+        loaded asynchronously by Worker so a busy background writer cannot
+        stall window creation.
         """
         try:
-            source, cards, plans, label = model.resolve_launch_snapshot(self.db)
-            if source == "empty":
+            cards, plans, saved_at, label = model.load_file_snapshot(self.db)
+            self._launch_snapshot_at = saved_at
+            if not cards:
                 return
             self.cards = list(cards)
             self.failed = 0
@@ -271,7 +278,8 @@ class RadarWindow(QMainWindow):
             for coin, entry in (plans or {}).items():
                 if isinstance(entry, dict) and entry.get("plan") is not None:
                     self._plan_cache[coin] = entry
-            self.scan_status = (f"showing {label} — live scan running…")
+            self.scan_status = (f"showing {label} — "
+                                "live scan running…")
             self._render_all()
         except Exception as e:
             self.scan_status = (f"no saved signals ({type(e).__name__}) — "
@@ -344,7 +352,7 @@ class RadarWindow(QMainWindow):
         # ---- narrow icon rail: glyph + tiny label, exclusive selection ----
         rail = QWidget()
         rail.setObjectName("rail")
-        rail.setFixedWidth(62)
+        rail.setFixedWidth(88)
         rail_lay = QVBoxLayout(rail)
         rail_lay.setContentsMargins(3, 3, 3, 3)
         rail_lay.setSpacing(2)
@@ -354,8 +362,10 @@ class RadarWindow(QMainWindow):
         for i, (key, label, glyph) in enumerate(RAIL_PAGES):
             btn = QPushButton(f"{glyph}\n{label}")
             btn.setObjectName("railButton")
+            btn.setFont(_theme.ui_font(_theme.BASE_POINT_SIZE - 1))
+            btn.setToolTip(label)
             btn.setCheckable(True)
-            btn.setFixedHeight(50)
+            btn.setFixedHeight(54)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _=False, k=key: self._switch_page(k))
             self.rail_group.addButton(btn, i)
@@ -411,16 +421,16 @@ class RadarWindow(QMainWindow):
         return "scanner"
 
     # ----------------------------------------------------------- toolbar
-    def _group(self, parent_lay, text):
+    def _group(self, parent_lay, text, stretch=0):
         box = QGroupBox(text)
         lay = QHBoxLayout(box)
         lay.setContentsMargins(4, 2, 4, 2)
         lay.setSpacing(4)
-        parent_lay.addWidget(box)
+        parent_lay.addWidget(box, stretch)
         return box
 
     def _build_scanner_page(self):
-        """Scanner page: toolbar rows + signals/vetoed/detail/outcomes dock."""
+        """Scanner page: one toolbar row + signals/vetoed/detail/outcomes."""
         sv = QVBoxLayout(self.page_scanner)
         sv.setContentsMargins(0, 0, 0, 0)
         sv.setSpacing(4)
@@ -428,23 +438,14 @@ class RadarWindow(QMainWindow):
         self._build_body(sv)
 
     def _build_toolbar(self, parent_lay):
-        # Two rows of labeled groups (same grouping/frequency order as
-        # tkinter, minus the Budget group the mockup drops): row 1 runs the
-        # scanner, row 2 views and analyses. Coins/interval live on the
-        # Settings page (real controls, no honest mockup mapping here).
-        row1 = QWidget()
-        lay1 = QHBoxLayout(row1)
-        lay1.setContentsMargins(0, 0, 0, 0)
-        lay1.setSpacing(6)
-        row2 = QWidget()
-        lay2 = QHBoxLayout(row2)
-        lay2.setContentsMargins(0, 0, 0, 0)
-        lay2.setSpacing(6)
-        parent_lay.addWidget(row1)
-        parent_lay.addWidget(row2)
+        """One compact scanner row: scan, search, and table views."""
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        parent_lay.addWidget(row)
 
-        # ---- row 1: run ----
-        g_scan = self._group(lay1, "Scan")
+        g_scan = self._group(lay, "Scan")
         self.btn_scan = QPushButton("Scan now")
         self.btn_scan.setObjectName("btnPrimary")
         self.btn_scan.clicked.connect(lambda: self._submit("scan"))
@@ -453,38 +454,15 @@ class RadarWindow(QMainWindow):
         self.btn_auto.clicked.connect(self._toggle_auto)
         g_scan.layout().addWidget(self.btn_auto)
 
-        g_stake = self._group(lay1, "Stake")
-        g_stake.layout().addWidget(QLabel("$"))
-        self.ed_stake = QLineEdit(f"{self.stake:g}")
-        self.ed_stake.setFixedWidth(80)
-        self.ed_stake.editingFinished.connect(
-            lambda: self._apply_stake("toolbar"))
-        g_stake.layout().addWidget(self.ed_stake)
-        btn_stake = QPushButton("Apply")
-        btn_stake.setFixedWidth(64)
-        btn_stake.clicked.connect(lambda: self._apply_stake("toolbar"))
-        g_stake.layout().addWidget(btn_stake)
-        self.btn_apply_stake = btn_stake
-
-        g_lev = self._group(lay1, "Leverage cap")
-        self.cmb_lev = QComboBox()
-        self.cmb_lev.addItems([f"{c}x" for c in LEVERAGE_CHOICES])
-        self.cmb_lev.setCurrentText(f"{self.leverage_cap}x")
-        self.cmb_lev.setFixedWidth(64)
-        self.cmb_lev.currentTextChanged.connect(
-            lambda *_: self._apply_leverage("toolbar"))
-        g_lev.layout().addWidget(self.cmb_lev)
-
-        # ---- row 2: view + analyse ----
-        g_find = self._group(lay2, "Find")
+        g_find = self._group(lay, "Find", stretch=1)
         self.ed_search = QLineEdit()
-        self.ed_search.setFixedWidth(150)
+        self.ed_search.setMinimumWidth(180)
         self.ed_search.setPlaceholderText("coin… (Enter = venue-wide)")
         self.ed_search.textChanged.connect(lambda *_: self._on_search_change())
         self.ed_search.returnPressed.connect(self._on_search_commit)
         g_find.layout().addWidget(self.ed_search)
 
-        g_view = self._group(lay2, "View")
+        g_view = self._group(lay, "View")
         g_view.layout().addWidget(QLabel("Dir"))
         self.cmb_dir = QComboBox()
         self.cmb_dir.addItems(list(DIR_CHOICES))
@@ -497,54 +475,6 @@ class RadarWindow(QMainWindow):
         self.cmb_sort.setFixedWidth(84)
         self.cmb_sort.currentTextChanged.connect(lambda *_: self._on_sort_change())
         g_view.layout().addWidget(self.cmb_sort)
-
-        g_thr = self._group(lay2, "Flag threshold")
-        g_thr.layout().addWidget(QLabel("≥"))
-        self.cmb_threshold = QComboBox()
-        presets = list(THRESHOLD_PRESETS)
-        if self.log_threshold not in presets:
-            presets.append(self.log_threshold)
-        self.cmb_threshold.addItems([f"{p:g}" for p in presets])
-        self.cmb_threshold.setCurrentText(f"{self.log_threshold:g}")
-        self.cmb_threshold.setFixedWidth(64)
-        self.cmb_threshold.currentTextChanged.connect(
-            lambda *_: self._apply_threshold("preset"))
-        g_thr.layout().addWidget(self.cmb_threshold)
-        self.ed_threshold = QLineEdit(f"{self.log_threshold:g}")
-        self.ed_threshold.setFixedWidth(64)
-        self.ed_threshold.editingFinished.connect(
-            lambda: self._apply_threshold("entry"))
-        g_thr.layout().addWidget(self.ed_threshold)
-        btn_thr = QPushButton("Apply")
-        btn_thr.setFixedWidth(64)
-        btn_thr.clicked.connect(lambda: self._apply_threshold("entry"))
-        g_thr.layout().addWidget(btn_thr)
-        self.btn_apply_threshold = btn_thr
-
-        g_lists = self._group(lay2, "Lists")
-        self.btn_top = QPushButton("★ Top 10")
-        self.btn_top.clicked.connect(self._open_picks)
-        g_lists.layout().addWidget(self.btn_top)
-        self.btn_watch = QPushButton("👁 Watch")
-        self.btn_watch.clicked.connect(self._open_watch)
-        g_lists.layout().addWidget(self.btn_watch)
-        self.btn_new = QPushButton("+ New")
-        self.btn_new.clicked.connect(self._open_new)
-        g_lists.layout().addWidget(self.btn_new)
-
-        g_data = self._group(lay2, "Data")
-        self.btn_export = QPushButton("Export")
-        self.btn_export.clicked.connect(lambda: self._export_csv())
-        g_data.layout().addWidget(self.btn_export)
-        self.btn_copy = QPushButton("Copy")
-        self.btn_copy.clicked.connect(self._copy_detail_text)
-        g_data.layout().addWidget(self.btn_copy)
-        self.btn_stats = QPushButton("Refresh")
-        self.btn_stats.clicked.connect(lambda: self._submit("stats"))
-        g_data.layout().addWidget(self.btn_stats)
-
-        lay1.addStretch(1)
-        lay2.addStretch(1)
 
     def _make_table(self, columns, headings, widths):
         table = QTableWidget(0, len(columns))
@@ -602,11 +532,16 @@ class RadarWindow(QMainWindow):
         vv.addWidget(self.tree_vetoed)
         lv.addWidget(vet_box)
 
-        # ---- right: detail pane + outcomes dock + recent events ----
+        # ---- right: detail pane + outcomes dock ----
         right = QWidget()
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
-        rv.setSpacing(4)
+        rv.setSpacing(0)
+
+        detail_outcomes = QSplitter(Qt.Orientation.Vertical)
+        detail_outcomes.setChildrenCollapsible(False)
+        detail_outcomes.setHandleWidth(6)
+        self.detail_outcomes_splitter = detail_outcomes
 
         det_box = QGroupBox("Detail — selected coin (review only, no orders)")
         dv = QVBoxLayout(det_box)
@@ -669,10 +604,11 @@ class RadarWindow(QMainWindow):
         self.det_kv.setFont(_theme.mono_font())
         self.det_kv.verticalHeader().setVisible(False)
         self.det_kv.horizontalHeader().setVisible(False)
-        self.det_kv.verticalHeader().setDefaultSectionSize(_theme.ROW_HEIGHT)
+        # Eleven key/value rows should fit in the default detail allocation.
+        self.det_kv.verticalHeader().setDefaultSectionSize(22)
         self.det_kv.horizontalHeader().setStretchLastSection(True)
-        self.det_kv.setMinimumHeight(_theme.ROW_HEIGHT * 6)
-        dv.addWidget(self.det_kv, 1)
+        self.det_kv.setMinimumHeight(22 * 11)
+        dv.addWidget(self.det_kv, 3)
 
         # flags section
         lbl_flags_hdr = QLabel("FLAGS")
@@ -690,60 +626,48 @@ class RadarWindow(QMainWindow):
         self.detail.setReadOnly(True)
         self.detail.setFont(_theme.mono_font(_theme.DETAIL_POINT_SIZE))
         self.detail.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        self.detail.setMinimumHeight(74)
+        self.detail.setMinimumHeight(56)
         dv.addWidget(self.detail, 1)
-        rv.addWidget(det_box, 3)
+        detail_outcomes.addWidget(det_box)
 
         # ---- outcomes dock: Summary / Performance tabs + Resolve now ----
         out_box = QGroupBox("Outcomes")
         ov = QVBoxLayout(out_box)
         ov.setContentsMargins(6, 6, 6, 6)
         self.out_tabs = QTabWidget()
-        self.lbl_outcomes = QLabel("no outcomes resolved yet")
-        self.lbl_outcomes.setFont(_theme.mono_font())
-        self.lbl_outcomes.setAlignment(Qt.AlignmentFlag.AlignLeft |
-                                       Qt.AlignmentFlag.AlignTop)
-        self.lbl_outcomes.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.lbl_outcomes.setWordWrap(True)
         sum_tab = QWidget()
         sum_lay = QVBoxLayout(sum_tab)
         sum_lay.setContentsMargins(4, 4, 4, 4)
-        sum_lay.addWidget(self.lbl_outcomes)
-        self.lbl_performance = QLabel("")
-        self.lbl_performance.setFont(_theme.mono_font())
-        self.lbl_performance.setAlignment(Qt.AlignmentFlag.AlignLeft |
-                                          Qt.AlignmentFlag.AlignTop)
-        self.lbl_performance.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.lbl_performance.setWordWrap(True)
+        self.tbl_outcomes_summary = self._make_outcome_table()
+        sum_lay.addWidget(self.tbl_outcomes_summary)
+        self._set_outcome_rows(
+            self.tbl_outcomes_summary,
+            [("Window", "Rolling last 24 hours"),
+             ("Flagged observations", "loading daily sample…")])
         perf_tab = QWidget()
         perf_lay = QVBoxLayout(perf_tab)
         perf_lay.setContentsMargins(4, 4, 4, 4)
-        perf_lay.addWidget(self.lbl_performance)
+        self.tbl_outcomes_performance = self._make_outcome_table()
+        perf_lay.addWidget(self.tbl_outcomes_performance)
         self.out_tabs.addTab(sum_tab, "Summary")
         self.out_tabs.addTab(perf_tab, "Performance")
         ov.addWidget(self.out_tabs)
         btn_resolve_now = QPushButton("Resolve now")
         btn_resolve_now.clicked.connect(lambda: self._submit("resolve"))
         ov.addWidget(btn_resolve_now, 0, Qt.AlignmentFlag.AlignLeft)
-        rv.addWidget(out_box, 2)
-
-        # ---- recent in-app events (ring buffer, colored dots) ----
-        ev_box = QGroupBox("Recent events")
-        evv = QVBoxLayout(ev_box)
-        evv.setContentsMargins(4, 4, 4, 4)
-        self.events_list = QListWidget()
-        self.events_list.setFont(_theme.mono_font())
-        self.events_list.setMaximumHeight(_theme.ROW_HEIGHT * 6 + 12)
-        evv.addWidget(self.events_list)
-        rv.addWidget(ev_box)
+        detail_outcomes.addWidget(out_box)
+        # Coin detail is the daily-driver view; outcomes stays visible at a
+        # compact quarter-height and the handle remains user-adjustable.
+        detail_outcomes.setStretchFactor(0, 3)
+        detail_outcomes.setStretchFactor(1, 1)
+        detail_outcomes.setSizes([570, 190])
+        rv.addWidget(detail_outcomes, 1)
 
         splitter.addWidget(left)
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
-        splitter.setSizes([840, 500])
+        splitter.setSizes([780, 560])
         parent_lay.addWidget(splitter, 1)
         self._reset_detail()
 
@@ -764,65 +688,135 @@ class RadarWindow(QMainWindow):
         parent_lay.addWidget(frame)
         return v
 
+    def _make_outcome_table(self):
+        """Compact label/value layout shared by the two outcome tabs."""
+        table = QTableWidget(0, 2)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        table.setShowGrid(False)
+        table.setWordWrap(False)
+        table.setFont(_theme.mono_font())
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(20)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setMinimumHeight(100)
+        return table
+
+    @staticmethod
+    def _set_outcome_rows(table, rows):
+        """Render outcome metrics in the same aligned form as coin details."""
+        table.setRowCount(len(rows))
+        for row, (label, value) in enumerate(rows):
+            key = _CellItem(label, align=_align("w"))
+            key.setForeground(QBrush(QColor(_theme.TEXT_DIM)))
+            val = _CellItem(value, align=_align("w"))
+            val.setToolTip(value)
+            table.setItem(row, 0, key)
+            table.setItem(row, 1, val)
+        table.horizontalHeader().resizeSection(
+            0, max(112, int(table.width() * 0.30)))
+
     # ---------------------------------------------------- rail pages
     def _build_watchlist_page(self):
-        """Watchlist page: picks.watch_list — stake-blocked coins."""
+        """Watchlist page: watch, Top 10, and new-listing tables."""
         v = QVBoxLayout(self.page_watchlist)
         v.setContentsMargins(4, 4, 4, 4)
-        box = QGroupBox("Watch — blocked only by stake (tradable as stake compounds)")
-        bv = QVBoxLayout(box)
-        bv.setContentsMargins(4, 4, 4, 4)
-        watch_cols = ("coin", "dir", "score", "min")
+        self.watch_tabs = QTabWidget()
         watch_heads = {"coin": "COIN", "dir": "DIR", "score": "SCORE",
                        "min": "MIN NOTIONAL"}
-        watch_widths = {"coin": 160, "dir": 60, "score": 90, "min": 140}
-        self.tbl_watchlist = self._make_table(watch_cols, watch_heads,
-                                              watch_widths)
-        self.tbl_watchlist.itemSelectionChanged.connect(self._on_watch_select)
-        self.tbl_watchlist.itemDoubleClicked.connect(
-            lambda *_: self._switch_page("scanner"))
-        bv.addWidget(self.tbl_watchlist)
+        self.tbl_watchlist = self._make_table(
+            ("coin", "dir", "score", "min"), watch_heads,
+            {"coin": 180, "dir": 60, "score": 100, "min": 160})
+        self.tbl_top_picks = self._make_table(
+            ("coin", "dir", "score", "price", "lean"),
+            {"coin": "COIN", "dir": "DIR", "score": "SCORE",
+             "price": "PRICE", "lean": "LEAN"},
+            {"coin": 180, "dir": 60, "score": 100, "price": 140,
+             "lean": 100})
+        self.tbl_new_listings = self._make_table(
+            ("coin", "seen", "score", "dir"),
+            {"coin": "COIN", "seen": "FIRST SEEN", "score": "SCORE",
+             "dir": "DIR"},
+            {"coin": 180, "seen": 180, "score": 100, "dir": 60})
+        self._watch_tables = (self.tbl_watchlist, self.tbl_top_picks,
+                              self.tbl_new_listings)
+        self.watch_tabs.addTab(self.tbl_watchlist, "Watchlist")
+        self.watch_tabs.addTab(self.tbl_top_picks, "Top 10")
+        self.watch_tabs.addTab(self.tbl_new_listings, "New coins")
+        self.watch_tabs.currentChanged.connect(self._update_watchlist_hint)
+        for table in self._watch_tables:
+            table.itemSelectionChanged.connect(
+                lambda t=table: self._on_watch_select(t))
+            table.itemDoubleClicked.connect(
+                lambda _item, t=table: self._open_coin_from_list(t))
+        v.addWidget(self.watch_tabs, 1)
         self.lbl_watchlist_hint = QLabel("")
         self.lbl_watchlist_hint.setObjectName("headerStats")
-        bv.addWidget(self.lbl_watchlist_hint)
-        v.addWidget(box)
+        self.lbl_watchlist_hint.setText(
+            "Select a row to inspect · double-click to open in Scanner")
+        v.addWidget(self.lbl_watchlist_hint)
 
     def _build_outcomes_page(self):
-        """Full outcomes page: counts, hit rates, plans-live, equity text."""
+        """Daily and cumulative outcomes with explicit sample denominators."""
         v = QVBoxLayout(self.page_outcomes)
         v.setContentsMargins(4, 4, 4, 4)
-        box = QGroupBox("Outcomes — resolved performance (honest tables, no charts)")
-        bv = QVBoxLayout(box)
-        bv.setContentsMargins(6, 6, 6, 6)
-        self.lbl_outcomes_page = QLabel("no outcomes resolved yet")
-        self.lbl_outcomes_page.setFont(_theme.mono_font())
-        self.lbl_outcomes_page.setAlignment(Qt.AlignmentFlag.AlignLeft |
-                                            Qt.AlignmentFlag.AlignTop)
-        self.lbl_outcomes_page.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.lbl_outcomes_page.setWordWrap(True)
-        bv.addWidget(self.lbl_outcomes_page)
-        self.tbl_outcomes = QTableWidget(0, 6)
-        self.tbl_outcomes.setHorizontalHeaderLabels(
-            ["HORIZON", "RESOLVED", "WON", "LOST", "% WON", "AVG RETURN"])
-        self.tbl_outcomes.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers)
-        self.tbl_outcomes.setSelectionMode(
-            QTableWidget.SelectionMode.NoSelection)
-        self.tbl_outcomes.setShowGrid(False)
-        self.tbl_outcomes.setFont(_theme.mono_font())
-        self.tbl_outcomes.verticalHeader().setVisible(False)
-        self.tbl_outcomes.verticalHeader().setDefaultSectionSize(
-            _theme.ROW_HEIGHT)
-        hdr = self.tbl_outcomes.horizontalHeader()
-        hdr.setStretchLastSection(True)
-        for i, w in enumerate((90, 90, 70, 70, 80, 100)):
-            hdr.resizeSection(i, w)
-        bv.addWidget(self.tbl_outcomes)
-        btn_resolve_page = QPushButton("Resolve now")
+        self.outcomes_page_tabs = QTabWidget()
+        self.tbl_outcomes_daily = self._make_outcome_matrix()
+        self.tbl_plans_daily = self._make_outcome_matrix(
+            ("MEASURE", "HITS", "SAMPLE", "RATE"))
+        self.tbl_outcomes = self._make_outcome_matrix()
+        self.tbl_plans_cumulative = self._make_outcome_matrix(
+            ("MEASURE", "HITS", "SAMPLE", "RATE"))
+        self.lbl_outcomes_daily = QLabel()
+        self.lbl_outcomes_cumulative = QLabel()
+        for label in (self.lbl_outcomes_daily, self.lbl_outcomes_cumulative):
+            label.setWordWrap(True)
+            label.setObjectName("headerStats")
+        self.outcomes_page_tabs.addTab(self._make_outcome_cohort(
+            self.lbl_outcomes_daily, self.tbl_outcomes_daily,
+            self.tbl_plans_daily), "Daily · 24h")
+        self.outcomes_page_tabs.addTab(self._make_outcome_cohort(
+            self.lbl_outcomes_cumulative, self.tbl_outcomes,
+            self.tbl_plans_cumulative), "Cumulative")
+        v.addWidget(self.outcomes_page_tabs, 1)
+        btn_resolve_page = QPushButton("Resolve pending outcomes")
         btn_resolve_page.clicked.connect(lambda: self._submit("resolve"))
-        bv.addWidget(btn_resolve_page, 0, Qt.AlignmentFlag.AlignLeft)
-        v.addWidget(box)
+        v.addWidget(btn_resolve_page, 0, Qt.AlignmentFlag.AlignLeft)
+
+    @staticmethod
+    def _make_outcome_matrix(headers=("HORIZON / SIDE", "RESOLVED", "WINS",
+                                      "LOSSES", "HIT RATE", "AVG RETURN")):
+        table = QTableWidget(0, len(headers))
+        table.setHorizontalHeaderLabels(list(headers))
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        table.setShowGrid(False)
+        table.setFont(_theme.mono_font())
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(_theme.ROW_HEIGHT)
+        table.horizontalHeader().setStretchLastSection(True)
+        return table
+
+    @staticmethod
+    def _make_outcome_cohort(context, signals, plans):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.addWidget(context)
+        split = QSplitter(Qt.Orientation.Horizontal)
+        signal_box = QGroupBox("Signal outcomes · each horizon measured separately")
+        signal_layout = QVBoxLayout(signal_box)
+        signal_layout.addWidget(signals)
+        plan_box = QGroupBox("Plan level touches · overlapping outcomes")
+        plan_layout = QVBoxLayout(plan_box)
+        plan_layout.addWidget(plans)
+        split.addWidget(signal_box)
+        split.addWidget(plan_box)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 2)
+        layout.addWidget(split, 1)
+        return page
 
     def _build_logs_page(self):
         """Logs page: tails logs/app.log + the in-app event ring buffer."""
@@ -854,7 +848,7 @@ class RadarWindow(QMainWindow):
         v.addWidget(box)
 
     def _build_settings_page(self):
-        """Settings page: per-field Apply with the toolbar's validation."""
+        """Settings and low-frequency data actions, away from the scan row."""
         v = QVBoxLayout(self.page_settings)
         v.setContentsMargins(4, 4, 4, 4)
         box = QGroupBox("Settings — each field applies and validates on its own")
@@ -863,24 +857,36 @@ class RadarWindow(QMainWindow):
         grid.setVerticalSpacing(6)
 
         grid.addWidget(QLabel("Stake $"), 0, 0)
-        self.ed_stake_s = QLineEdit(f"{self.stake:g}")
-        self.ed_stake_s.setFixedWidth(100)
-        self.ed_stake_s.editingFinished.connect(
+        self.ed_stake = QLineEdit(f"{self.stake:g}")
+        self.ed_stake.setFixedWidth(100)
+        self.ed_stake.editingFinished.connect(
             lambda: self._apply_stake("settings"))
-        grid.addWidget(self.ed_stake_s, 0, 1)
-        btn_stake_s = QPushButton("Apply")
-        btn_stake_s.clicked.connect(lambda: self._apply_stake("settings"))
-        grid.addWidget(btn_stake_s, 0, 2)
+        grid.addWidget(self.ed_stake, 0, 1)
+        self.btn_apply_stake = QPushButton("Apply")
+        self.btn_apply_stake.clicked.connect(
+            lambda: self._apply_stake("settings"))
+        grid.addWidget(self.btn_apply_stake, 0, 2)
 
         grid.addWidget(QLabel("Flag threshold"), 1, 0)
-        self.ed_threshold_s = QLineEdit(f"{self.log_threshold:g}")
-        self.ed_threshold_s.setFixedWidth(100)
-        self.ed_threshold_s.editingFinished.connect(
+        self.cmb_threshold = QComboBox()
+        presets = list(THRESHOLD_PRESETS)
+        if self.log_threshold not in presets:
+            presets.append(self.log_threshold)
+        self.cmb_threshold.addItems([f"{p:g}" for p in presets])
+        self.cmb_threshold.setCurrentText(f"{self.log_threshold:g}")
+        self.cmb_threshold.setFixedWidth(90)
+        self.cmb_threshold.currentTextChanged.connect(
+            lambda *_: self._apply_threshold("preset"))
+        grid.addWidget(self.cmb_threshold, 1, 1)
+        self.ed_threshold = QLineEdit(f"{self.log_threshold:g}")
+        self.ed_threshold.setFixedWidth(80)
+        self.ed_threshold.editingFinished.connect(
             lambda: self._apply_threshold("settings"))
-        grid.addWidget(self.ed_threshold_s, 1, 1)
-        btn_thr_s = QPushButton("Apply")
-        btn_thr_s.clicked.connect(lambda: self._apply_threshold("settings"))
-        grid.addWidget(btn_thr_s, 1, 2)
+        grid.addWidget(self.ed_threshold, 1, 2)
+        self.btn_apply_threshold = QPushButton("Apply")
+        self.btn_apply_threshold.clicked.connect(
+            lambda: self._apply_threshold("settings"))
+        grid.addWidget(self.btn_apply_threshold, 1, 3)
 
         grid.addWidget(QLabel("Coins (universe + scan size)"), 2, 0)
         self.sp_coins = QSpinBox()
@@ -909,19 +915,19 @@ class RadarWindow(QMainWindow):
         grid.addWidget(btn_db, 4, 2)
 
         grid.addWidget(QLabel("Leverage cap"), 5, 0)
-        self.cmb_lev_s = QComboBox()
-        self.cmb_lev_s.addItems([f"{c}x" for c in LEVERAGE_CHOICES])
-        self.cmb_lev_s.setCurrentText(f"{self.leverage_cap}x")
-        self.cmb_lev_s.setFixedWidth(100)
-        self.cmb_lev_s.currentTextChanged.connect(
+        self.cmb_lev = QComboBox()
+        self.cmb_lev.addItems([f"{c}x" for c in LEVERAGE_CHOICES])
+        self.cmb_lev.setCurrentText(f"{self.leverage_cap}x")
+        self.cmb_lev.setFixedWidth(100)
+        self.cmb_lev.currentTextChanged.connect(
             lambda *_: self._apply_leverage("settings"))
-        grid.addWidget(self.cmb_lev_s, 5, 1)
+        grid.addWidget(self.cmb_lev, 5, 1)
 
-        grid.setColumnStretch(3, 1)
+        grid.setColumnStretch(4, 1)
         v.addWidget(box, 0)
 
-        # Maintenance jobs (kept real, moved here from the old Data group —
-        # the mockup's Data group is Export/Copy/Refresh only).
+        # Background collection and resolution are occasional maintenance,
+        # so keep them off the scan toolbar.
         mnt = QGroupBox("Maintenance")
         mh = QHBoxLayout(mnt)
         mh.setContentsMargins(4, 2, 4, 2)
@@ -933,6 +939,17 @@ class RadarWindow(QMainWindow):
         mh.addWidget(self.btn_resolve)
         mh.addStretch(1)
         v.addWidget(mnt, 0)
+
+        data = self._group(v, "Data")
+        self.btn_export = QPushButton("Export signals")
+        self.btn_export.clicked.connect(lambda: self._export_csv())
+        data.layout().addWidget(self.btn_export)
+        self.btn_copy = QPushButton("Copy selected detail")
+        self.btn_copy.clicked.connect(self._copy_detail_text)
+        data.layout().addWidget(self.btn_copy)
+        self.btn_stats = QPushButton("Refresh stats")
+        self.btn_stats.clicked.connect(lambda: self._submit("stats"))
+        data.layout().addWidget(self.btn_stats)
         v.addStretch(1)
 
     def _build_status(self):
@@ -955,115 +972,11 @@ class RadarWindow(QMainWindow):
         lay.addWidget(self.lbl_statusline, 2)
         bar.addWidget(inner, 1)
 
-    # ------------------------------------------------------ list modals
-    def _open_list_modal(self, title, columns, rows):
-        """Modal table dialog. Double-click/Enter jumps the main view.
-
-        `columns`: [(key, heading, width)]; `rows`: list of dicts with at
-        least "coin". Picking a row selects it in the main table (which
-        fetches its plan on the plan lane) and closes the dialog — the
-        tkinter Toplevel behaviour, dialog.exec() being the Qt modal loop.
-        """
-        dlg = QDialog(self)
-        dlg.setWindowTitle(title)
-        dlg.resize(620, 420)
-        lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(8, 8, 8, 8)
-        keys = [k for k, _, _ in columns]
-        table = QTableWidget(len(rows), len(keys))
-        table.setHorizontalHeaderLabels([h for _, h, _ in columns])
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        table.setShowGrid(False)
-        table.setFont(_theme.mono_font())
-        table.verticalHeader().setVisible(False)
-        table.verticalHeader().setDefaultSectionSize(_theme.ROW_HEIGHT)
-        header = table.horizontalHeader()
-        header.setStretchLastSection(True)
-        for i, (_, _, width) in enumerate(columns):
-            header.resizeSection(i, width)
-        for r, row in enumerate(rows):
-            for c, key in enumerate(keys):
-                text = row.get(key, "")
-                item = _CellItem("" if text is None else text,
-                                 align=_align("w" if key == "coin" else "e"))
-                if c == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, row.get("coin"))
-                table.setItem(r, c, item)
-        lay.addWidget(table, 1)
-
-        def pick(*_a):
-            sel = table.selectionModel().selectedRows() if table.selectionModel() else []
-            if not sel:
-                return
-            coin = table.item(sel[0].row(), 0).data(Qt.ItemDataRole.UserRole)
-            if any(c.coin == coin for c in self.cards):
-                self.selected_coin = coin
-                self._ensure_plan(coin)
-                self._render_all()
-            else:
-                self._set_error(f"{coin} is not in the current table")
-                self._render_status()
-            dlg.accept()
-
-        table.itemActivated.connect(pick)
-        btn = QPushButton("Open in main view (double-click works too)")
-        btn.clicked.connect(pick)
-        lay.addWidget(btn)
-        table.setFocus()
-        dlg.exec()
-
     def _fmt_ts(self, ts):
         try:
             return time.strftime("%m-%d %H:%M", time.localtime(float(ts)))
         except (TypeError, ValueError):
             return "?"
-
-    def _open_picks(self):
-        rows = [{"coin": c.coin, "dir": model.direction_arrow(c.direction),
-                 "score": f"{c.score:.1f}", "price": model.format_price(c.price),
-                 "lean": f"{c.lean:+.2f}"}
-                for c in self.digest.get("picks", [])]
-        if not rows:
-            self._set_error("no picks yet — run a scan first")
-            self._render_status()
-            return
-        self._open_list_modal(
-            "★ Top 10 picks — trade-now (actionable, above threshold)",
-            [("coin", "COIN", 130), ("dir", "DIR", 50),
-             ("score", "SCORE", 70), ("price", "PRICE", 110),
-             ("lean", "LEAN", 70)], rows)
-
-    def _open_watch(self):
-        rows = [{"coin": c.coin, "dir": model.direction_arrow(c.direction),
-                 "score": f"{c.score:.1f}",
-                 "min": (f"${c.min_notional:.2f}"
-                         if c.min_notional is not None else "unknown")}
-                for c in self.digest.get("watch", [])]
-        if not rows:
-            self._set_error("watch list empty — nothing stake-blocked")
-            self._render_status()
-            return
-        self._open_list_modal(
-            "👁 Watch — blocked only by stake (tradable as stake compounds)",
-            [("coin", "COIN", 130), ("dir", "DIR", 50),
-             ("score", "SCORE", 70), ("min", "MIN NOTIONAL", 140)], rows)
-
-    def _open_new(self):
-        rows = [{"coin": d["coin"], "seen": self._fmt_ts(d["first_seen"]),
-                 "score": (f"{d['score']:.1f}" if d["score"] is not None
-                           else "n/a"),
-                 "dir": {"LONG": "▲", "SHORT": "▼"}.get(d["direction"], "•")}
-                for d in self.digest.get("new", [])]
-        if not rows:
-            self._set_error("no new listings in the last 7 days")
-            self._render_status()
-            return
-        self._open_list_modal(
-            "+ New listings — first seen within 7 days, by latest score",
-            [("coin", "COIN", 130), ("seen", "FIRST SEEN", 110),
-             ("score", "SCORE", 70), ("dir", "DIR", 50)], rows)
 
     # ------------------------------------------------------ widget helpers
     def _auto_label(self):
@@ -1074,9 +987,9 @@ class RadarWindow(QMainWindow):
         self._render_status()
 
     # ------------------------------------------------------ input handlers
-    def _apply_stake(self, source="toolbar"):
-        """Validate + apply stake from the toolbar OR settings field."""
-        field = self.ed_stake_s if source == "settings" else self.ed_stake
+    def _apply_stake(self, source="settings"):
+        """Validate + apply stake from its Settings control."""
+        field = self.ed_stake
         try:
             v = model.validate_stake(field.text())
         except ValueError as e:
@@ -1085,7 +998,6 @@ class RadarWindow(QMainWindow):
             return
         self.stake = v
         self.ed_stake.setText(f"{self.stake:g}")
-        self.ed_stake_s.setText(f"{self.stake:g}")
         self._set_error("")
         self.scan_status = f"stake ${self.stake:.2f} applied"
         # Plans embed the stake — stale ones must be refetched for the
@@ -1095,12 +1007,10 @@ class RadarWindow(QMainWindow):
             self._ensure_plan(self.selected_coin)
         self._render_all()               # flags column depends on stake
 
-    def _apply_threshold(self, source="entry"):
-        """Validate + apply the flag threshold (entry, preset or settings)."""
+    def _apply_threshold(self, source="settings"):
+        """Validate + apply the flag threshold from Settings."""
         if source == "preset":
             raw = self.cmb_threshold.currentText()
-        elif source == "settings":
-            raw = self.ed_threshold_s.text()
         else:
             raw = self.ed_threshold.text()
         try:
@@ -1108,14 +1018,12 @@ class RadarWindow(QMainWindow):
         except ValueError as e:
             self._set_error(str(e))
             self.ed_threshold.setText(f"{self.log_threshold:g}")
-            self.ed_threshold_s.setText(f"{self.log_threshold:g}")
             self.cmb_threshold.blockSignals(True)
             self.cmb_threshold.setCurrentText(f"{self.log_threshold:g}")
             self.cmb_threshold.blockSignals(False)
             return
         self.log_threshold = v
         self.ed_threshold.setText(f"{self.log_threshold:g}")
-        self.ed_threshold_s.setText(f"{self.log_threshold:g}")
         if self.cmb_threshold.currentText() != f"{self.log_threshold:g}":
             self.cmb_threshold.blockSignals(True)
             items = [self.cmb_threshold.itemText(i)
@@ -1128,13 +1036,13 @@ class RadarWindow(QMainWindow):
         self.scan_status = f"flag threshold {self.log_threshold:g} applied"
         self._render_status()
 
-    def _apply_leverage(self, source="toolbar"):
+    def _apply_leverage(self, source="settings"):
         """Leverage cap dropdown (planner plumbing): write cap + clear cache.
 
         Leverage is embedded in every plan, so cached plans go stale the
         moment the cap moves — clear the cache and refetch the selection.
         """
-        combo = self.cmb_lev_s if source == "settings" else self.cmb_lev
+        combo = self.cmb_lev
         text = combo.currentText().strip().lower().rstrip("x")
         try:
             cap = int(text)
@@ -1150,11 +1058,8 @@ class RadarWindow(QMainWindow):
             return
         self.leverage_cap = cap
         self.cmb_lev.blockSignals(True)
-        self.cmb_lev_s.blockSignals(True)
         self.cmb_lev.setCurrentText(f"{cap}x")
-        self.cmb_lev_s.setCurrentText(f"{cap}x")
         self.cmb_lev.blockSignals(False)
-        self.cmb_lev_s.blockSignals(False)
         self._set_error("")
         self.scan_status = f"leverage cap {cap}x applied — plans recompute under the cap"
         self._plan_cache.clear()
@@ -1334,29 +1239,55 @@ class RadarWindow(QMainWindow):
             self._ensure_plan(coin)
         self._render_detail()
 
-    def _on_watch_select(self, *_a):
-        """Watchlist page selection follows the same detail rules."""
+    def _on_watch_select(self, table):
+        """Selecting any in-page list row updates the coin detail state."""
         if self._refilling:
             return
-        sel = (self.tbl_watchlist.selectionModel().selectedRows()
-               if self.tbl_watchlist.selectionModel() else [])
+        sel = (table.selectionModel().selectedRows()
+               if table.selectionModel() else [])
         if not sel:
             return
-        item = self.tbl_watchlist.item(sel[0].row(), 0)
+        item = table.item(sel[0].row(), 0)
         coin = item.data(Qt.ItemDataRole.UserRole) if item else None
         if not coin:
+            return
+        if not any(c.coin == coin for c in self.cards):
             return
         self._refilling = True
         try:
             self.tree.clearSelection()
             self.tree_vetoed.clearSelection()
+            for other in self._watch_tables:
+                if other is not table:
+                    other.clearSelection()
         finally:
             self._refilling = False
         changed = coin != self.selected_coin
         self.selected_coin = coin
+        self._refilling = True
+        try:
+            self._select_coin_row(self.tree, coin)
+            self._select_coin_row(self.tree_vetoed, coin)
+        finally:
+            self._refilling = False
         if changed:
             self._ensure_plan(coin)
         self._render_detail()
+
+    def _open_coin_from_list(self, table):
+        """Double-click a row to inspect its signal in the Scanner page."""
+        sel = (table.selectionModel().selectedRows()
+               if table.selectionModel() else [])
+        if not sel:
+            return
+        item = table.item(sel[0].row(), 0)
+        coin = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if not coin or not any(c.coin == coin for c in self.cards):
+            self._set_error(f"{coin or 'coin'} is not in the current scan")
+            self._render_status()
+            return
+        self._on_watch_select(table)
+        self._switch_page("scanner")
 
     def _ensure_plan(self, coin):
         """Fetch the trade plan on the plan lane (never scan-blocked)."""
@@ -1450,6 +1381,9 @@ class RadarWindow(QMainWindow):
         if msg.get("venue"):
             self.venue = dict(msg["venue"])
         if not msg.get("ok", True):
+            if kind == "disk_snapshot":
+                self._finish(kind)
+                return
             self._set_error(f"{kind} failed: {msg.get('error', 'unknown error')}")
             if kind in ("scan", "resolve", "collect"):
                 self._push_event("error",
@@ -1464,7 +1398,9 @@ class RadarWindow(QMainWindow):
                 self._busy.clear()   # no jobs will ever run on a dead worker
             self._finish(kind)
             return
-        handler = {"scan": self._on_scan, "stats": self._on_stats,
+        handler = {"scan": self._on_scan,
+                   "disk_snapshot": self._on_disk_snapshot,
+                   "stats": self._on_stats,
                    "resolve": self._on_resolve, "collect": self._on_collect,
                    "lookup": self._on_lookup,
                    "plan": self._on_plan, "ready": self._on_ready}.get(kind)
@@ -1495,6 +1431,7 @@ class RadarWindow(QMainWindow):
         self.scan_status = "ready" if msg.get("ok") else msg.get("error", "")
 
     def _on_scan_failed(self, msg):
+        self._has_live_scan = True
         # Brief: scan failure -> status error, keep old table, venue degraded.
         self.last_scan_ts = time.time()
         self.last_scan_label = time.strftime("%H:%M:%S")
@@ -1506,6 +1443,7 @@ class RadarWindow(QMainWindow):
         self._render_status()
 
     def _on_scan(self, msg):
+        self._has_live_scan = True
         self.last_scan_ts = time.time()
         self.last_scan_label = time.strftime("%H:%M:%S")
         self.universe = int(msg.get("universe", 0))
@@ -1558,13 +1496,37 @@ class RadarWindow(QMainWindow):
         if "stats" not in self._busy:
             self._submit("stats")
 
+    def _on_disk_snapshot(self, msg):
+        """Replace the close-time file only when SQLite has a newer scan."""
+        cards = list(msg.get("cards") or [])
+        saved_ts = float(msg.get("latest_ts") or 0)
+        if (self._has_live_scan or not cards
+                or saved_ts <= self._launch_snapshot_at):
+            return
+        self.cards = cards
+        self._launch_snapshot_at = saved_ts
+        self.failed = 0
+        self.attempted = len(cards)
+        self._last_errors = {}
+        self.selected_coin = None
+        self._plan_cache.clear()  # file plans belong to the older scan
+        self.digest = msg.get("digest") or {"picks": [], "watch": [], "new": []}
+        stamp = time.strftime("%H:%M", time.localtime(saved_ts))
+        self.scan_status = (f"showing saved database scan {stamp} "
+                            f"({len(cards)} coins) — live scan running…")
+        self._render_all()
+
     def _on_stats(self, msg):
         self.stats = msg.get("stats") or self.stats
         self.outcome = msg.get("outcome") or self.outcome
         if msg.get("hit24"):
             self.hit24 = msg["hit24"]
+        if msg.get("hit_all"):
+            self.hit_all = msg["hit_all"]
         if msg.get("plan"):
             self.plan_stats = msg["plan"]
+        if msg.get("plan24"):
+            self.plan24 = msg["plan24"]
         self._render_header()
         self._render_outcomes()
 
@@ -1574,8 +1536,12 @@ class RadarWindow(QMainWindow):
         self.outcome = msg.get("outcome") or self.outcome
         if msg.get("hit24"):
             self.hit24 = msg["hit24"]
+        if msg.get("hit_all"):
+            self.hit_all = msg["hit_all"]
         if msg.get("plan"):
             self.plan_stats = msg["plan"]
+        if msg.get("plan24"):
+            self.plan24 = msg["plan24"]
         self.scan_status = (f"resolved {n} pending outcome(s)"
                             + (f", {msg.get('plans_resolved', 0)} plan(s)"
                                if msg.get("plans_resolved") else ""))
@@ -1987,150 +1953,175 @@ class RadarWindow(QMainWindow):
             self._analyst_notes(card, plan, plan_err, last_error))
 
     # ---------------------------------------------------------- watchlist
+    def _fill_watch_table(self, table, rows):
+        """Fill one Watchlist tab from (coin, display-cell) rows."""
+        table.setRowCount(len(rows))
+        for row, (coin, cells) in enumerate(rows):
+            for col, cell in enumerate(cells):
+                text, number, anchor, foreground = cell
+                item = _CellItem(text, number, _align(anchor),
+                                 foreground=foreground)
+                if col == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, coin)
+                table.setItem(row, col, item)
+
     def _render_watchlist(self):
-        table = self.tbl_watchlist
         self._refilling = True
         try:
-            rows = picks_mod.watch_list(self.cards, self.stake)
-            table.setRowCount(len(rows))
-            for r, c in enumerate(rows):
+            watch_rows = []
+            for c in picks_mod.watch_list(self.cards, self.stake):
                 min_text = (f"${c.min_notional:.2f}"
                             if c.min_notional is not None else "unknown")
-                cells = ((c.coin, None, "w"),
-                         (model.direction_arrow(c.direction), None, "center"),
-                         (f"{c.score:.1f}", _num(c.score), "e"),
-                         (min_text, _num(c.min_notional), "e"))
                 dir_fg = _theme.direction_foreground(c.direction)
-                for col, (text, number, anchor) in enumerate(cells):
-                    item = _CellItem(text, number, _align(anchor), None,
-                                     dir_fg if col == 1 else None)
-                    if col == 0:
-                        item.setData(Qt.ItemDataRole.UserRole, c.coin)
-                    table.setItem(r, col, item)
-            if rows:
-                self.lbl_watchlist_hint.setText(
-                    f"{len(rows)} coin(s) blocked only by stake "
-                    f"(${self.stake:.2f}) — double-click to open in Scanner")
-            else:
-                self.lbl_watchlist_hint.setText(
-                    "watch list empty — nothing stake-blocked at this stake")
-            self._select_coin_row(table, self.selected_coin)
+                watch_rows.append((c.coin, [
+                    (c.coin, None, "w", None),
+                    (model.direction_arrow(c.direction), None, "center", dir_fg),
+                    (f"{c.score:.1f}", _num(c.score), "e", None),
+                    (min_text, _num(c.min_notional), "e", None),
+                ]))
+
+            pick_rows = []
+            for c in self.digest.get("picks", []):
+                pick_rows.append((c.coin, [
+                    (c.coin, None, "w", None),
+                    (model.direction_arrow(c.direction), None, "center",
+                     _theme.direction_foreground(c.direction)),
+                    (f"{c.score:.1f}", _num(c.score), "e", None),
+                    (model.format_price(c.price), _num(c.price), "e", None),
+                    (f"{c.lean:+.2f}", _num(c.lean), "e", None),
+                ]))
+
+            new_rows = []
+            for entry in self.digest.get("new", []):
+                direction = entry.get("direction")
+                new_rows.append((entry["coin"], [
+                    (entry["coin"], None, "w", None),
+                    (self._fmt_ts(entry.get("first_seen")), None, "w", None),
+                    (f"{entry['score']:.1f}"
+                     if entry.get("score") is not None else "n/a",
+                     _num(entry.get("score")), "e", None),
+                    ({"LONG": "▲", "SHORT": "▼"}.get(direction, "•"),
+                     None, "center", _theme.direction_foreground(direction)),
+                ]))
+
+            self._fill_watch_table(self.tbl_watchlist, watch_rows)
+            self._fill_watch_table(self.tbl_top_picks, pick_rows)
+            self._fill_watch_table(self.tbl_new_listings, new_rows)
+            self.watch_tabs.setTabText(0, f"Watchlist ({len(watch_rows)})")
+            self.watch_tabs.setTabText(1, f"Top 10 ({len(pick_rows)})")
+            self.watch_tabs.setTabText(2, f"New coins ({len(new_rows)})")
+            for table in self._watch_tables:
+                self._select_coin_row(table, self.selected_coin)
+            self._update_watchlist_hint()
         finally:
             self._refilling = False
 
+    def _update_watchlist_hint(self, _index=None):
+        tables = getattr(self, "_watch_tables", ())
+        if not tables:
+            return
+        index = self.watch_tabs.currentIndex()
+        table = tables[index] if 0 <= index < len(tables) else tables[0]
+        self.lbl_watchlist_hint.setText(
+            f"{table.rowCount()} entries · select a row to inspect · "
+            "double-click to open in Scanner")
+
     # ---------------------------------------------------------- outcomes
-    def _direction_lines(self):
-        """Per-direction hit-rate lines (shared by dock + page)."""
-        lines = []
-        o = self.outcome
-        for d in ("LONG", "SHORT"):
-            e = o.get("direction", {}).get(d)
-            if not e or not e.get("count"):
-                lines.append(f"{d}: no resolved outcomes yet")
-            else:
-                lines.append(
-                    f"{d}: n={e['count']} · avg signed return "
-                    f"{e['avg_return']:+.2f}% · hit rate {e['hit_rate'] * 100:.0f}%")
-        return lines
+    @staticmethod
+    def _outcome_table_rows(table, rows):
+        table.setRowCount(len(rows))
+        for r, values in enumerate(rows):
+            for c, value in enumerate(values):
+                text = str(value)
+                table.setItem(r, c, _CellItem(
+                    text, _num(text), _align("w" if c == 0 else "e")))
 
-    def _counts_line(self):
-        o = self.outcome
-        counts = o.get("counts", {})
-        return (" · ".join(f"{h} {counts.get(h, 0)}" for h in model.HORIZONS)
-                + f"   (total {o.get('total', 0)} resolved)")
+    @staticmethod
+    def _signal_rows(hit):
+        result = []
+        by_dir = hit.get("by_direction_horizon", {})
+        for horizon in model.HORIZONS:
+            for direction in ("LONG", "SHORT"):
+                stat = by_dir.get(direction, {}).get(horizon, {})
+                n = int(stat.get("resolved", 0))
+                result.append((f"{horizon.upper()} · {direction}", n,
+                               int(stat.get("wins", 0)),
+                               int(stat.get("losses", 0)),
+                               f"{stat.get('pct_won', 0.0):.1f}%" if n else "—",
+                               f"{stat.get('avg_return', 0.0):+.2f}%" if n else "—"))
+        return result
 
-    def _hit24_line(self):
-        try:
-            hit = getattr(self, "hit24", None) or report_mod.signal_stats(None, 24)
-            oall = hit["overall"]
-            return (f"24h flagged: {hit['signals']} signals · "
-                    f"{oall['resolved']} resolved · won {oall['wins']} / "
-                    f"lost {oall['losses']} · {oall['pct_won']:.0f}% won · "
-                    f"avg {oall['avg_return']:+.2f}%")
-        except Exception:
-            return None
+    @staticmethod
+    def _plan_rows(stats):
+        n = int(stats.get("measured", stats.get("planned", 0)))
+        terminal = int(stats.get("terminal", 0))
+        logged = int(stats.get("plans_logged", 0))
+        rows = [("Plans logged", logged, "—", "—"),
+                ("Measured plan outcomes", n, n, "—")]
+        for name, key, pct in (("Stop touched", "stop_hit", "stop_pct"),
+                               ("TP1 reached", "tp1_hit", "tp1_pct"),
+                               ("TP2 reached", "tp2_hit", "tp2_pct")):
+            rows.append((name, int(stats.get(key, 0)), n,
+                         f"{stats.get(pct, 0.0):.1f}%" if n else "—"))
+        rows.append(("Terminal plans (stop or TP2)", terminal, n,
+                     f"{stats.get('terminal_pct', 0.0):.1f}%" if n else "—"))
+        for name, key, pct in (("Stop · terminal only", "t_stop_hit", "t_stop_pct"),
+                               ("TP1 · terminal only", "t_tp1_hit", "t_tp1_pct"),
+                               ("TP2 · terminal only", "t_tp2_hit", "t_tp2_pct")):
+            rows.append((name, int(stats.get(key, 0)), terminal,
+                         f"{stats.get(pct, 0.0):.1f}%" if terminal else "—"))
+        return rows
 
-    def _plans_line(self):
-        ps = getattr(self, "plan_stats", None) or {"planned": 0}
-        if ps.get("planned"):
-            return (f"plans live: {ps['planned']} watched · stop "
-                    f"{ps['stop_hit']} ({ps['stop_pct']:.0f}%) · TP1 "
-                    f"{ps['tp1_hit']} ({ps['tp1_pct']:.0f}%) · TP2 "
-                    f"{ps['tp2_hit']} ({ps['tp2_pct']:.0f}%) · "
-                    f"terminal {ps.get('terminal', 0)}")
-        return "plans: none resolved yet"
+    @staticmethod
+    def _cohort_context(hit, plan, label):
+        return (f"{label}: {hit.get('signals', 0)} flagged scan observations "
+                f"across {hit.get('coins', 0)} distinct coins. Repeated scans "
+                "count as separate observations; each horizon has its own "
+                "sample; cohort dates use signal time and results mature later. "
+                f"Plans: {plan.get('measured', 0)} measured of "
+                f"{plan.get('plans_logged', 0)} logged. Touch rates can overlap; "
+                "terminal rates use stop/TP2-finished plans and are not net P&L.")
 
     def _render_outcomes(self):
-        # ---- dock: Summary tab (= the current panel) ----
-        lines = [self._counts_line()]
-        lines.extend(self._direction_lines())
-        hit_line = self._hit24_line()
-        if hit_line:
-            lines.append(hit_line)
-        try:
-            lines.append(self._plans_line())
-        except Exception:
-            pass
-        self.lbl_outcomes.setText("\n".join(lines))
+        hit24 = getattr(self, "hit24", None) or report_mod.signal_stats(None, 24)
+        hit_all = getattr(self, "hit_all", None) or report_mod.signal_stats(None, None)
+        plan24 = getattr(self, "plan24", None) or {"planned": 0}
+        plan_all = getattr(self, "plan_stats", None) or {"planned": 0}
 
-        # ---- dock: Performance tab (direction rates + terminal plan rates
-        #      + the 24h flagged line) ----
-        perf = list(self._direction_lines())
-        ps = getattr(self, "plan_stats", None) or {"planned": 0}
-        if ps.get("planned"):
-            perf.append(
-                f"plans: {ps['planned']} watched · terminal {ps.get('terminal', 0)}"
-                f" — stop {ps.get('t_stop_pct', 0.0):.0f}% / "
-                f"TP1 {ps.get('t_tp1_pct', 0.0):.0f}% / "
-                f"TP2 {ps.get('t_tp2_pct', 0.0):.0f}% (terminal plans only)")
-        else:
-            perf.append("plans: none resolved yet")
-        if hit_line:
-            perf.append(hit_line)
-        self.lbl_performance.setText("\n".join(perf))
+        # The dock is a compact daily snapshot. Cumulative totals live only
+        # on the full Outcomes page so unlike windows are never side by side.
+        observed = int(hit24.get("signals", 0))
+        summary_rows = [
+            ("Window", "Rolling last 24 hours"),
+            ("Flagged observations", f"{observed} · {hit24.get('coins', 0)} distinct coins"),
+            ("Resolved horizon results",
+             str(hit24.get("overall", {}).get("resolved", 0))),
+            ("Plans", f"{plan24.get('measured', 0)} measured / "
+                      f"{plan24.get('plans_logged', 0)} logged"),
+        ]
+        self._set_outcome_rows(self.tbl_outcomes_summary, summary_rows)
+        performance_rows = []
+        for horizon in model.HORIZONS:
+            stat = hit24.get("by_horizon", {}).get(horizon, {})
+            n = int(stat.get("resolved", 0))
+            performance_rows.append((horizon.upper(),
+                (f"{stat.get('pct_won', 0.0):.1f}% hit · "
+                 f"avg {stat.get('avg_return', 0.0):+.2f}% · n={n}")
+                if n else "Pending · no resolved outcomes"))
+        self._set_outcome_rows(self.tbl_outcomes_performance, performance_rows)
 
-        # ---- full Outcomes page: text summary + honest per-horizon table ----
-        page_lines = [self._counts_line()]
-        page_lines.extend(self._direction_lines())
-        # Equity text summary (NO chart widget exists): the honest sum of
-        # resolved signed returns — derived from the same outcome rows the
-        # counts/hit-rates come from, labelled for exactly what it is.
-        o = self.outcome
-        resolved = sum(int(d.get("count", 0))
-                       for d in o.get("direction", {}).values())
-        signed_sum = sum(float(d.get("count", 0)) * float(d.get("avg_return", 0.0))
-                         for d in o.get("direction", {}).values())
-        page_lines.append(
-            f"equity (sum of resolved signed returns): {signed_sum:+.2f}% "
-            f"across {resolved} resolved outcome(s)")
-        try:
-            page_lines.append(self._plans_line())
-        except Exception:
-            pass
-        if hit_line:
-            page_lines.append(hit_line)
-        self.lbl_outcomes_page.setText("\n".join(page_lines))
-
-        hit = getattr(self, "hit24", None) or report_mod.signal_stats(None, 24)
-        rows = []
-        for h in model.HORIZONS:
-            s = hit["by_horizon"].get(h) or {}
-            rows.append((h.upper(), s.get("resolved", 0), s.get("wins", 0),
-                         s.get("losses", 0), s.get("pct_won", 0.0),
-                         s.get("avg_return", 0.0)))
-        oall = hit["overall"]
-        rows.append(("ALL", oall.get("resolved", 0), oall.get("wins", 0),
-                     oall.get("losses", 0), oall.get("pct_won", 0.0),
-                     oall.get("avg_return", 0.0)))
-        tbl = self.tbl_outcomes
-        tbl.setRowCount(len(rows))
-        for r, (h, res, won, lost, pct, avg) in enumerate(rows):
-            values = (h, str(res), str(won), str(lost), f"{pct:.0f}%",
-                      f"{avg:+.2f}%")
-            for c, text in enumerate(values):
-                tbl.setItem(r, c, _CellItem(
-                    text, _num(text) if c > 0 else None,
-                    _align("center" if c == 0 else "e")))
+        self.lbl_outcomes_daily.setText(
+            self._cohort_context(hit24, plan24, "Rolling last 24 hours"))
+        self.lbl_outcomes_cumulative.setText(
+            self._cohort_context(hit_all, plan_all, "All recorded history"))
+        self._outcome_table_rows(self.tbl_outcomes_daily,
+                                 self._signal_rows(hit24))
+        self._outcome_table_rows(self.tbl_outcomes,
+                                 self._signal_rows(hit_all))
+        self._outcome_table_rows(self.tbl_plans_daily,
+                                 self._plan_rows(plan24))
+        self._outcome_table_rows(self.tbl_plans_cumulative,
+                                 self._plan_rows(plan_all))
 
     # ---------------------------------------------------------- data tools
     def _export_csv(self, path=None):
@@ -2186,13 +2177,12 @@ class RadarWindow(QMainWindow):
     def _render_events(self):
         color = {"ok": _theme.LONG_FG, "error": _theme.ERROR_FG,
                  "info": _theme.INFO_FG}
-        for lst in (self.events_list, self.events_log_list):
-            lst.clear()
-            for ts, level, text in reversed(self.events):
-                stamp = time.strftime("%H:%M:%S", time.localtime(ts))
-                item = QListWidgetItem(f"● {stamp}  {text}")
-                item.setForeground(QColor(color.get(level, _theme.TEXT_DIM)))
-                lst.addItem(item)
+        self.events_log_list.clear()
+        for ts, level, text in reversed(self.events):
+            stamp = time.strftime("%H:%M:%S", time.localtime(ts))
+            item = QListWidgetItem(f"● {stamp}  {text}")
+            item.setForeground(QColor(color.get(level, _theme.TEXT_DIM)))
+            self.events_log_list.addItem(item)
 
     def _refresh_log_file(self):
         """Tail logs/app.log (last 400 lines) into the Logs page viewer."""

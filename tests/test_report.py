@@ -64,7 +64,8 @@ check("overall 4 rows (1h x2 + 4h + 7d)", o["resolved"] == 4, str(o))
 check("overall 2W/2L", o["wins"] == 2 and o["losses"] == 2, str(o))
 check("zero-return counts as loss", o["losses"] == 2)
 txt = format_report(st)
-check("report renders", "FLAGGED SIGNALS" in txt and "%won" in txt, txt[:80])
+check("report labels observation scope",
+      "FLAGGED SCAN OBSERVATIONS" in txt and "%won" in txt, txt[:100])
 check("None store zero shape", signal_stats(None, 24)["signals"] == 0)
 store.close()
 

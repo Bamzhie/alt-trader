@@ -6,10 +6,11 @@ next to the database. On launch that file renders instantly — no API wait,
 no window heuristic, no duplicate coins — and the first live scan replaces
 it wholesale.
 
-Pickle is safe here: the file is written and read by the same app on the
-same machine, version-stamped, and any corruption (or version mismatch)
-falls back to the DB snapshot, then to a blank table. Nothing here touches
-orders or keys — Scorecards and Plans are plain data.
+The UI compares this close-time file with the newest scan rows in SQLite and
+shows whichever is newer. Pickle is safe here: the file is written and read
+by the same app on the same machine, version-stamped, and any corruption (or
+version mismatch) falls back to the database snapshot, then to a blank table.
+Nothing here touches orders or keys — Scorecards and Plans are plain data.
 """
 
 import os
@@ -64,4 +65,3 @@ def load(db_path, max_age_s=7 * 86400):
         return cards, plans, saved_at
     except Exception:
         return None, None, None
-

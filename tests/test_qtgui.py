@@ -24,11 +24,10 @@ mockup-recreation additions):
                  asserted on the queue, the retired worker never runs it
   4 sort/dir     Dir combo filters, Sort combo reorders, a real header click
                  re-sorts (Qt-only path), _CellItem numeric comparison
-  5 segments     Top 10 / Watch / New: empty digest = guidance + no modal,
-                 seeded digest = modal rows; a pick jumps the main selection.
-                 QDialog.exec() is driven by QTimer.singleShot (see below)
-  6 outcomes     Summary tab, Performance tab, full Outcomes page (counts,
-                 per-horizon honest table, equity text summary), zero-shape
+  5 segments     Watchlist / Top 10 / New are in-page tabs with live rows;
+                 selecting a current-scan coin updates the detail pane.
+  6 outcomes     Daily and cumulative cohorts, direction/horizon rows, and
+                 explicit plan denominators, including the zero shape
   7 snapshot     close writes .last_entries (proto/snapshot), relaunch
                  repopulates instantly; the plain close() path writes too
   8 tripwire     socket.socket / create_connection / getaddrinfo /
@@ -55,12 +54,6 @@ files; both worker lanes are retired (None sentinel + join) right after
 each window's construction — the ctor's offline "stats" job sits in front
 of the sentinel, so the real queue -> poll -> render path still runs, but
 no scan/plan/collect/resolve/lookup job can ever execute.
-
-Modal handling (Q1 report concern 3): list dialogs run a nested event loop
-(``QDialog.exec``). Every dialog test arms ``QTimer.singleShot(0, hook)``
-so the hook inspects (and closes) the dialog from INSIDE that loop, plus a
-single-shot safety timer so a wedged dialog fails loudly instead of hanging
-the suite.
 
 Run:  .venv-qt/bin/python tests/test_qtgui.py   -> ALL PASS, exit 0
       python3 tests/test_qtgui.py               -> SKIP, exit 0
@@ -114,10 +107,10 @@ socket.gethostbyname = _blocked("socket.gethostbyname")
 # ---- skip guard: system python3 has no PySide6 ---------------------------
 try:
     import PySide6
-    from PySide6.QtCore import Qt, QRect, QTimer
+    from PySide6.QtCore import Qt, QRect
     from PySide6.QtGui import QShortcut
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import (QApplication, QDialog, QGroupBox, QLabel,
+    from PySide6.QtWidgets import (QApplication, QGroupBox, QLabel,
                                    QListWidget, QPushButton, QTableWidget)
 except ImportError:
     # run_all.py needs "OK"/"ALL PASS" in the output to count exit 0 as a pass.
@@ -255,6 +248,12 @@ def row_cells(table, r):
     return [table.item(r, c).text() for c in range(table.columnCount())]
 
 
+def kv_table_text(table):
+    return "\n".join(f"{table.item(r, 0).text()}: "
+                     f"{table.item(r, 1).text()}"
+                     for r in range(table.rowCount()))
+
+
 def bg_name(table, r, c):
     return table.item(r, c).background().color().name()
 
@@ -267,63 +266,6 @@ def kv_map(win):
     """The detail pane's SIGNAL DETAILS table as a {key: value} dict."""
     return {win.det_kv.item(r, 0).text(): win.det_kv.item(r, 1).text()
             for r in range(win.det_kv.rowCount())}
-
-
-def _visible_dialog():
-    for w in APP.topLevelWidgets():
-        if isinstance(w, QDialog) and w.isVisible():
-            return w
-    return None
-
-
-def drive_modal(opener, inspector, timeout_ms=5000):
-    """Run a modal dialog: inspect it from inside its own event loop.
-
-    Returns the dialog after exec() returns. inspector(dlg) runs while the
-    dialog is modal and is responsible for closing it (or leaving that to
-    the finally-hook). A safety timer rejects the dialog after timeout_ms
-    so a wedged modal fails the test instead of hanging the suite.
-    """
-    seen = {"dlg": None, "err": None, "timeout": False}
-
-    def _safety():
-        dlg = _visible_dialog()
-        if dlg is not None:
-            seen["timeout"] = True
-            dlg.reject()
-
-    def _hook():
-        try:
-            dlg = _visible_dialog()
-            seen["dlg"] = dlg
-            if dlg is None:
-                seen["err"] = AssertionError("opener() opened no dialog")
-                return
-            inspector(dlg)
-        except Exception as e:            # never raise inside Qt's dispatch
-            seen["err"] = e
-        finally:
-            dlg = seen["dlg"]
-            if dlg is not None and dlg.isVisible():
-                dlg.reject()
-
-    safety = QTimer()
-    safety.setSingleShot(True)
-    safety.timeout.connect(_safety)
-    safety.start(timeout_ms)
-    QTimer.singleShot(0, _hook)
-    try:
-        opener()                          # blocks in QDialog.exec()
-    finally:
-        safety.stop()
-    if seen["timeout"]:
-        raise AssertionError("modal dialog never became inspectable")
-    if seen["err"] is not None:
-        raise seen["err"]
-    if seen["dlg"] is None:
-        raise AssertionError("opener() opened no dialog")
-    check("modal dialog closed itself", not seen["dlg"].isVisible())
-    return seen["dlg"]
 
 
 # ==========================================================================
@@ -350,7 +292,7 @@ def t_build():
           "MEXC Perpetual Futures Scanner" in labels)
     check("READ-ONLY badge", " READ-ONLY " in labels)
     check("TIER-2 badge", "TIER-2 UNVALIDATED" in labels)
-    for text in ("$", "Dir", "Sort", "≥"):
+    for text in ("$", "Dir", "Sort", "Flag threshold"):
         check(f"label {text!r}", text in labels)
     check("settings coins label", "Coins (universe + scan size)" in labels)
     check("settings interval label", "Interval s (auto-scan)" in labels)
@@ -358,21 +300,24 @@ def t_build():
     check("settings leverage label", "Leverage cap" in labels)
 
     groups = [g.title() for g in win.findChildren(QGroupBox)]
-    for text in ("Scan", "Stake", "Leverage cap", "Find", "View",
-                 "Flag threshold", "Lists", "Data", "Signals", "Outcomes"):
+    for text in ("Scan", "Find", "View", "Signals", "Outcomes"):
         check(f"group {text!r}", text in groups, str(groups))
     check("no Budget group (mockup omission — coins/interval live in Settings)",
           "Budget" not in groups, str(groups))
     check("vetoed group", any(t.startswith("VETOED — excluded from ranking")
                               for t in groups), str(groups))
     check("detail group", any(t.startswith("Detail — selected coin") for t in groups))
-    check("recent events group", "Recent events" in groups, str(groups))
+    check("recent events moved out of scanner", "Recent events" not in groups,
+          str(groups))
+    check("event history remains on Logs page",
+          "RECENT IN-APP EVENTS" in labels, str(labels))
     check("maintenance group", "Maintenance" in groups, str(groups))
 
     btns = [b.text() for b in win.findChildren(QPushButton)]
     for text in ("Scan now", "Resume auto-scan", "Collect bars",
-                 "Resolve outcomes", "Refresh", "Resolve now",
-                 "★ Top 10", "👁 Watch", "+ New", "Export", "Copy"):
+                 "Resolve outcomes", "Refresh", "Resolve pending outcomes",
+                 "Export signals",
+                 "Copy selected detail", "Refresh stats"):
         check(f"button {text!r}", text in btns, str(btns))
     check("Scan now is the accent primary",
           win.btn_scan.objectName() == "btnPrimary")
@@ -405,12 +350,13 @@ def t_build():
     check("initial interval", win.sp_interval.value() == 60)
     check("initial dir", win.cmb_dir.currentText() == "Both")
     check("initial sort", win.cmb_sort.currentText() == "score")
-    check("settings stake mirrors the toolbar", win.ed_stake_s.text() == "0.1")
-    check("settings threshold mirrors the toolbar",
-          win.ed_threshold_s.text() == "24")
+    check("stake has a single Settings field",
+          win.ed_stake.text() == "0.1")
+    check("threshold has a single Settings field",
+          win.ed_threshold.text() == "24")
     check("settings db path", win.ed_db.text() == win.db, win.ed_db.text())
-    check("settings leverage mirrors the toolbar",
-          win.cmb_lev_s.currentText() == "50x")
+    check("leverage has a single Settings control",
+          win.cmb_lev.currentText() == "50x")
     check("find placeholder", "venue-wide" in win.ed_search.placeholderText(),
           win.ed_search.placeholderText())
     check("Ctrl+Q shortcut present", len(win.findChildren(QShortcut)) >= 1)
@@ -456,9 +402,12 @@ def t_build():
           win.lbl_det_sub.text())
     check("detail key-value table starts empty", win.det_kv.rowCount() == 0)
     check("analyst note pane is read-only", win.detail.isReadOnly())
-    check("outcomes placeholder",
-          win.lbl_outcomes.text() == "no outcomes resolved yet",
-          win.lbl_outcomes.text())
+    check("watchlist page uses three in-page lists",
+          win.watch_tabs.count() == 3)
+    check("outcomes page has daily and cumulative views",
+          [win.outcomes_page_tabs.tabText(i)
+           for i in range(win.outcomes_page_tabs.count())]
+          == ["Daily · 24h", "Cumulative"])
     check("outcomes dock has 2 tabs",
           [win.out_tabs.tabText(i) for i in range(win.out_tabs.count())]
           == ["Summary", "Performance"])
@@ -482,12 +431,11 @@ def t_build():
           win.lbl_statusline.text() == "ready", win.lbl_statusline.text())
     check("activity idle after drain",
           win.lbl_activity.text() == "activity: idle", win.lbl_activity.text())
-    outcomes = win.lbl_outcomes.text()
-    check("zero counts line",
-          "1h 0 · 4h 0 · 24h 0 · 7d 0   (total 0 resolved)" in outcomes,
+    outcomes = kv_table_text(win.tbl_outcomes_summary)
+    check("zero daily cohort row", "Rolling last 24 hours" in outcomes,
           outcomes)
-    check("zero 24h line", "24h flagged: 0 signals" in outcomes, outcomes)
-    check("no plans line", "plans: none resolved yet" in outcomes, outcomes)
+    check("zero daily observations", "0 · 0 distinct coins" in outcomes,
+          outcomes)
 
 
 # ==========================================================================
@@ -711,7 +659,7 @@ def t_sortdir():
 
 
 # ==========================================================================
-# 5. SEGMENT DIALOGS
+# 5. WATCHLIST PAGE
 # ==========================================================================
 
 def t_segments():
@@ -720,19 +668,10 @@ def t_segments():
                    mkcard("BBB", score=40, min_notional=5.0),
                    mkcard("CCC", score=60, direction="SHORT")])
 
-    # -- empty digest: guidance, no modal ------------------------------------
-    win._open_picks()
-    check("empty picks guidance", "no picks yet" in win.error_text,
-          win.error_text)
-    win._open_watch()
-    check("empty watch guidance", "watch list empty" in win.error_text,
-          win.error_text)
-    win._open_new()
-    check("empty new guidance", "no new listings" in win.error_text,
-          win.error_text)
-    check("no dialog opened for empty lists", _visible_dialog() is None)
-
-    # -- seeded digest -------------------------------------------------------
+    check("watchlist tabs are in-page",
+          [win.watch_tabs.tabText(i).split(" (")[0]
+           for i in range(win.watch_tabs.count())]
+          == ["Watchlist", "Top 10", "New coins"])
     win.digest = {
         "picks": [mkcard("AAA", score=70, lean=0.5, price=1.0)],
         "watch": [mkcard("BBB", score=40, min_notional=5.0)],
@@ -740,24 +679,23 @@ def t_segments():
                  "score": 60.0, "direction": "SHORT", "ts": 1_700_000_000}],
     }
 
-    def inspect_picks(dlg):
-        check("Top 10 dialog title", "Top 10" in dlg.windowTitle(),
-              dlg.windowTitle())
-        tbl = dlg.findChild(QTableWidget)
-        check("Top 10 has a table", tbl is not None)
-        check("Top 10 row count", tbl.rowCount() == 1, str(tbl.rowCount()))
-        check("Top 10 heading",
-              tbl.horizontalHeaderItem(0).text() == "COIN")
-        cells = row_cells(tbl, 0)
-        check("Top 10 row cells",
-              cells == ["AAA", "▲", "70.0", model.format_price(1.0), "+0.50"],
-              str(cells))
-        tbl.selectRow(0)
-        btn = dlg.findChild(QPushButton)
-        check("dialog pick button", btn is not None)
-        btn.click()                              # pick() -> dlg.accept()
+    win._render_watchlist()
+    check("Top 10 row in page", win.tbl_top_picks.rowCount() == 1,
+          str(win.tbl_top_picks.rowCount()))
+    check("Top 10 row cells",
+          row_cells(win.tbl_top_picks, 0)
+          == ["AAA", "▲", "70.0", model.format_price(1.0), "+0.50"],
+          str(row_cells(win.tbl_top_picks, 0)))
+    check("watchlist row in page", win.tbl_watchlist.rowCount() == 1,
+          str(win.tbl_watchlist.rowCount()))
+    check("new coin row in page", win.tbl_new_listings.rowCount() == 1,
+          str(win.tbl_new_listings.rowCount()))
+    check("new coin row cells",
+          row_cells(win.tbl_new_listings, 0)
+          == ["CCC", time.strftime("%m-%d %H:%M", time.localtime(1_700_000_000)),
+              "60.0", "▼"], str(row_cells(win.tbl_new_listings, 0)))
 
-    drive_modal(win._open_picks, inspect_picks)
+    win.tbl_top_picks.selectRow(0)
     check("pick jumps the main selection", win.selected_coin == "AAA",
           str(win.selected_coin))
     sel = win.tree.selectionModel().selectedRows()
@@ -773,28 +711,9 @@ def t_segments():
           plan_jobs == [{"coin": "AAA", "stake": win.stake,
                          "leverage_cap": win.leverage_cap}], str(plan_jobs))
 
-    def inspect_watch(dlg):
-        check("Watch dialog title", "Watch" in dlg.windowTitle(),
-              dlg.windowTitle())
-        tbl = dlg.findChild(QTableWidget)
-        check("Watch row count", tbl.rowCount() == 1, str(tbl.rowCount()))
-        cells = row_cells(tbl, 0)
-        check("Watch row cells",
-              cells == ["BBB", "▲", "40.0", "$5.00"], str(cells))
-
-    drive_modal(win._open_watch, inspect_watch)
-
-    def inspect_new(dlg):
-        check("New dialog title", "New listings" in dlg.windowTitle(),
-              dlg.windowTitle())
-        tbl = dlg.findChild(QTableWidget)
-        check("New row count", tbl.rowCount() == 1, str(tbl.rowCount()))
-        seen = time.strftime("%m-%d %H:%M", time.localtime(1_700_000_000))
-        cells = row_cells(tbl, 0)
-        check("New row cells",
-              cells == ["CCC", seen, "60.0", "▼"], str(cells))
-
-    drive_modal(win._open_new, inspect_new)
+    win._open_coin_from_list(win.tbl_top_picks)
+    check("double-click action routes to Scanner",
+          win.current_page() == "scanner", win.current_page())
 
 
 # ==========================================================================
@@ -809,84 +728,78 @@ OUTCOME_FIXTURE = {
                   "SHORT": {"count": 1, "avg_return": -2.0,
                             "hit_rate": 0.0}},
 }
-HIT24_FIXTURE = {"window_hours": 24, "signals": 7,
-                 "by_horizon": {},
+HORIZON_FIXTURE = lambda: {
+    h: {"resolved": 1, "wins": 1, "losses": 0, "pct_won": 100.0,
+        "avg_return": 2.0} for h in model.HORIZONS}
+HIT24_FIXTURE = {"window_hours": 24, "signals": 7, "coins": 4,
+                 "by_horizon": HORIZON_FIXTURE(),
+                 "by_direction_horizon": {
+                     d: HORIZON_FIXTURE() for d in ("LONG", "SHORT")},
                  "overall": {"resolved": 4, "wins": 3, "losses": 1,
                              "pct_won": 75.0, "avg_return": 1.25}}
 PLAN_FIXTURE = {"planned": 10, "stop_hit": 3, "tp1_hit": 5, "tp2_hit": 1,
                 "stop_pct": 30.0, "tp1_pct": 50.0, "tp2_pct": 10.0,
-                "terminal": 2, "t_stop_pct": 50.0, "t_tp1_pct": 50.0,
-                "t_tp2_pct": 0.0}
+                "terminal": 2, "terminal_pct": 20.0, "measured": 10,
+                "plans_logged": 13, "coins": 4,
+                "t_stop_hit": 1, "t_tp1_hit": 1, "t_tp2_hit": 0,
+                "t_stop_pct": 50.0, "t_tp1_pct": 50.0, "t_tp2_pct": 0.0}
 
 
 def t_outcomes():
     win = make_window()
     win._handle_msg({"kind": "stats", "ok": True, "stats": STATS_FIXTURE,
                      "outcome": OUTCOME_FIXTURE, "hit24": HIT24_FIXTURE,
-                     "plan": PLAN_FIXTURE})
+                     "hit_all": HIT24_FIXTURE, "plan": PLAN_FIXTURE,
+                     "plan24": PLAN_FIXTURE})
 
-    panel = win.lbl_outcomes.text()               # Summary tab
-    check("per-horizon counts line",
-          "1h 1 · 4h 2 · 24h 0 · 7d 0   (total 3 resolved)" in panel, panel)
-    check("LONG hit-rate line",
-          "LONG: n=2 · avg signed return +5.50% · hit rate 50%" in panel, panel)
-    check("SHORT hit-rate line",
-          "SHORT: n=1 · avg signed return -2.00% · hit rate 0%" in panel, panel)
-    check("24h flagged line",
-          "24h flagged: 7 signals · 4 resolved · won 3 / lost 1 · 75% won · "
-          "avg +1.25%" in panel, panel)
-    check("plans-live line",
-          "plans live: 10 watched · stop 3 (30%) · TP1 5 (50%) · TP2 1 (10%) · "
-          "terminal 2" in panel, panel)
-
-    perf = win.lbl_performance.text()             # Performance tab
-    check("Performance: direction hit rates",
-          "LONG: n=2" in perf and "SHORT: n=1" in perf, perf)
-    check("Performance: terminal plan rates",
-          "terminal 2 — stop 50% / TP1 50% / TP2 0% (terminal plans only)"
-          in perf, perf)
-    check("Performance: 24h flagged line", "24h flagged: 7 signals" in perf,
-          perf)
-
-    page = win.lbl_outcomes_page.text()           # full Outcomes page
-    check("page: counts line", "(total 3 resolved)" in page, page)
-    check("page: direction lines", "LONG: n=2" in page and "SHORT: n=1" in page,
-          page)
-    check("page: equity text summary (sum of resolved signed returns)",
-          "equity (sum of resolved signed returns): +9.00% "
-          "across 3 resolved outcome(s)" in page, page)
-    check("page: plans line", "plans live: 10 watched" in page, page)
-    check("page: honest per-horizon table row count",
-          win.tbl_outcomes.rowCount() == 5, str(win.tbl_outcomes.rowCount()))
-    overall_row = row_cells(win.tbl_outcomes, 4)
-    check("page: overall row from the 24h window",
-          overall_row == ["ALL", "4", "3", "1", "75%", "+1.25%"],
-          str(overall_row))
+    panel = kv_table_text(win.tbl_outcomes_summary)
+    check("dock explicitly uses rolling daily cohort",
+          "Rolling last 24 hours" in panel
+          and "7 · 4 distinct coins" in panel, panel)
+    perf = kv_table_text(win.tbl_outcomes_performance)
+    check("dock performance reports horizon sample sizes",
+          "1h" in perf and "n=1" in perf, perf)
+    check("outcomes page offers daily and cumulative cohorts",
+          [win.outcomes_page_tabs.tabText(i)
+           for i in range(win.outcomes_page_tabs.count())]
+          == ["Daily · 24h", "Cumulative"])
+    daily_context = win.lbl_outcomes_daily.text()
+    check("daily context explains observations and distinct coins",
+          "7 flagged scan observations across 4 distinct coins" in daily_context,
+          daily_context)
+    check("horizon-by-direction sample matrix has 8 rows",
+          win.tbl_outcomes_daily.rowCount() == 8,
+          str(win.tbl_outcomes_daily.rowCount()))
+    check("TP rates show explicit measured denominator",
+          row_cells(win.tbl_plans_daily, 3) == ["TP1 reached", "5", "10", "50.0%"],
+          str(row_cells(win.tbl_plans_daily, 3)))
+    check("terminal-only rates are separately labeled",
+          "terminal only" in row_cells(win.tbl_plans_daily, 6)[0])
 
     header = win.lbl_header.text()
     for frag in ("logs 10 rows / 5 coins", "flagged 2", "outcomes 3"):
         check(f"header {frag!r}", frag in header, header)
 
     # -- zero shape: no outcomes yet, no plans resolved ----------------------
-    zero_hit = {"window_hours": 24, "signals": 0, "by_horizon": {},
+    zero_hit = {"window_hours": 24, "signals": 0, "coins": 0,
+                "by_horizon": {}, "by_direction_horizon": {},
                 "overall": {"resolved": 0, "wins": 0, "losses": 0,
                             "pct_won": 0.0, "avg_return": 0.0}}
     win._handle_msg({"kind": "stats", "ok": True,
                      "stats": {"rows": 0, "flagged": 0, "coins": 0,
                                "longs": 0, "shorts": 0, "outcomes": 0},
                      "outcome": model.outcome_summary(None),
-                     "hit24": zero_hit, "plan": {"planned": 0}})
-    panel = win.lbl_outcomes.text()
-    check("zero counts line",
-          "1h 0 · 4h 0 · 24h 0 · 7d 0   (total 0 resolved)" in panel, panel)
-    check("zero LONG line", "LONG: no resolved outcomes yet" in panel, panel)
-    check("zero SHORT line", "SHORT: no resolved outcomes yet" in panel, panel)
-    check("zero 24h line", "24h flagged: 0 signals" in panel, panel)
-    check("no-plans line", "plans: none resolved yet" in panel, panel)
-    check("zero page equity line",
-          "equity (sum of resolved signed returns): +0.00% "
-          "across 0 resolved outcome(s)" in win.lbl_outcomes_page.text(),
-          win.lbl_outcomes_page.text())
+                     "hit24": zero_hit, "hit_all": zero_hit,
+                     "plan24": {"planned": 0, "measured": 0,
+                                "plans_logged": 0, "coins": 0},
+                     "plan": {"planned": 0, "measured": 0,
+                              "plans_logged": 0, "coins": 0}})
+    panel = kv_table_text(win.tbl_outcomes_summary)
+    check("zero daily cohort is explicit", "0 · 0 distinct coins" in panel,
+          panel)
+    check("zero samples show pending instead of a 0% hit rate",
+          all(win.tbl_outcomes_daily.item(r, 4).text() == "—"
+              for r in range(win.tbl_outcomes_daily.rowCount())))
 
     # -- failure surfaces in the status bar, never crashes -------------------
     win._handle_msg({"kind": "stats", "ok": False, "error": "db locked"})
@@ -1098,17 +1011,17 @@ def t_rail():
 
     # -- settings page: per-field Apply with validation ----------------------
     win._switch_page("settings")
-    win.ed_stake_s.setText("0.25")
+    win.ed_stake.setText("0.25")
     win._apply_stake("settings")
     check("settings stake apply",
           win.stake == 0.25 and win.ed_stake.text() == "0.25",
           f"{win.stake} / {win.ed_stake.text()}")
-    win.ed_stake_s.setText("-1")
+    win.ed_stake.setText("-1")
     win._apply_stake("settings")
     check("settings stake validation",
           win.stake == 0.25 and "stake must be" in win.error_text,
           win.error_text)
-    win.ed_threshold_s.setText("33")
+    win.ed_threshold.setText("33")
     win._apply_threshold("settings")
     check("settings threshold apply", win.log_threshold == 33,
           str(win.log_threshold))
@@ -1125,7 +1038,7 @@ def t_rail():
     check("settings db validation (empty rejected)",
           win.db == newdb and "must not be empty" in win.error_text,
           win.error_text)
-    win.cmb_lev_s.setCurrentText("20x")
+    win.cmb_lev.setCurrentText("20x")
     check("settings leverage apply", win.leverage_cap == 20,
           str(win.leverage_cap))
     check("settings leverage syncs the toolbar combo",
@@ -1280,7 +1193,7 @@ def t_leverage_cap():
 
     win.cmb_lev.setCurrentText("10x")             # toolbar dropdown
     check("cap written", win.leverage_cap == 10, str(win.leverage_cap))
-    check("settings combo follows", win.cmb_lev_s.currentText() == "10x")
+    check("Settings combo follows", win.cmb_lev.currentText() == "10x")
     check("plan cache cleared (leverage is embedded in plans)",
           win._plan_cache == {})
     check("status names the new cap",
@@ -1367,23 +1280,23 @@ def t_events():
     win._push_event("error", "boom")
     win._push_event("info", "scan queued")
     check("ring buffer holds the events", len(win.events) == 3
-          and win.events_list.count() == 3, str(len(win.events)))
+          and win.events_log_list.count() == 3, str(len(win.events)))
     check("newest event first",
-          "scan queued" in win.events_list.item(0).text(),
-          win.events_list.item(0).text())
+          "scan queued" in win.events_log_list.item(0).text(),
+          win.events_log_list.item(0).text())
     check("info dot is blue",
-          win.events_list.item(0).foreground().color().name()
+          win.events_log_list.item(0).foreground().color().name()
           == qtheme.INFO_FG)
     check("error dot is red",
-          win.events_list.item(1).foreground().color().name()
+          win.events_log_list.item(1).foreground().color().name()
           == qtheme.ERROR_FG)
     check("ok dot is green",
-          win.events_list.item(2).foreground().color().name()
+          win.events_log_list.item(2).foreground().color().name()
           == qtheme.LONG_FG)
     for i in range(60):
         win._push_event("info", f"e{i}")
     check("ring buffer capped at 50", len(win.events) == 50
-          and win.events_list.count() == 50, str(len(win.events)))
+          and win.events_log_list.count() == 50, str(len(win.events)))
 
     # -- fed from job completions + failures (scan/resolve/collect) ----------
     win2 = make_window()
@@ -1422,7 +1335,7 @@ if __name__ == "__main__":
          t_search),
         ("4 sort+dir: combos filter and reorder, header click, numeric cells",
          t_sortdir),
-        ("5 segments: Top 10 / Watch / New modal dialogs", t_segments),
+        ("5 watchlist page: Watch / Top 10 / New in-page tabs", t_segments),
         ("6 outcomes: Summary + Performance tabs + full page tables",
          t_outcomes),
         ("7 snapshot: close writes .last_entries, relaunch repopulates",

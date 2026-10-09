@@ -89,6 +89,29 @@ class Worker(threading.Thread):
                               "error": f"{type(e).__name__}: {e}"})
             return
         self.results.put({"kind": "ready", "ok": True})
+        # Read the board on this worker-owned SQLite connection. Startup
+        # must not wait on a database lock on the UI thread, and this lets
+        # the UI replace a stale close-time snapshot. coin_state (one row
+        # per coin) supersedes the old latest-rows window, which could span
+        # several cycles and hand the table duplicate coins.
+        try:
+            rows = self.app.store.current_rows()
+            cards = model.snapshot_cards(rows)
+            digest = {
+                "picks": picks_mod.top_picks(
+                    cards, self.app.args.stake,
+                    self.app.args.log_threshold),
+                "watch": picks_mod.watch_list(cards, self.app.args.stake),
+                "new": picks_mod.new_listings(self.app.store),
+            }
+            self.results.put({"kind": "disk_snapshot", "ok": True,
+                              "cards": cards, "digest": digest,
+                              "latest_ts": max(
+                                  (r.get("ts") or 0 for r in rows),
+                                  default=0)})
+        except Exception as e:
+            self.results.put({"kind": "disk_snapshot", "ok": False,
+                              "error": f"{type(e).__name__}: {e}"})
         while True:
             job = self.jobs.get()
             if job is None:
@@ -140,7 +163,9 @@ class Worker(threading.Thread):
             return {"kind": "stats", "ok": True, "stats": app.store.stats(),
                     "outcome": model.outcome_summary(app.store),
                     "hit24": report_mod.signal_stats(app.store, 24),
-                    "plan": app.store.plan_stats()}
+                    "hit_all": report_mod.signal_stats(app.store, None),
+                    "plan": app.store.plan_stats(),
+                    "plan24": app.store.plan_stats(24)}
         if cmd == "resolve":
             if not app.uni:                 # need the venue symbol map first
                 app.refresh_universe()
@@ -151,7 +176,9 @@ class Worker(threading.Thread):
                     "stats": app.store.stats(),
                     "outcome": model.outcome_summary(app.store),
                     "hit24": report_mod.signal_stats(app.store, 24),
+                    "hit_all": report_mod.signal_stats(app.store, None),
                     "plan": app.store.plan_stats(),
+                    "plan24": app.store.plan_stats(24),
                     "plans_resolved": pdone}
         if cmd == "collect":
             counts = collector.collect_full_universe()
@@ -283,6 +310,8 @@ class RadarGUI(tk.Tk):
         self.attempted = 0
         self.last_scan_ts = 0.0
         self.last_scan_label = "never"
+        self._launch_snapshot_at = 0.0
+        self._has_live_scan = False
         self.scan_status = "starting…"
         self.activity = "idle"
         self.error_text = ""
@@ -295,6 +324,7 @@ class RadarGUI(tk.Tk):
         self.outcome = model.outcome_summary(None)
         self.hit24 = report_mod.signal_stats(None, 24)
         self.plan_stats = {"planned": 0}
+        self.plan24_stats = {"measured": 0}
         self._last_stats_ts = 0.0
         self.selected_coin = None
         self._last_errors = {}          # {coin: reason} from the last scan
@@ -334,14 +364,13 @@ class RadarGUI(tk.Tk):
     def _show_saved_snapshot(self):
         """Instant launch: last screen first, live scan replaces it.
 
-        Source order: close-time `.last_entries` file (exact cards + cached
-        plans), then the DB's latest scan cycle, then blank. A local read
-        (~ms); the worker's first live scan replaces everything when the API
-        fetch finishes. Never fatal.
+        Read only the tiny close-time file here. Worker loads the freshest
+        SQLite scan asynchronously so a database lock cannot stall the UI.
         """
         try:
-            source, cards, plans, label = model.resolve_launch_snapshot(self.db)
-            if source == "empty":
+            cards, plans, saved_at, label = model.load_file_snapshot(self.db)
+            self._launch_snapshot_at = saved_at
+            if not cards:
                 return
             self.cards = list(cards)
             self.failed = 0
@@ -349,7 +378,8 @@ class RadarGUI(tk.Tk):
             for coin, entry in (plans or {}).items():
                 if isinstance(entry, dict) and entry.get("plan") is not None:
                     self._plan_cache[coin] = entry
-            self.scan_status = (f"showing {label} — live scan running…")
+            self.scan_status = (f"showing {label} — "
+                                "live scan running…")
             self._render_all()
         except Exception as e:
             self.scan_status = (f"no saved signals ({type(e).__name__}) — "
@@ -926,6 +956,9 @@ class RadarGUI(tk.Tk):
         if msg.get("venue"):
             self.venue = dict(msg["venue"])
         if not msg.get("ok", True):
+            if kind == "disk_snapshot":
+                self._finish(kind)
+                return
             self._set_error(f"{kind} failed: {msg.get('error', 'unknown error')}")
             if kind == "scan":
                 self._on_scan_failed(msg)
@@ -937,6 +970,7 @@ class RadarGUI(tk.Tk):
             self._finish(kind)
             return
         handler = {"scan": self._on_scan, "stats": self._on_stats,
+                   "disk_snapshot": self._on_disk_snapshot,
                    "resolve": self._on_resolve, "collect": self._on_collect,
                    "lookup": self._on_lookup,
                    "plan": self._on_plan, "ready": self._on_ready}.get(kind)
@@ -954,6 +988,7 @@ class RadarGUI(tk.Tk):
         self.scan_status = "ready" if msg.get("ok") else msg.get("error", "")
 
     def _on_scan_failed(self, msg):
+        self._has_live_scan = True
         # Brief: scan failure -> status error, keep old table, venue degraded.
         self.last_scan_ts = time.time()
         self.last_scan_label = time.strftime("%H:%M:%S")
@@ -964,6 +999,7 @@ class RadarGUI(tk.Tk):
         self._render_status()
 
     def _on_scan(self, msg):
+        self._has_live_scan = True
         self.last_scan_ts = time.time()
         self.last_scan_label = time.strftime("%H:%M:%S")
         self.universe = int(msg.get("universe", 0))
@@ -1015,6 +1051,31 @@ class RadarGUI(tk.Tk):
                             "(scoring the cached universe)")
         self._render_all()
 
+    def _on_disk_snapshot(self, msg):
+        """Replace the close-time file only when SQLite has a newer scan."""
+        cards = list(msg.get("cards") or [])
+        saved_ts = float(msg.get("latest_ts") or 0)
+        if (self._has_live_scan or not cards
+                or saved_ts <= self._launch_snapshot_at):
+            return
+        self.cards = cards
+        self._launch_snapshot_at = saved_ts
+        self.failed = 0
+        self.attempted = len(cards)
+        self._last_errors = {}
+        self.selected_coin = None
+        # Prune (don't wipe) cached file plans: keep them for coins still
+        # present so clicks resolve instantly; the live scan refreshes them.
+        present = {c.coin for c in cards}
+        for coin in list(self._plan_cache):
+            if coin not in present:
+                del self._plan_cache[coin]
+        self.digest = msg.get("digest") or {"picks": [], "watch": [], "new": []}
+        stamp = time.strftime("%H:%M", time.localtime(saved_ts))
+        self.scan_status = (f"showing saved database scan {stamp} "
+                            f"({len(cards)} coins) — live scan running…")
+        self._render_all()
+
     def _on_stats(self, msg):
         self.stats = msg.get("stats") or self.stats
         self.outcome = msg.get("outcome") or self.outcome
@@ -1022,6 +1083,8 @@ class RadarGUI(tk.Tk):
             self.hit24 = msg["hit24"]
         if msg.get("plan"):
             self.plan_stats = msg["plan"]
+        if msg.get("plan24"):
+            self.plan24_stats = msg["plan24"]
         self._render_header()
         self._render_outcomes()
 
@@ -1033,6 +1096,8 @@ class RadarGUI(tk.Tk):
             self.hit24 = msg["hit24"]
         if msg.get("plan"):
             self.plan_stats = msg["plan"]
+        if msg.get("plan24"):
+            self.plan24_stats = msg["plan24"]
         self.scan_status = (f"resolved {n} pending outcome(s)"
                             + (f", {msg.get('plans_resolved', 0)} plan(s)"
                                if msg.get("plans_resolved") else ""))
@@ -1221,6 +1286,15 @@ class RadarGUI(tk.Tk):
                              f"terminal {ps.get('terminal', 0)}")
             else:
                 lines.append("plans: none resolved yet")
+        except Exception:
+            pass
+        try:
+            p24 = getattr(self, "plan24_stats", None) or {}
+            if p24.get("measured"):
+                lines.append(f"24h plans: {p24['measured']} measured · stop "
+                             f"{p24['stop_hit']} ({p24['stop_pct']:.0f}%) · "
+                             f"TP1 {p24['tp1_hit']} ({p24['tp1_pct']:.0f}%) · "
+                             f"TP2 {p24['tp2_hit']} ({p24['tp2_pct']:.0f}%)")
         except Exception:
             pass
         self.var_outcomes.set("\n".join(lines))

@@ -928,13 +928,19 @@ class TestWidgetLayer(unittest.TestCase):
             sc = mkcard("AAA", score=70)
             sc.magnitude_parts = {"VOL": 0.5, "BOOK": 0.4, "OI": 0.3}
             sc.lean_parts = {"VOL": 0.5, "BOOK": 0.4, "OI": 0.3}
-            store.log_signal(sc, flagged=True)
-            store.log_signal(mkcard("BBB", score=40,
-                                    vetoes=("late_move",)), flagged=False)
+            sid = store.log_signal(sc, flagged=True)
+            store.upsert_current(sc, True, sid)
+            bbb = mkcard("BBB", score=40, vetoes=("late_move",))
+            sid_b = store.log_signal(bbb, flagged=False)
+            store.upsert_current(bbb, False, sid_b)
         finally:
             store.close()
         gui = self.make_gui()
-        self.assertIn("AAA", gui.tree.get_children())
+        # DB snapshot arrives asynchronously via the worker result queue
+        # (production polls it every 120ms); pump until it lands.
+        self.assertTrue(
+            self.pump_until(lambda: "AAA" in gui.tree.get_children()),
+            "worker disk_snapshot never rendered")
         self.assertIn("BBB", gui.tree_vetoed.get_children())
         self.assertIn("showing saved", gui.scan_status)
         self.assertIn("live scan running", gui.scan_status)
