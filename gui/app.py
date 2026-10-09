@@ -27,6 +27,7 @@ from types import SimpleNamespace
 
 from proto import collector
 from proto import outcomes as outcomes_mod
+from proto import report as report_mod
 from proto import scan as scanmod
 from proto.app import App as ProtoApp
 
@@ -124,7 +125,8 @@ class Worker(threading.Thread):
                     "stats": app.store.stats(), "elapsed": time.time() - t0}
         if cmd == "stats":
             return {"kind": "stats", "ok": True, "stats": app.store.stats(),
-                    "outcome": model.outcome_summary(app.store)}
+                    "outcome": model.outcome_summary(app.store),
+                    "hit24": report_mod.signal_stats(app.store, 24)}
         if cmd == "resolve":
             if not app.uni:                 # need the venue symbol map first
                 app.refresh_universe()
@@ -132,7 +134,8 @@ class Worker(threading.Thread):
             n = outcomes_mod.resolve_pending(app.store, sym_map)
             return {"kind": "resolve", "ok": True, "resolved": n,
                     "stats": app.store.stats(),
-                    "outcome": model.outcome_summary(app.store)}
+                    "outcome": model.outcome_summary(app.store),
+                    "hit24": report_mod.signal_stats(app.store, 24)}
         if cmd == "collect":
             counts = collector.collect_full_universe()
             return {"kind": "collect", "ok": True, "coins": len(counts),
@@ -227,6 +230,7 @@ class RadarGUI(tk.Tk):
         self.stats = {"rows": 0, "flagged": 0, "coins": 0, "longs": 0,
                       "shorts": 0, "outcomes": 0}
         self.outcome = model.outcome_summary(None)
+        self.hit24 = report_mod.signal_stats(None, 24)
         self.selected_coin = None
         self._last_errors = {}          # {coin: reason} from the last scan
         self._plan_cache = {}           # coin -> {"plan": Plan|None, "err": str|None}
@@ -722,6 +726,8 @@ class RadarGUI(tk.Tk):
     def _on_stats(self, msg):
         self.stats = msg.get("stats") or self.stats
         self.outcome = msg.get("outcome") or self.outcome
+        if msg.get("hit24"):
+            self.hit24 = msg["hit24"]
         self._render_header()
         self._render_outcomes()
 
@@ -729,6 +735,8 @@ class RadarGUI(tk.Tk):
         n = int(msg.get("resolved", 0))
         self.stats = msg.get("stats") or self.stats
         self.outcome = msg.get("outcome") or self.outcome
+        if msg.get("hit24"):
+            self.hit24 = msg["hit24"]
         self.scan_status = f"resolved {n} pending outcome(s)"
         self._render_all()
 
@@ -892,6 +900,15 @@ class RadarGUI(tk.Tk):
                 lines.append(
                     f"{d}: n={e['count']} · avg signed return "
                     f"{e['avg_return']:+.2f}% · hit rate {e['hit_rate'] * 100:.0f}%")
+        try:
+            hit = getattr(self, "hit24", None) or report_mod.signal_stats(None, 24)
+            oall = hit["overall"]
+            lines.append(f"24h flagged: {hit['signals']} signals · "
+                         f"{oall['resolved']} resolved · won {oall['wins']} / "
+                         f"lost {oall['losses']} · {oall['pct_won']:.0f}% won · "
+                         f"avg {oall['avg_return']:+.2f}%")
+        except Exception:
+            pass
         self.var_outcomes.set("\n".join(lines))
 
     def _render_status(self):

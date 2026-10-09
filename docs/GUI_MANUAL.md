@@ -350,14 +350,38 @@ Both open the same SQLite file (WAL mode, so reads never block), but two
 *scanning* instances double the log rows. Run one scanner; a second
 instance is fine for viewing (`--no-auto-scan`).
 
-## 13. Scheduling: collector, resolver & headless scans (cron)
+## 13. Scheduling: collector, resolver & headless scans (daemon)
 
 The GUI collects and resolves on demand (**Collect bars** /
 **Resolve outcomes**) and scans on its own interval *while it is open*.
-For unattended operation, schedule the stdlib pieces directly — the GUI
-and cron share the same database (`data/signals.db` by default).
+For unattended operation (overnight, or while the GUI is closed), use the
+daemon — one process running the full loop against the same database
+(`data/signals.db` by default):
 
-Log the current directory into cron (or a systemd timer):
+```bash
+# full loop: scan 60s + collect 5m + resolve hourly (default cadence)
+python3 -m proto.daemon
+
+# alongside an open GUI: collector + resolver only (no double-logged scans)
+python3 -m proto.daemon --no-scan
+
+# flags: --stake --coins --interval --db --log-threshold --collect-every
+#        --resolve-every (seconds) --iterations N --no-scan
+```
+
+A systemd user unit is shipped for this host (`~/.config/systemd/user/
+altradar.service`, `--no-scan` mode):
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now altradar.service   # start now + on login
+systemctl --user status altradar.service
+journalctl --user -u altradar.service -f          # follow its log
+```
+
+(The resolver example that used to live here as a cron one-liner is
+superseded by the daemon; the cron lines below remain valid alternatives
+where no systemd user session exists.)
 
 ```cron
 # scan + log once per minute (headless, no display needed)
@@ -392,8 +416,10 @@ Guidance:
   (`--stake`, `--coins`, `--interval`, `--db`, `--log-threshold`);
   `--coins` there is the scan size, while in the GUI it is also the
   universe budget.
-* Keep the GUI open alongside cron if you like — the database is shared;
-  just don't run two scanners writing logs simultaneously.
+* Keep the GUI open alongside the daemon or cron if you like — the
+  database is shared; just don't run two SCANNERS writing logs
+  simultaneously (GUI auto-scan + daemon default mode both scan). Use
+  daemon `--no-scan` mode next to an open GUI, or pause the GUI (p).
 
 ## 14. Keyboard shortcuts & mouse
 

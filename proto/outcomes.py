@@ -40,30 +40,31 @@ def resolve_pending(store, symbol_map, horizons=("1h", "4h", "24h", "7d"),
         raise ValueError(f"unknown bar_source: {bar_source!r}")
     rows = store.pending_outcomes()
     done = 0
+    rest_cache = {}   # sym -> bars|None: one REST fetch per coin per run,
+    col_cache = {}    # coin -> bars|None: one file read per coin per run
     for sid, coin, price, direction, ts in rows:
         sym = symbol_map.get(coin)
         if not sym or price <= 0:
             continue
-        rest_bars = _MISSING  # REST fetched at most once per signal
-        col_bars = _MISSING   # collector files read at most once per signal
         for h in horizons:
             if store.has_outcome(sid, h):
                 continue
             need = HORIZON_BARS[h]
             if bar_source == "rest+collector" and need <= REST_MAX_BARS:
-                if rest_bars is _MISSING:
+                if sym not in rest_cache:
                     try:
-                        rest_bars = mexc.klines(sym, "5m", limit=REST_MAX_BARS)
+                        rest_cache[sym] = mexc.klines(sym, "5m",
+                                                     limit=REST_MAX_BARS)
                     except Exception:
-                        rest_bars = None
-                bars = rest_bars
+                        rest_cache[sym] = None
+                bars = rest_cache[sym]
             else:
-                if col_bars is _MISSING:
+                if coin not in col_cache:
                     try:
-                        col_bars = collector.read_bars(data_dir, coin)
+                        col_cache[coin] = collector.read_bars(data_dir, coin)
                     except Exception:
-                        col_bars = None
-                bars = col_bars
+                        col_cache[coin] = None
+                bars = col_cache[coin]
             if not bars:
                 continue
             fut = [b for b in bars if b["ts"] > ts]
