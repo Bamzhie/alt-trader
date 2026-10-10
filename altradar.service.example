@@ -1,0 +1,15 @@
+[Unit]
+Description=ALT RADAR unattended collector+resolver (read-only, no orders)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# EDIT BOTH PATHS BELOW to your checkout location and Python:
+WorkingDirectory=/home/YOU/alt-trader
+ExecStart=/usr/bin/python3 -m proto.daemon --no-scan --collect-every 300 --resolve-every 3600
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=default.target
