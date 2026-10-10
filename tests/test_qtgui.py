@@ -292,7 +292,7 @@ def t_build():
           "MEXC Perpetual Futures Scanner" in labels)
     check("READ-ONLY badge", " READ-ONLY " in labels)
     check("TIER-2 badge", "TIER-2 UNVALIDATED" in labels)
-    for text in ("$", "Dir", "Sort", "Flag threshold"):
+    for text in ("Stake $", "Dir", "Sort", "Flag threshold"):
         check(f"label {text!r}", text in labels)
     check("settings coins label", "Coins (universe + scan size)" in labels)
     check("settings interval label", "Interval s (auto-scan)" in labels)
@@ -665,7 +665,7 @@ def t_sortdir():
 def t_segments():
     win = make_window()
     win.set_cards([mkcard("AAA", score=70),
-                   mkcard("BBB", score=40, min_notional=5.0),
+                   mkcard("BBB", score=40, min_notional=50.0),
                    mkcard("CCC", score=60, direction="SHORT")])
 
     check("watchlist tabs are in-page",
@@ -674,7 +674,7 @@ def t_segments():
           == ["Watchlist", "Top 10", "New coins"])
     win.digest = {
         "picks": [mkcard("AAA", score=70, lean=0.5, price=1.0)],
-        "watch": [mkcard("BBB", score=40, min_notional=5.0)],
+        "watch": [mkcard("BBB", score=40, min_notional=50.0)],
         "new": [{"coin": "CCC", "first_seen": 1_700_000_000,
                  "score": 60.0, "direction": "SHORT", "ts": 1_700_000_000}],
     }
@@ -758,7 +758,7 @@ def t_outcomes():
           and "7 · 4 distinct coins" in panel, panel)
     perf = kv_table_text(win.tbl_outcomes_performance)
     check("dock performance reports horizon sample sizes",
-          "1h" in perf and "n=1" in perf, perf)
+          "1H" in perf and "n=1" in perf, perf)
     check("outcomes page offers daily and cumulative cohorts",
           [win.outcomes_page_tabs.tabText(i)
            for i in range(win.outcomes_page_tabs.count())]
@@ -996,9 +996,23 @@ def t_rail():
           win.tbl_watchlist.rowCount() == 1
           and win.tbl_watchlist.item(0, 0).text() == "AAA",
           str(win.tbl_watchlist.rowCount()))
-    check("watchlist hint mentions the stake",
-          "$0.05" in win.lbl_watchlist_hint.text(),
+    check("watchlist hint shows live entry count",
+          "entries ·" in win.lbl_watchlist_hint.text(),
           win.lbl_watchlist_hint.text())
+    win.tbl_watchlist.selectRow(0)
+    check("watchlist click opens detail on the Scanner page",
+          win.current_page() == "scanner"
+          and win.selected_coin == "AAA"
+          and win.lbl_det_coin.text() == "AAA",
+          f"{win.current_page()} / {win.selected_coin}")
+    # coin outside the current scan: lookup job instead of silence
+    win._switch_page("watchlist")
+    win.cards = [c for c in win.cards if c.coin != "AAA"]
+    win._busy.discard("lookup")
+    win.tbl_watchlist.clearSelection()
+    win.tbl_watchlist.selectRow(0)
+    check("absent coin queues a venue-wide lookup",
+          "lookup" in win._busy, str(win._busy))
 
     # -- logs page: tails the real log file + shows the event buffer ---------
     win._switch_page("logs")

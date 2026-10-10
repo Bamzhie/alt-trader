@@ -219,6 +219,7 @@ class RadarWindow(QMainWindow):
         self._plans_pending = set()
         self._busy = set()              # job kinds in flight
         self._closing = False
+        self._lookup_goto_scanner = False  # watchlist lookup: show on Scanner
         self._launch_snapshot_at = 0.0
         self._has_live_scan = False
         self._refilling = False         # blocks selection signals during fill
@@ -754,7 +755,7 @@ class RadarWindow(QMainWindow):
         self.lbl_watchlist_hint = QLabel("")
         self.lbl_watchlist_hint.setObjectName("headerStats")
         self.lbl_watchlist_hint.setText(
-            "Select a row to inspect · double-click to open in Scanner")
+            "Select a row to open its detail on the Scanner page")
         v.addWidget(self.lbl_watchlist_hint)
 
     def _build_outcomes_page(self):
@@ -1178,6 +1179,9 @@ class RadarWindow(QMainWindow):
         self.selected_coin = coin
         self._ensure_plan(coin)
         self._render_all()
+        if getattr(self, "_lookup_goto_scanner", False):
+            self._lookup_goto_scanner = False
+            self._switch_page("scanner")
         if msg.get("cached"):
             self.scan_status = f"{coin} was already in the table"
         else:
@@ -1240,7 +1244,13 @@ class RadarWindow(QMainWindow):
         self._render_detail()
 
     def _on_watch_select(self, table):
-        """Selecting any in-page list row updates the coin detail state."""
+        """Selecting any in-page list row shows its detail on Scanner.
+
+        Single click selects, fetches the plan, renders detail, and switches
+        to the Scanner page where the detail pane lives. A coin outside the
+        current rotation is scored venue-wide on demand instead of silently
+        doing nothing.
+        """
         if self._refilling:
             return
         sel = (table.selectionModel().selectedRows()
@@ -1252,6 +1262,10 @@ class RadarWindow(QMainWindow):
         if not coin:
             return
         if not any(c.coin == coin for c in self.cards):
+            self._lookup_goto_scanner = True
+            if self._submit("lookup", coin=coin):
+                self.scan_status = f"looking up {coin} venue-wide…"
+                self._render_status()
             return
         self._refilling = True
         try:
@@ -1273,6 +1287,7 @@ class RadarWindow(QMainWindow):
         if changed:
             self._ensure_plan(coin)
         self._render_detail()
+        self._switch_page("scanner")
 
     def _open_coin_from_list(self, table):
         """Double-click a row to inspect its signal in the Scanner page."""
