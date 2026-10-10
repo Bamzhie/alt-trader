@@ -33,6 +33,44 @@ def direction_arrow(direction):
     return {"LONG": "▲", "SHORT": "▼"}.get(direction, "•")
 
 
+def format_shadow(card):
+    """SHADOW column text: the v3 shadow score with its own side arrow, or
+    an en dash when the shadow was not computed (older rows, thin history).
+    Display only - the operator's rank and flags stay on the live score."""
+    v = _to_float(getattr(card, "score_v3", None))
+    if v is None:
+        return "–"
+    return f"{v:.1f} {direction_arrow(getattr(card, 'direction_v3', None))}"
+
+
+def shadow_lines(card):
+    """Detail-pane lines for the shadow score, or [] when not computed."""
+    v = _to_float(getattr(card, "score_v3", None))
+    if v is None:
+        return []
+    init = _to_float(getattr(card, "initiation", None))
+    oi1 = _to_float(getattr(card, "oi_change_1h_pct", None))
+    bits = [f"{v:.1f} {direction_arrow(getattr(card, 'direction_v3', None))} "
+            f"{getattr(card, 'direction_v3', None) or 'n/a'}"]
+    if init is not None:
+        bits.append(f"initiation {init:.2f}")
+    state = getattr(card, "flow_state", None)
+    if state:
+        bits.append(f"flow {state}"
+                    + (f" (OI 1h {oi1:+.2f}%)" if oi1 is not None else ""))
+    if getattr(card, "opening_for", None):
+        bits.append("opening with the side")
+    if getattr(card, "opening_against", None):
+        bits.append("opening AGAINST the side")
+    if getattr(card, "book_agree", None):
+        bits.append("book agrees")
+    crowd = getattr(card, "funding_crowd", None)
+    if crowd and crowd != "neutral":
+        bits.append(f"funding crowd {crowd}")
+    return ["SHADOW SCORE (score-v3-dis) — not used for ranking or flags",
+            "  " + " · ".join(bits), ""]
+
+
 def _to_float(v):
     """float(v), or None for missing / garbage / non-finite venue values."""
     if v is None or isinstance(v, bool):
@@ -242,6 +280,10 @@ def snapshot_cards(rows):
                               "OI": r.get("mag_oi")}
         sc.lean_parts = {"VOL": r.get("lean_vol"), "BOOK": r.get("lean_book"),
                          "OI": r.get("lean_oi")}
+        for _f in ("score_v3", "direction_v3", "initiation", "flow_state",
+                   "oi_change_1h_pct", "opening_for", "opening_against",
+                   "book_agree", "funding_crowd", "score_rule"):
+            setattr(sc, _f, r.get(_f))
         sc.tradeable = bool(r.get("tradeable", True))
         codes = [c for c in str(r.get("veto_codes") or "").split(",") if c]
         sc.vetoes = [Veto(code=c, reason=c) for c in codes]
@@ -398,6 +440,11 @@ def detail_text(card, plan=None, plan_err=None, stake=None, last_error=None):
     if oi is None:
         out.append("  ⚠ OI unavailable on MEXC — OI/FUNDING signal is running on "
                    "funding alone")
+
+    shadow = shadow_lines(card)
+    if shadow:
+        out.append("")
+        out.extend(shadow[:-1])
 
     f_min = _to_float(card.min_notional)
     f_stake = _to_float(stake)

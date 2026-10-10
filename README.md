@@ -111,7 +111,9 @@ python3 tests/test_app.py    # live venue smoke test (needs internet)
   book; Bybit supplies open-interest history for shared symbols.
 - `proto/scan.py` — stake-aware universe rotation (tradeable-first + degen
   tail + sweep), per-coin fetch/score with counted (never silent) failures.
-- `proto/scorer.py` — signal-quality score + symmetric LONG/SHORT lean.
+- `proto/scorer.py` — signal-quality score + symmetric LONG/SHORT lean, plus
+  the logged-only shadow score `score-v3-dis` (docs/grok-review.md). The
+  shadow never affects the flag, ranking, plans or episodes.
 - `proto/planner.py` — computed (never defaulted) leverage, risk-capped size,
   funding-aware costs, surfaced warnings.
 - `proto/measurement.py` — episode lifecycle (signal episodes as the unit of

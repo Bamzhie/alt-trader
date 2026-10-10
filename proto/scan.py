@@ -239,7 +239,7 @@ def _bybit_symbol_set():
         return None
 
 
-def _bybit_oi(coin, price, quality_errors=None):
+def _bybit_oi(coin, price, quality_errors=None, oi_extra=None):
     """(pct_change, notional_usdt) for a Bybit-shared coin; (None, None) else.
 
     Reads BYBIT_MAP - filled by the universe refresh - so this lookup never
@@ -251,13 +251,20 @@ def _bybit_oi(coin, price, quality_errors=None):
     Notional is approximate (latest OI units x MEXC last price, marked ~):
     it exists so a percent can be read against its base - a +68% off a $5k
     base is not a +68% off $5M. ONE request serves both numbers.
+
+    `oi_extra` (optional dict) receives the matched 1-hour OI fields the
+    shadow score uses (`oi_change_1h_pct`, `oi_gap_s`) from that SAME
+    request; absent when the adapter returns a plain 2-tuple.
     """
     sym = BYBIT_MAP.get(coin)
     if not sym:
         return None, None
     try:
         from . import bybit
-        pct, units = _gated(bybit.oi_state, sym)
+        res = _gated(bybit.oi_state, sym)
+        pct, units = res
+        if oi_extra is not None:
+            oi_extra.update(getattr(res, "detail", None) or {})
         notion = units * price if units and price and price > 0 else None
         return pct, notion
     except Exception as e:
@@ -526,7 +533,8 @@ def analyse_one(sym, coin, detail, tk_row, stake, errors=None,
         # OI leg (spec SS4): Bybit open-interest change for shared coins
         # only. MEXC-only coins, an unknown symbol map, or a failed fetch
         # all degrade to None -> funding-only scoring, counted, never fatal.
-        oi_pct, oi_notion = _bybit_oi(coin, price, quality_errors)
+        oi_extra = {}
+        oi_pct, oi_notion = _bybit_oi(coin, price, quality_errors, oi_extra)
 
         sc = score_coin(
             coin, bars, bids, asks,
@@ -535,6 +543,8 @@ def analyse_one(sym, coin, detail, tk_row, stake, errors=None,
             funding_rate=funding, funding_cap=fund_cap, oi_change_pct=oi_pct,
             oi_notional=oi_notion,
             lean_1H=lean_1h, lean_4H=lean_4h,
+            oi_change_1h_pct=oi_extra.get("oi_change_1h_pct"),
+            oi_gap_s=oi_extra.get("oi_gap_s"),
             min_notional=min_not, venue="MEXC", tier=2)
         for iv, lean in (("1H", lean_1h), ("4H", lean_4h)):
             if lean is None:

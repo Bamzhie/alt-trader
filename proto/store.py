@@ -55,7 +55,19 @@ CREATE TABLE IF NOT EXISTS signal_log (
     log_threshold   REAL,             -- threshold at signal time
     leverage_cap    INTEGER,          -- leverage cap at signal time
     config_hash     TEXT,             -- config hash for epoch/cohort
-    code_rev        TEXT              -- scorer/planner code version
+    code_rev        TEXT,             -- scorer/planner code version
+    -- Shadow score `score-v3-dis` (docs/grok-review.md). Additive: the live
+    -- score/flag/direction above are unchanged and never read these.
+    score_v3        REAL,             -- shadow score 0..100
+    direction_v3    TEXT,             -- LONG/SHORT/NEUTRAL from 5m structure only
+    initiation      REAL,             -- age transform exp(-age/18) (or 0.5 / 0)
+    flow_state      TEXT,             -- opening / unwind / flat / unavailable
+    oi_change_1h_pct REAL,            -- matched 1h OI change; NULL if gap check fails
+    opening_for     INTEGER,          -- 0/1
+    opening_against INTEGER,          -- 0/1
+    book_agree      INTEGER,          -- 0/1
+    funding_crowd   TEXT,             -- with / against / neutral
+    score_rule      TEXT              -- constant 'score-v3-dis'
 );
 CREATE INDEX IF NOT EXISTS idx_signal_ts_coin ON signal_log(ts, coin);
 -- idx_signal_config is created in _migrate() once signal_log.config_hash
@@ -345,6 +357,16 @@ class Store:
         if "code_rev" not in cols:
             self.conn.execute(
                 "ALTER TABLE signal_log ADD COLUMN code_rev TEXT")
+        for col, typ in (("score_v3", "REAL"), ("direction_v3", "TEXT"),
+                         ("initiation", "REAL"), ("flow_state", "TEXT"),
+                         ("oi_change_1h_pct", "REAL"),
+                         ("opening_for", "INTEGER"),
+                         ("opening_against", "INTEGER"),
+                         ("book_agree", "INTEGER"),
+                         ("funding_crowd", "TEXT"), ("score_rule", "TEXT")):
+            if col not in cols:
+                self.conn.execute(
+                    f"ALTER TABLE signal_log ADD COLUMN {col} {typ}")
         if "config_hash" in cols:
             # Safe now: the column exists on both fresh and migrated DBs.
             self.conn.execute(
@@ -475,8 +497,12 @@ class Store:
                 mag_vol, mag_book, mag_oi, lean_vol, lean_book, lean_oi,
                 price, change_24h_pct, quote_vol_24h, spread_pct,
                 funding_rate, min_notional, veto_codes, tradeable, tier,
-                flag_version, oi_notional, oi_change_pct)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,2,?,?)""",
+                flag_version, oi_notional, oi_change_pct,
+                score_v3, direction_v3, initiation, flow_state,
+                oi_change_1h_pct, opening_for, opening_against, book_agree,
+                funding_crowd, score_rule)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,2,?,?,
+                       ?,?,?,?,?,?,?,?,?,?)""",
             (int(time.time()), sc.coin, sc.venue, 1 if flagged else 0,
              sc.score, sc.lean, sc.direction, sc.earlyness,
              sc.magnitude_parts.get("VOL"), sc.magnitude_parts.get("BOOK"),
@@ -487,7 +513,15 @@ class Store:
              sc.funding_rate, sc.min_notional,
              ",".join(v.code for v in sc.vetoes),
              1 if sc.tradeable else 0, tier, sc.oi_notional,
-             sc.oi_change_pct))
+             sc.oi_change_pct,
+             getattr(sc, "score_v3", None), getattr(sc, "direction_v3", None),
+             getattr(sc, "initiation", None), getattr(sc, "flow_state", None),
+             getattr(sc, "oi_change_1h_pct", None),
+             getattr(sc, "opening_for", None),
+             getattr(sc, "opening_against", None),
+             getattr(sc, "book_agree", None),
+             getattr(sc, "funding_crowd", None),
+             getattr(sc, "score_rule", None)))
         self.conn.commit()
         return cur.lastrowid
 

@@ -465,10 +465,10 @@ def t_table():
     row1 = row_cells(win.tree, 1)
     check("AAA row cells (tkinter parity)",
           row0 == ["1", "▲", "AAA", "1234.5", "+3.2%", "$4.3M", "+0.0100%",
-                   "+12.5%", "+0.50", "0.80", "70.0", "WATCH"], str(row0))
+                   "+12.5%", "+0.50", "0.80", "70.0", "–", "WATCH"], str(row0))
     check("BBB row cells (tkinter parity)",
           row1 == ["2", "▼", "BBB", "0.000012", "-1.5%", "$600K", "-0.0200%",
-                   "n/a", "-0.30", "0.20", "40.0", "UNVALIDATED"], str(row1))
+                   "n/a", "-0.30", "0.20", "40.0", "–", "UNVALIDATED"], str(row1))
     check("rank cell carries the row's coin",
           win.tree.item(0, 0).data(Qt.ItemDataRole.UserRole) == "AAA")
     check("LONG row tint", bg_name(win.tree, 0, 0) == qtheme.LONG_BG,

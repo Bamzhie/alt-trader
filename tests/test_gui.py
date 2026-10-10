@@ -787,10 +787,19 @@ class TestWidgetLayer(unittest.TestCase):
         self.assertEqual(gui.tree.get_children(), ("AAA", "BBB"))   # score desc
         self.assertEqual(gui.tree.item("AAA", "values"),
                          ("1", "▲", "AAA", "1234.5", "+3.2%", "$4.3M", "+0.0100%",
-                          "+12.5%", "+0.50", "0.80", "70.0", "WATCH"))
+                          "+12.5%", "+0.50", "0.80", "70.0", "–", "WATCH"))
         self.assertEqual(gui.tree.item("BBB", "values"),
                          ("2", "▼", "BBB", "0.000012", "-1.5%", "$600K", "-0.0200%",
-                          "n/a", "-0.30", "0.20", "40.0", "UNVALIDATED"))
+                          "n/a", "-0.30", "0.20", "40.0", "–", "UNVALIDATED"))
+        # A card carrying a shadow score shows it, labeled, without changing
+        # the rank order (the live score still sorts the table).
+        shadowed = mkcard("CCC", score=55, direction="LONG")
+        shadowed.score_v3, shadowed.direction_v3 = 81.4, "LONG"
+        gui.set_cards(cards + [shadowed])
+        self.assertEqual(gui.tree.get_children(), ("AAA", "CCC", "BBB"))
+        self.assertEqual(gui.tree.item("CCC", "values")[-2], "81.4 ▲")
+        self.assertEqual(gui.tree.heading("shadow")["text"], "v3 SHADOW")
+        gui.set_cards(cards)
         aaa_tags = set(gui.tree.item("AAA", "tags"))
         self.assertTrue(any(t.startswith("long") for t in aaa_tags), aaa_tags)
         self.assertIn("watch", aaa_tags)

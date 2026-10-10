@@ -55,14 +55,15 @@ TAG_LONG, TAG_SHORT, TAG_VETOED, TAG_WATCH = (
 COLOR_ERROR = _theme.ERROR_FG
 
 SIGNAL_COLUMNS = ("rank", "dir", "coin", "price", "ch24", "vol24", "funding",
-                  "oi", "lean", "early", "score", "flags")
+                  "oi", "lean", "early", "score", "shadow", "flags")
 SIGNAL_HEADINGS = {"rank": "#", "dir": "DIR", "coin": "COIN", "price": "PRICE",
                    "ch24": "24h%", "vol24": "VOL24", "funding": "FUND%",
                    "oi": "OIΔ%", "lean": "LEAN", "early": "EARLY",
-                   "score": "SCORE", "flags": "FLAGS"}
+                   "score": "SCORE", "shadow": "v3 SHADOW",
+                   "flags": "FLAGS"}
 SIGNAL_WIDTHS = {"rank": 44, "dir": 40, "coin": 92, "price": 104, "ch24": 74,
                  "vol24": 84, "funding": 84, "oi": 150, "lean": 62,
-                 "early": 64, "score": 64, "flags": 210}
+                 "early": 64, "score": 64, "shadow": 84, "flags": 210}
 SIGNAL_ANCHORS = {"rank": "center", "dir": "center", "coin": "w",
                   "flags": "w"}
 
@@ -1227,6 +1228,7 @@ class RadarGUI(tk.Tk):
                 f"{c.lean:+.2f}",
                 f"{c.earlyness:.2f}",
                 f"{c.score:.1f}",
+                model.format_shadow(c),
                 flags,
             )
             tags = model.row_tags(c.direction, i,

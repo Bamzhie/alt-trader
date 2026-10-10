@@ -71,7 +71,7 @@ COL_COIN = SIGNAL_COLUMNS.index("coin")
 # Columns whose fresh header click opens best-first (descending); text
 # columns and rank open ascending. Repeat clicks toggle (Qt default).
 DESC_FIRST = {"price", "ch24", "vol24", "funding", "oi", "lean", "early",
-              "score"}
+              "score", "shadow"}
 
 # Leverage-cap dropdown choices (planner plumbing: cap threads
 # compute_leverage; default 50x = the venue maximum = today's behaviour).
@@ -1709,6 +1709,8 @@ class RadarWindow(QMainWindow):
                     (f"{c.lean:+.2f}", _num(c.lean)),
                     (f"{c.earlyness:.2f}", _num(c.earlyness)),
                     (f"{c.score:.1f}", _num(c.score)),
+                    (model.format_shadow(c),
+                     _num(getattr(c, "score_v3", None))),
                     (flags, None),
                 )
                 tags = model.row_tags(c.direction, i,

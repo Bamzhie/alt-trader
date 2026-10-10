@@ -36,7 +36,7 @@ COST_MODEL_VERSION = "v0.1.0-unstable"  # FEE 0.05% taker/side, slippage unset
 
 # Code revision stamped on rows written by the measurement path (spec §4).
 # A scorer/planner change bumps this, which changes the cohort identity.
-CODE_REV = "2026-10-09-episode-measurement"
+CODE_REV = "2026-10-10-score-v3-shadow"
 
 # Default values
 DEFAULT_REARM_MINUTES = 60

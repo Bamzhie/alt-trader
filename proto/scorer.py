@@ -11,6 +11,7 @@ Contract, per the design spec:
   - vetoes are returned with reasons so the UI can show what was filtered.
 """
 
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -92,6 +93,21 @@ class Scorecard:
     spread_pct: float = 0.0
     plan: Optional[object] = None   # proto.planner.Plan, attached at scan
                                     # time for flagged cards (not relogged)
+
+    # Shadow score `score-v3-dis` (docs/grok-review.md). Logged beside the
+    # live v2 fields above; NEVER used for the flag, ranking, plans or
+    # episode membership. None = not computed (too few bars / shadow error).
+    score_v3: Optional[float] = None
+    direction_v3: Optional[str] = None
+    initiation: Optional[float] = None
+    flow_state: Optional[str] = None
+    oi_change_1h_pct: Optional[float] = None
+    opening_for: Optional[int] = None
+    opening_against: Optional[int] = None
+    book_agree: Optional[int] = None
+    funding_crowd: Optional[str] = None
+    score_rule: Optional[str] = None
+    v3_parts: dict = field(default_factory=dict)
 
     @property
     def actionable(self):
@@ -240,6 +256,166 @@ def oi_funding_component(price_change_pct, oi_change_pct, funding_rate, funding_
     }
 
 
+# ---------------------------------------------------------------------------
+# Shadow score: directional initiation score, rule id `score-v3-dis`.
+#
+# Declared prior, frozen before any outcome is used - these are not fitted
+# values. A change to any of them is a NEW rule id, never an edit of this one.
+# Hypothesis: rank a coin by how recently a 5-minute one-sided flow started,
+# and add points only from evidence that supports that same side.
+# ---------------------------------------------------------------------------
+V3_RULE = "score-v3-dis"
+V3_NEUTRAL_BAND = 0.15        # |L5| at or below this -> NEUTRAL, score 0
+V3_CHANNEL_BARS = 48          # prior completed 5m bars forming the channel
+V3_AGE_TAU = 18.0             # initiation = exp(-age / tau), age in 5m bars
+V3_BUILDING_INITIATION = 0.50  # flow building, range still holding
+V3_BUILDING_VOL_RATIO = 2.0   # recent volume / trailing median
+V3_FLAT_1H_PCT = 0.15         # |1h price change| below this -> no flow sign
+V3_BOOK_AGREE_MIN = 0.20      # |book lean| needed to confirm
+V3_FUNDING_CROWD_RATIO = 0.50  # |funding| / cap beyond this is a crowd
+V3_OI_GAP_MIN_S = 45 * 60     # 1h OI sample spacing accepted
+V3_OI_GAP_MAX_S = 90 * 60
+V3_INNER = {"activity": 0.45, "location": 0.25, "opening": 0.20, "book": 0.10}
+V3_OPENING_AGAINST_MULT = 0.50
+V3_HTF_OPPOSED_MULT = 0.70
+V3_HTF_ALIGN_BONUS = 6.0
+
+
+def _sgn(x):
+    return 1 if x > 0 else (-1 if x < 0 else 0)
+
+
+def l5_lean(bars):
+    """
+    5-minute structure lean for the v3 shadow score, -1..+1.
+
+    The v2 volume/price lean WITHOUT the extra RSI blend: Donchian, EMA gap
+    and OBV only (RSI is a third copy of "where is price" and stays a
+    displayed number). ATR% is a magnitude input in v2 and never enters a lean.
+    """
+    don = ind.donchian_position(bars)
+    ema_rel = ind.ema_relationship(bars)
+    obv = ind.obv_slope(bars)
+    return max(-1.0, min(1.0, 0.35 * don + 0.35 * ema_rel + 0.30 * obv))
+
+
+def flow_state_v3(change_1h_pct, oi_change_1h_pct, oi_gap_s=None):
+    """
+    (state, side) from a MATCHED 1-hour price change and 1-hour OI change.
+
+      opening    OI rising  -> positions being opened; side = sign(price):
+                               +1 new longs, -1 new shorts (OI rises for both)
+      unwind     OI falling -> positions closing; side = sign(price):
+                               +1 short covering, -1 long liquidation
+      flat       OI unchanged, or the 1h price change is inside the flat band
+                 (OI can rise because both sides opened - no flow sign)
+      unavailable no 1h OI, or its two samples are not ~1h apart (45-90 min)
+
+    side is 0 unless the state is opening/unwind.
+    """
+    if oi_change_1h_pct is None:
+        return "unavailable", 0
+    if oi_gap_s is not None and not (V3_OI_GAP_MIN_S <= oi_gap_s
+                                     <= V3_OI_GAP_MAX_S):
+        return "unavailable", 0
+    if abs(change_1h_pct) < V3_FLAT_1H_PCT:
+        return "flat", 0
+    if oi_change_1h_pct > 0:
+        return "opening", _sgn(change_1h_pct)
+    if oi_change_1h_pct < 0:
+        return "unwind", _sgn(change_1h_pct)
+    return "flat", 0
+
+
+def score_v3(bars, *, book_lean=0.0, change_1h_pct=0.0,
+             oi_change_1h_pct=None, oi_gap_s=None,
+             funding_rate=0.0, funding_cap=0.0018,
+             lean_1H=None, lean_4H=None):
+    """
+    Directional initiation score `score-v3-dis`. Pure: bars + a few scalars
+    in, a dict out. Needs completed 5m bars (the scanner already guarantees
+    that). Direction comes from 5-minute structure only; book, funding and OI
+    can confirm or mark a disagreement but never create or flip a side.
+    """
+    l5 = l5_lean(bars)
+    direction = ("LONG" if l5 > V3_NEUTRAL_BAND
+                 else "SHORT" if l5 < -V3_NEUTRAL_BAND else "NEUTRAL")
+    side = _sgn(l5) if direction != "NEUTRAL" else 0
+
+    # Flow: matched 1h windows. Logged even for a NEUTRAL card.
+    state, flow_side = flow_state_v3(change_1h_pct, oi_change_1h_pct, oi_gap_s)
+    opening_for = int(state == "opening" and side != 0 and flow_side == side)
+    opening_against = int(state == "opening" and side != 0
+                          and flow_side == -side)
+
+    book_agree = int(side != 0 and _sgn(book_lean) == side
+                     and abs(book_lean) > V3_BOOK_AGREE_MIN)
+
+    # Funding is context, never score: continuation vs crowding-fade are
+    # different hypotheses and neither has a measured weight.
+    fund_ratio = abs(funding_rate) / funding_cap if funding_cap > 0 else 0.0
+    funding_crowd = "neutral"
+    if side != 0 and fund_ratio > V3_FUNDING_CROWD_RATIO and funding_rate != 0:
+        funding_crowd = "with" if _sgn(funding_rate) == side else "against"
+
+    # Initiation: age of the break, not distance to the extreme.
+    age = None
+    initiation = 0.0
+    if side != 0:
+        age = ind.breakout_age(bars, side, V3_CHANNEL_BARS)
+        if age is not None:
+            initiation = math.exp(-age / V3_AGE_TAU)
+        else:
+            ratio = ind.volume_ratio(bars)
+            if ratio is not None and ratio >= V3_BUILDING_VOL_RATIO:
+                initiation = V3_BUILDING_INITIATION
+
+    activity = max(0.0, min(1.0, ind.volume_expansion(bars)))
+    location = max(0.0, min(1.0, abs(l5)))
+    inner = (V3_INNER["activity"] * activity + V3_INNER["location"] * location
+             + V3_INNER["opening"] * opening_for
+             + V3_INNER["book"] * book_agree)
+
+    htf_opposed = bool(
+        side != 0 and lean_4H is not None
+        and abs(lean_4H) > MTF_LEAN_THRESHOLD and _sgn(lean_4H) == -side)
+    htf_aligned = bool(
+        side != 0 and lean_1H is not None and lean_4H is not None
+        and abs(lean_1H) > MTF_LEAN_THRESHOLD
+        and abs(lean_4H) > MTF_LEAN_THRESHOLD
+        and _sgn(lean_1H) == side and _sgn(lean_4H) == side)
+
+    if side == 0 or initiation <= 0.0:
+        score = 0.0
+    else:
+        raw = 100.0 * initiation * inner
+        if opening_against:
+            raw *= V3_OPENING_AGAINST_MULT
+        if htf_opposed:
+            raw *= V3_HTF_OPPOSED_MULT   # stacks with opening_against
+        if htf_aligned:
+            raw = min(100.0, raw + V3_HTF_ALIGN_BONUS)
+        score = round(raw, 1)
+
+    return {
+        "score_v3": score,
+        "direction_v3": direction,
+        "initiation": round(initiation, 4),
+        "flow_state": state,
+        "oi_change_1h_pct": (None if oi_change_1h_pct is None
+                             else round(oi_change_1h_pct, 3)),
+        "opening_for": opening_for,
+        "opening_against": opening_against,
+        "book_agree": book_agree,
+        "funding_crowd": funding_crowd,
+        "score_rule": V3_RULE,
+        "parts": {"l5": round(l5, 3), "age": age,
+                  "activity": round(activity, 3),
+                  "location": round(location, 3), "inner": round(inner, 3),
+                  "htf_opposed": htf_opposed, "htf_aligned": htf_aligned},
+    }
+
+
 def apply_vetoes(sc, bars, quote_vol_24h, spread_pct, change_1h_pct,
                  change_24h_pct=0.0):
     """Hard disqualifiers. Each records a machine code and a human reason."""
@@ -271,6 +447,7 @@ def score_coin(coin, bars, bids, asks, *,
                funding_rate=0.0, funding_cap=0.0018,
                oi_change_pct=None, oi_notional=None,
                lean_1H=None, lean_4H=None,
+               oi_change_1h_pct=None, oi_gap_s=None,
                min_notional=None, venue="MEXC", tier=2):
     """Full scoring pass for one coin. Returns a Scorecard."""
     sc = Scorecard(coin=coin, venue=venue, price=price,
@@ -325,6 +502,27 @@ def score_coin(coin, bars, bids, asks, *,
                + WEIGHTS["oi_funding"] * oi_mag)
         sc.lean = round(num / den, 3) if den > 1e-9 else 0.0
         sc.direction = "LONG" if sc.lean > 0.15 else ("SHORT" if sc.lean < -0.15 else "NEUTRAL")
+
+        # Shadow score (score-v3-dis): additive, read-only with respect to
+        # everything above. A shadow failure must never touch the live card.
+        try:
+            v3 = score_v3(bars, book_lean=bk_lean, change_1h_pct=change_1h_pct,
+                          oi_change_1h_pct=oi_change_1h_pct, oi_gap_s=oi_gap_s,
+                          funding_rate=funding_rate, funding_cap=funding_cap,
+                          lean_1H=lean_1H, lean_4H=lean_4H)
+            sc.score_v3 = v3["score_v3"]
+            sc.direction_v3 = v3["direction_v3"]
+            sc.initiation = v3["initiation"]
+            sc.flow_state = v3["flow_state"]
+            sc.oi_change_1h_pct = v3["oi_change_1h_pct"]
+            sc.opening_for = v3["opening_for"]
+            sc.opening_against = v3["opening_against"]
+            sc.book_agree = v3["book_agree"]
+            sc.funding_crowd = v3["funding_crowd"]
+            sc.score_rule = v3["score_rule"]
+            sc.v3_parts = v3["parts"]
+        except Exception as e:   # noqa: BLE001 - shadow only, never fatal
+            sc.notes.append(f"SHADOW v3 error: {type(e).__name__}: {e}")
 
         if tier == 2:
             sc.notes.append("TIER 2: UNVALIDATED — no deep history exists for this coin")

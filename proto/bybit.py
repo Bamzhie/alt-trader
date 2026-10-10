@@ -184,6 +184,23 @@ def klines(symbol, interval="5m", limit=200):
     return bars
 
 
+class OIState(tuple):
+    """
+    The (pct_change_24h, latest_units) 2-tuple oi_state has always returned,
+    so every existing unpacking caller (and every test double returning a
+    plain tuple) keeps working. `.detail` carries the extra matched-window
+    fields from the SAME request: {"oi_change_1h_pct", "oi_gap_s"}, or None.
+    """
+    detail = None
+
+
+# The 1-hour OI change is only meaningful when its two samples really are
+# about an hour apart: a hole in the series would otherwise be read as a
+# 1-hour move. Outside this window the 1h figure is withheld (None).
+OI_1H_GAP_MIN_S = 45 * 60
+OI_1H_GAP_MAX_S = 90 * 60
+
+
 def oi_state(symbol, window="1h", points=25):
     """
     Open-interest state over ~24h (1h grid, `points` samples).
@@ -194,6 +211,10 @@ def oi_state(symbol, window="1h", points=25):
     percent (a +68% off a $5k base is not a +68% off $5M). None means "no
     usable data" (funding-only path downstream); transport/API failures raise
     BybitError so a degraded venue stays visible to the caller.
+
+    The returned tuple also carries `.detail` (see OIState): the newest
+    sample versus the one before it, with their actual spacing in seconds.
+    `oi_change_1h_pct` is None when that spacing is outside 45-90 minutes.
     """
     d = _get(f"/open-interest?category={CATEGORY}&symbol={symbol}"
              f"&intervalTime={window}&limit={points}")
@@ -207,10 +228,19 @@ def oi_state(symbol, window="1h", points=25):
         if oi > 0:
             samples.append((ts, oi))
     if len(samples) < 2:
-        return None, samples[-1][1] if samples else None
-    oldest = min(samples)   # (ts, oi): ordered by timestamp
-    newest = max(samples)
-    return (newest[1] - oldest[1]) / oldest[1] * 100.0, newest[1]
+        out = OIState((None, samples[-1][1] if samples else None))
+        out.detail = {"oi_change_1h_pct": None, "oi_gap_s": None}
+        return out
+    samples.sort()
+    oldest, newest = samples[0], samples[-1]
+    prev = samples[-2]
+    out = OIState(((newest[1] - oldest[1]) / oldest[1] * 100.0, newest[1]))
+    gap_s = (newest[0] - prev[0]) / 1000.0     # v5 timestamps are ms
+    pct_1h = None
+    if OI_1H_GAP_MIN_S <= gap_s <= OI_1H_GAP_MAX_S:
+        pct_1h = (newest[1] - prev[1]) / prev[1] * 100.0
+    out.detail = {"oi_change_1h_pct": pct_1h, "oi_gap_s": gap_s}
+    return out
 
 
 def oi_change(symbol, window="1h", points=25):

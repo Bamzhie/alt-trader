@@ -231,6 +231,64 @@ def volume_expansion(bars, recent=3, baseline=48):
     return max(0.0, min(1.0, (ratio - 1.0) / 3.0))
 
 
+def volume_ratio(bars, recent=3, baseline=48):
+    """
+    Raw ratio of the recent mean BASE volume to the trailing median, or None
+    when there is not enough history. Same inputs and guards as
+    volume_expansion (which maps this ratio onto 0..1); exposed unmapped so
+    callers that need the plain "2x median" threshold do not have to invert
+    the map. Unsigned.
+    """
+    v = [b["vol"] for b in bars]
+    if len(v) < recent + 5:
+        return None
+    baseline = min(baseline, len(v) - recent)
+    if baseline < 5:
+        return None
+    base_sorted = sorted(v[-baseline - recent:-recent])
+    med = base_sorted[len(base_sorted) // 2]
+    if med <= 0:
+        return None
+    return (sum(v[-recent:]) / recent) / med
+
+
+def breakout_age(bars, side, window=48):
+    """
+    Completed bars since the current move LEFT the prior `window` bars'
+    channel on `side` (+1 above the highest high, -1 below the lowest low).
+
+    A bar "breaks" when its close is beyond the channel formed by the
+    `window` bars before it (the channel excludes the bar itself, so a bar
+    cannot break its own range). The age counts from the START of the most
+    recent uninterrupted run of breaking bars: on a steady grind every new
+    high is itself a channel exit, so measuring from the latest breaking bar
+    would read a 4-hour grind as age 0 forever. A move that broke out and
+    then stalled at the high ages normally (no new break since).
+
+    0 = the move began on the latest completed bar. None when no bar broke
+    out (or too little history for a full channel). `side` must be +1 or -1.
+    """
+    if side not in (1, -1):
+        return None
+    c, h, l = closes(bars), highs(bars), lows(bars)
+    n = len(c)
+    if n <= window:
+        return None
+    brk = [False] * n
+    for i in range(window, n):
+        if side > 0:
+            brk[i] = c[i] > max(h[i - window:i])
+        else:
+            brk[i] = c[i] < min(l[i - window:i])
+    last = next((i for i in range(n - 1, window - 1, -1) if brk[i]), None)
+    if last is None:
+        return None
+    start = last
+    while start - 1 >= window and brk[start - 1]:
+        start -= 1
+    return n - 1 - start
+
+
 # ---------- order book ----------
 
 def book_skew(bids, asks, depth=20):
