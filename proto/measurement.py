@@ -929,23 +929,3 @@ def enable_epoch(store, now) -> bool:
         return False
     store.set_meta("episode_epoch_ts", int(now))
     return True
-
-
-# --------------------------------------------------------------------------
-# Episode outcome resolver (Task 4) — stub until implemented
-# --------------------------------------------------------------------------
-
-def fill_and_bar_helpers():
-    raise NotImplementedError("Implement in Task 4: Episode outcome resolver")
-
-
-# --------------------------------------------------------------------------
-# Episode reporting (Task 5) — stubs until implemented
-# --------------------------------------------------------------------------
-
-def summary(store, *, config_hash=None, rule_versions=None, now=None) -> dict:
-    raise NotImplementedError("Implement in Task 5: Episode reporting")
-
-
-def breakdowns(store, *, dimension, min_episodes=20, min_coins=10) -> list:
-    raise NotImplementedError("Implement in Task 5: Episode reporting")
