@@ -85,11 +85,13 @@ def depth(symbol, limit=20):
     return bids, asks
 
 
-def klines(symbol, interval="5m", limit=200):
+def klines(symbol, interval="5m", limit=200, end=None):
     """
     OHLCV bars, oldest first.
     Returns list of dicts: {ts, o, h, l, c, vol, amount}
     Validates shape before returning - never hand back junk to the scorer.
+    `end` (epoch seconds, default now) pins the window's right edge, which
+    is what lets history backfill page backward past the per-request cap.
     """
     if interval not in INTERVALS:
         raise ValueError(f"unknown interval {interval!r}; known: {sorted(INTERVALS)}")
@@ -100,8 +102,9 @@ def klines(symbol, interval="5m", limit=200):
     # Interval-aware window: limit bars of `secs` each (plus one spare bar so
     # boundary timing never short-changes coverage). The old limit*3600 asked
     # ~200h for every timeframe — ~50 bars at 4h, ~2400 at 5m.
-    start = now - limit * secs - secs
-    d = _get(f"/kline/{symbol}?interval={mexc_iv}&start={start}&end={now}")
+    stop = now if end is None else int(end)
+    start = stop - limit * secs - secs
+    d = _get(f"/kline/{symbol}?interval={mexc_iv}&start={start}&end={stop}")
 
     if not d:
         return []
