@@ -440,3 +440,170 @@ def kill_check(gross, net):
     gross_kill = all(gross[h] <= 0 for h in KILL_HORIZONS)
     net_kill = all(net[h] <= 0 for h in KILL_HORIZONS)
     return bool(gross_kill and net_kill)
+
+
+# ---------------------------------------------------------------------------
+# Task 5: triggers (T1-break + CUSUM-raw) + H freeze.
+#
+# Emission is structural (trigger + vetoes). Stale/missing funding never
+# blocks: the setup is still emitted with ``funding="unavailable"`` (gross
+# available, net EV unavailable, selector silent for it — Task 7).
+# Veto thresholds mirror ``scorer`` screener floors: vol >= $250k,
+# spread <= 3%, |1h| < 12%, |24h| < 35%.
+# ---------------------------------------------------------------------------
+
+T1_RULE_ID = "t1-break-v1"
+CUSUM_RULE_ID = "cusum-raw-v1"
+T1_MAX_AGE = 6
+T1_MIN_L5 = 0.15
+T1_MIN_BTC_DRIFT = 0.05
+H_GRID = (3.0, 4.0, 5.0, 6.0)
+H_MAX_ALERTS_PER_DAY = 2500.0
+FUNDING_STALE_H = 8.0
+
+MIN_QUOTE_VOLUME_24H = 250_000.0
+MAX_SPREAD_PCT = 3.0
+LATE_MOVE_1H_PCT = 12.0
+LATE_MOVE_24H_PCT = 35.0
+
+
+def vetoes_ok(vol, spread, m1h, m24h):
+    """Veto screen. Returns the list of breach reasons (empty = pass).
+
+    Boundaries: ``vol`` must be >= $250k, ``spread`` <= 3%,
+    ``|m1h|`` < 12%, ``|m24h|`` < 35%. Named reasons, never silent.
+    """
+    reasons = []
+    if vol is None or vol < MIN_QUOTE_VOLUME_24H:
+        reasons.append(f"low_volume: 24h quote volume {vol} below $250k floor")
+    if spread is None or spread > MAX_SPREAD_PCT:
+        reasons.append(f"wide_spread: spread {spread}% above 3% cap")
+    if m1h is None or abs(m1h) >= LATE_MOVE_1H_PCT:
+        reasons.append(f"late_move_1h: already moved {m1h}% in 1h")
+    if m24h is None or abs(m24h) >= LATE_MOVE_24H_PCT:
+        reasons.append(f"late_move_24h: already moved {m24h}% in 24h")
+    return reasons
+
+
+def freeze_H(dev_windows):
+    """Freeze ``H_cusum``: smallest grid H in {3,4,5,6} with <=2500 alerts/day
+    universe-wide on the dev window. ``dev_windows`` maps H -> alerts/day.
+    None qualifies -> tightest 6.0. Frozen after (never refit live)."""
+    for h in H_GRID:
+        rate = dev_windows.get(h)
+        if rate is not None and rate <= H_MAX_ALERTS_PER_DAY:
+            return float(h)
+    return float(H_GRID[-1])
+
+
+def _funding_label(ctx):
+    """``"ok"`` or ``"unavailable"``. Stale (>8h) / missing never blocks."""
+    state = ctx.get("funding_state", "missing")
+    if state == "ok":
+        age_h = ctx.get("funding_age_h", 0.0)
+        if age_h is not None and age_h > FUNDING_STALE_H:
+            return "unavailable"
+        return "ok"
+    return "unavailable"
+
+
+def _setup_id(rule_id, coin, src_bar_ts):
+    return f"{rule_id}:{coin}:{src_bar_ts}"
+
+
+def t1_candidate(ctx):
+    """T1-break candidate: 48-bar Donchian exit, age<=6, L5>0.15 LONG,
+    trailing-7d BTC drift >+5%, vetoes clean, src bar closed.
+
+    L5/initiation/age/direction come from ``scorer.score_v3`` (called, never
+    copied). Returns the setup dict, or None (reason in
+    ``t1_candidate.last_reason``).
+    """
+    t1_candidate.last_reason = ""
+    coin = ctx.get("coin")
+    bars = ctx.get("bars", [])
+    now = ctx.get("now")
+    src_bar_ts = ctx.get("src_bar_ts")
+    if src_bar_ts is None or now is None or src_bar_ts + BAR_SEC > now:
+        t1_candidate.last_reason = "forming_bar: src bar not closed"
+        return None
+    try:
+        v3 = v3_snapshot(bars, **ctx.get("score_kwargs", {}))
+    except Exception as e:  # noqa: BLE001 - no candidate on scorer failure
+        t1_candidate.last_reason = f"scorer_unavailable: {e}"
+        return None
+    direction = v3.get("direction_v3")
+    if direction != LONG:
+        t1_candidate.last_reason = f"not_long: direction_v3={direction}"
+        return None
+    l5 = v3.get("parts", {}).get("l5")
+    if l5 is None or l5 <= T1_MIN_L5:
+        t1_candidate.last_reason = f"weak_l5: L5={l5} <= 0.15"
+        return None
+    age = v3.get("parts", {}).get("age")
+    if age is None or age > T1_MAX_AGE:
+        t1_candidate.last_reason = f"stale_break: age={age} > 6"
+        return None
+    drift = btc_drift_7d(ctx.get("btc_closes", []) or [])
+    if drift is None:
+        t1_candidate.last_reason = "btc_drift_unavailable: need 2016 BTC 5m closes"
+        return None
+    if drift <= T1_MIN_BTC_DRIFT:
+        t1_candidate.last_reason = f"btc_drift_low: {drift:.4f} <= +5%"
+        return None
+    breaches = vetoes_ok(ctx.get("quote_vol_24h"), ctx.get("spread_pct"),
+                         ctx.get("move_1h_pct"), ctx.get("move_24h_pct"))
+    if breaches:
+        t1_candidate.last_reason = "veto: " + "; ".join(breaches)
+        return None
+    return {
+        "id": _setup_id(T1_RULE_ID, coin, src_bar_ts),
+        "rule_id": T1_RULE_ID, "coin": coin, "src": "t1_break",
+        "direction": LONG, "src_bar_ts": src_bar_ts, "entry": ctx.get("entry"),
+        "l5": l5, "age": age, "initiation": v3.get("initiation"),
+        "btc_drift_7d": drift, "funding": _funding_label(ctx),
+    }
+
+
+t1_candidate.last_reason = ""
+
+
+def cusum_candidate(ctx):
+    """CUSUM-raw candidate: fire-side ``s_value > H`` on the raw alt-perp z
+    path (``cusum()`` from Task 2 owns the S+/S- accumulation; this gates one
+    firing), vetoes clean, src bar closed. ``side`` LONG/SHORT mirrors.
+
+    Returns the setup dict, or None (reason in
+    ``cusum_candidate.last_reason``).
+    """
+    cusum_candidate.last_reason = ""
+    coin = ctx.get("coin")
+    now = ctx.get("now")
+    src_bar_ts = ctx.get("src_bar_ts")
+    if src_bar_ts is None or now is None or src_bar_ts + BAR_SEC > now:
+        cusum_candidate.last_reason = "forming_bar: src bar not closed"
+        return None
+    side = ctx.get("side")
+    if side not in (LONG, SHORT):
+        cusum_candidate.last_reason = f"no_side: side={side!r}"
+        return None
+    s_value = ctx.get("s_value")
+    h = ctx.get("H", CUSUM_H)
+    if s_value is None or h is None or not s_value > h:
+        cusum_candidate.last_reason = f"no_fire: s={s_value} <= H={h}"
+        return None
+    breaches = vetoes_ok(ctx.get("quote_vol_24h"), ctx.get("spread_pct"),
+                         ctx.get("move_1h_pct"), ctx.get("move_24h_pct"))
+    if breaches:
+        cusum_candidate.last_reason = "veto: " + "; ".join(breaches)
+        return None
+    src = "cusum_long" if side == LONG else "cusum_short"
+    return {
+        "id": _setup_id(CUSUM_RULE_ID, coin, src_bar_ts),
+        "rule_id": CUSUM_RULE_ID, "coin": coin, "src": src,
+        "direction": side, "src_bar_ts": src_bar_ts, "entry": ctx.get("entry"),
+        "s_value": s_value, "H": h, "funding": _funding_label(ctx),
+    }
+
+
+cusum_candidate.last_reason = ""
