@@ -111,6 +111,16 @@ check("one |rho|>0.7 cluster yields <=2", len(picked) <= 2, str(picked))
 check("cluster winners are top-2 by EV",
       picked == {"cusum-raw-v1:QQ:0", "cusum-raw-v1:QQ:1"}, str(picked))
 
+print("\n=== shadow_select: explicit cluster=None stays unique ===")
+unlabeled = []
+for i in range(3):
+    s = sel_setup(f"t1-break-v1:ZZ:{i}", p=0.8)
+    s["cluster"] = None  # explicit None must NOT share one cap-of-2 bucket
+    unlabeled.append(s)
+picked = watcher.shadow_select(unlabeled, K=15, ev_hurdle=0.1)
+check("3 explicit-None clusters all selected (no shared bucket)",
+      picked == {s["id"] for s in unlabeled}, str(picked))
+
 print("\n=== shadow_select: pause + per-trigger disable ===")
 ok = sel_setup("t1-break-v1:DDD:1", p=0.6)
 check("global pause -> empty", watcher.shadow_select([ok], paused=True) == set())
@@ -171,6 +181,15 @@ for sid in ids:
 check("no scanner tables created by selector",
       "signal_log" not in {r[0] for r in conn.execute(
           "SELECT name FROM sqlite_master WHERE type='table'").fetchall()})
+watcher.apply_shadow_flags(conn, set(), ev_by_id={}, p_by_id={})
+cleared = conn.execute(
+    "SELECT shadow_selected, ev_r, p_lb FROM watcher_setup WHERE id=?",
+    (ids[0],)).fetchone()
+check("deselected row cleared to (0, NULL, NULL), no stale EV",
+      tuple(cleared) == (0, None, None), str(cleared))
+states2 = conn.execute("SELECT id, state FROM watcher_setup").fetchall()
+check("clear touches flags only, states still active",
+      all(s == "active" for _, s in states2), str(states2))
 
 print("\n=== watcher_report: sections + research labels ===")
 rep_conn = sqlite3.connect(":memory:")

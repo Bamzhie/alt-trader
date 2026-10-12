@@ -828,9 +828,10 @@ def eval_bar(conn, setup_id, bar, ctx):
     Per-bar order: gap/stale -> unavailable overlay (else barrier
     resolution, stop first), else close-based invalidation (never masks a
     touch), else time expiry. apply_breakeven runs exactly once per ordered
-    closed bar; post-move touches use the moved stop with the stop-first
-    rule. Terminal rows are immutable; eval writes are idempotent
-    (INSERT OR IGNORE). Recompute mismatch beyond 1e-9 forces
+    closed bar for trail='breakeven' setups (trail='none' rows skip the step
+    entirely, keeping stored grid geometry); post-move touches use the moved
+    stop with the stop-first rule. Terminal rows are immutable; eval writes
+    are idempotent (INSERT OR IGNORE). Recompute mismatch beyond 1e-9 forces
     monitoring=unavailable with the state preserved.
     """
     ensure_watcher_tables(conn)
@@ -883,18 +884,25 @@ def eval_bar(conn, setup_id, bar, ctx):
                unavailable_bars=ub)
         return ("active", "unavailable")
 
-    # Ordered closed bar: exactly one breakeven step, then barriers.
-    trail = {"entry": srow["entry"], "direction": srow["direction"],
-             "b_stop": srow["b_stop"], "stop_px": srow["stop_px"],
-             "tgt_px": srow["tgt_px"],
-             "pending": bool(srow.get("be_pending")),
-             "moved": bool(srow.get("be_moved"))}
-    trail = apply_breakeven(trail, bar["c"])
-    stop_px, tgt_px = trail["stop_px"], trail["tgt_px"]
-    trail_extra = {"be_pending": 1 if trail.get("pending") else 0,
-                   "be_moved": 1 if trail.get("moved") else 0}
-    if trail.get("moved") and not srow.get("be_moved"):
-        trail_extra["stop_px"] = stop_px
+    # Ordered closed bar: exactly one breakeven step (breakeven arm only),
+    # then barriers. The step runs ONLY for trail='breakeven' setups: a
+    # trail='none' row keeps its pre-registered grid geometry untouched
+    # (stored stop/tgt), never armed, never moved.
+    if srow.get("trail") == "breakeven":
+        trail = {"entry": srow["entry"], "direction": srow["direction"],
+                 "b_stop": srow["b_stop"], "stop_px": srow["stop_px"],
+                 "tgt_px": srow["tgt_px"],
+                 "pending": bool(srow.get("be_pending")),
+                 "moved": bool(srow.get("be_moved"))}
+        trail = apply_breakeven(trail, bar["c"])
+        stop_px, tgt_px = trail["stop_px"], trail["tgt_px"]
+        trail_extra = {"be_pending": 1 if trail.get("pending") else 0,
+                       "be_moved": 1 if trail.get("moved") else 0}
+        if trail.get("moved") and not srow.get("be_moved"):
+            trail_extra["stop_px"] = stop_px
+    else:
+        stop_px, tgt_px = srow["stop_px"], srow["tgt_px"]
+        trail_extra = {}
 
     recompute_bad = False
     if ("recompute_expected" in ctx and "recompute_actual" in ctx
@@ -961,7 +969,10 @@ def checkpoint(conn, coin, rule, watermark):
              updated_at=excluded.updated_at""",
         (coin, rule, int(watermark), int(_t.time())))
     conn.commit()
-    return int(watermark)
+    row = conn.execute(
+        "SELECT watermark FROM watcher_checkpoint WHERE coin=? AND rule_id=?",
+        (coin, rule)).fetchone()
+    return row[0] if row else int(watermark)
 
 
 def replay_since(conn, coin, rule):
@@ -1049,7 +1060,8 @@ def shadow_select(setups, K=15, ev_hurdle=0.1, paused=False,
     Each setup dict carries ``id`` plus ``p_lb`` (aliases ``p_hat_lb``/``p``),
     ``a`` (``a_tgt``), ``b`` (``b_stop``), ``c`` (``c_total``/``cost_total``),
     ``funding`` (``funding_state``; ``"unavailable"`` -> never selected) and
-    an optional ``cluster`` label (default: its own id, i.e. uncorrelated).
+    an optional ``cluster`` label (missing or None -> its own id, i.e.
+    uncorrelated and never capped with another setup).
     Missing p/a/b/c, NaN EV, paused, or a disabled rule_id -> silent skip.
     Emission, state, monitoring, ranking and flags are never touched here.
     """
@@ -1073,7 +1085,8 @@ def shadow_select(setups, K=15, ev_hurdle=0.1, paused=False,
         ev = ev_r(p, a, b, c)
         if not ev >= ev_hurdle:
             continue
-        scored.append((ev, sid, _cluster_key(s.get("cluster", sid))))
+        scored.append((ev, sid, _cluster_key(
+            s.get("cluster") if s.get("cluster") is not None else sid)))
     scored.sort(key=lambda t: (-t[0], str(t[1])))
     picked, per_cluster = set(), {}
     for ev, sid, cluster in scored:
@@ -1088,23 +1101,29 @@ def shadow_select(setups, K=15, ev_hurdle=0.1, paused=False,
 
 
 def apply_shadow_flags(conn, selected, ev_by_id=None, p_by_id=None):
-    """Write shadow columns only (shadow_selected [+ev_r] [+p_lb]) for every
-    watcher_setup row. State, substate, monitoring and all scanner tables are
-    never touched, so unselected setups stay exactly as emitted (active)."""
+    """Write shadow columns only (shadow_selected/ev_r/p_lb) for every
+    watcher_setup row. Rows leaving the selected set are cleared to
+    ``(0, NULL, NULL)`` so stale EV never lingers on a deselected setup.
+    State, substate, monitoring and all scanner tables are never touched,
+    so unselected setups stay exactly as emitted (active)."""
     ensure_watcher_tables(conn)
     selected = set(selected or [])
     ev_by_id = ev_by_id or {}
     p_by_id = p_by_id or {}
     ids = [r[0] for r in conn.execute("SELECT id FROM watcher_setup").fetchall()]
     for sid in ids:
-        sets = ["shadow_selected=?"]
-        params = [1 if sid in selected else 0]
-        if sid in ev_by_id and ev_by_id[sid] is not None:
-            sets.append("ev_r=?")
-            params.append(ev_by_id[sid])
-        if sid in p_by_id and p_by_id[sid] is not None:
-            sets.append("p_lb=?")
-            params.append(p_by_id[sid])
+        if sid in selected:
+            sets = ["shadow_selected=1"]
+            params = []
+            if sid in ev_by_id and ev_by_id[sid] is not None:
+                sets.append("ev_r=?")
+                params.append(ev_by_id[sid])
+            if sid in p_by_id and p_by_id[sid] is not None:
+                sets.append("p_lb=?")
+                params.append(p_by_id[sid])
+        else:
+            sets = ["shadow_selected=0", "ev_r=NULL", "p_lb=NULL"]
+            params = []
         params.append(sid)
         conn.execute(
             f"UPDATE watcher_setup SET {', '.join(sets)} WHERE id=?", params)

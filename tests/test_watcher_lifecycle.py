@@ -226,6 +226,29 @@ st, _ = watcher.eval_bar(conn8, sid, bar(ts2, o=102.5, h=103, l=99.0, c=101),
                          ctx(ts2))  # l=99 < moved stop 100 -> stop
 check("post-move touch uses moved stop (stop-first)",
       st == "resolved_stop", st)
+# Grid control: trail='none' never arms and never moves, even on the same
+# trigger close that arms a breakeven setup.
+conn8b = memdb()
+sid = watcher.emit_setup(conn8b, mksetup(ts=T0, N=288, trail="none"))
+ts1 = T0 + 300
+st, _ = watcher.eval_bar(conn8b, sid, bar(ts1, o=100, h=103, l=99.5, c=102.5),
+                         ctx(ts1))  # close 102.5 >= 102: no arm on none
+check("trail=none trigger close stays active", st == "active", st)
+row = conn8b.execute(
+    "SELECT stop_px, be_pending, be_moved FROM watcher_setup WHERE id=?",
+    (sid,)).fetchone()
+check("trail=none: original stop kept, nothing armed",
+      tuple(row) == (98.0, 0, 0), str(row))
+ts2 = T0 + 600
+st, _ = watcher.eval_bar(conn8b, sid, bar(ts2, o=102.5, h=103, l=99.0, c=101),
+                         ctx(ts2))  # l=99 touches moved 100, not original 98
+check("trail=none: low 99 misses original stop 98 -> still active",
+      st == "active", st)
+row = conn8b.execute(
+    "SELECT stop_px, be_pending, be_moved FROM watcher_setup WHERE id=?",
+    (sid,)).fetchone()
+check("trail=none: still unmoved after second bar",
+      tuple(row) == (98.0, 0, 0), str(row))
 
 print("\n=== recompute tolerance 1e-9 ===")
 conn9 = memdb()
@@ -257,6 +280,14 @@ sid_r = watcher.emit_setup(c2, mksetup(ts=T0, N=288))
 check("re-emit after restart -> same id", sid_r == sid, sid_r)
 n = c2.execute("SELECT COUNT(*) FROM watcher_setup").fetchone()[0]
 check("still one row", n == 1, f"count={n}")
+w_adv = watcher.checkpoint(c2, "DOGE", "t1-break-v1", T0 + 3600)
+check("checkpoint returns advanced watermark", w_adv == T0 + 3600, str(w_adv))
+w_old = watcher.checkpoint(c2, "DOGE", "t1-break-v1", T0)
+check("checkpoint returns stored MAX, not the stale input",
+      w_old == T0 + 3600, str(w_old))
+rep2 = watcher.replay_since(c2, "DOGE", "t1-break-v1")
+check("stored watermark never rewinds", rep2["watermark"] == T0 + 3600,
+      str(rep2))
 os.unlink(tmp.name)
 c2.close()
 
