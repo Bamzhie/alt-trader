@@ -538,3 +538,50 @@ def validate_interval(value):
     if v < MIN_INTERVAL:
         raise ValueError(f"interval must be at least {MIN_INTERVAL}s, got {value!r}")
     return v
+
+
+# ---------------------------------------------------------------------------
+# Watcher panel (display only, Task 7). Research-labeled text lines for
+# watcher_setup rows. Scanner sorting, ranking and flags are never touched
+# here; Qt widget wiring is a follow-up (report-only ships first).
+# ---------------------------------------------------------------------------
+
+def watcher_row_text(row):
+    """One-line display for a watcher_setup mapping (dict or row-like).
+
+    ``'AAA LONG active ev=+0.41 [SHADOW]'``; missing numbers render n/a,
+    funding-unavailable rows carry FUND?. Pure (no Tk, no network).
+    """
+    if not isinstance(row, dict):
+        try:
+            row = dict(row)
+        except (TypeError, ValueError):
+            return "n/a"
+    coin = row.get("coin", "?")
+    direction = row.get("direction", "?")
+    state = row.get("state", "?")
+    sub = row.get("substate")
+    if sub:
+        state = f"{state}/{sub}"
+    ev = row.get("ev_r")
+    ev_txt = "n/a" if ev is None else f"{float(ev):+.2f}"
+    bits = [f"{coin} {direction} {state} ev={ev_txt}"]
+    if row.get("shadow_selected"):
+        bits.append("[SHADOW]")
+    if (row.get("funding") or row.get("funding_state")) == "unavailable":
+        bits.append("[FUND?]")
+    return " ".join(bits)
+
+
+def watcher_panel_lines(rows, paused=False, disabled=()):
+    """Research-labeled panel lines for an iterable of watcher_setup
+    mappings. Display only: order preserved, nothing ranked or flagged."""
+    lines = ["WATCHER (research, shadow-only — scanner untouched; no orders)"]
+    if disabled:
+        lines[0] += f" [disabled: {','.join(disabled)}]"
+    if paused:
+        lines[0] += " [PAUSED]"
+    rows = list(rows or [])
+    if not rows:
+        return lines + ["  no watcher setups"]
+    return lines + [f"  {watcher_row_text(r)}" for r in rows]

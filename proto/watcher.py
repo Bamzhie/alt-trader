@@ -978,3 +978,135 @@ def replay_since(conn, coin, rule):
         " AND state='active' ORDER BY src_bar_ts",
         (coin, rule)).fetchall()]
     return {"watermark": row[0] if row else None, "active_ids": actives}
+
+
+# ---------------------------------------------------------------------------
+# Task 7: cost composer + shadow selector (shadow-only) + flag writer.
+#
+# The selector NEVER suppresses setups: it only returns the shadow-picked id
+# set, and apply_shadow_flags writes the shadow_selected/ev_r/p_lb columns
+# while leaving state/monitoring (and every scanner table) untouched.
+# Funding-unavailable setups are never selected (gross available, net EV
+# unavailable). Scorer calibration (logistic/Beta/p-hat-LB training) is
+# follow-up work per the plan; p_lb here is the frozen interface fed by the
+# hand-set scorer v0.
+# ---------------------------------------------------------------------------
+
+SELECTOR_K = 15
+EV_HURDLE = 0.1
+CLUSTER_CAP = 2        # max selected per |rho| > 0.7 cluster
+CLUSTER_RHO = 0.7      # cluster edge threshold (computed upstream on
+                       # trailing-7d 1h residuals; setups sharing a `cluster`
+                       # label are treated as one correlated set)
+WATCHER_PAUSED = False
+WATCHER_DISABLED_RULES = ()
+
+
+def cost_total(base_cost, direction, rates):
+    """Round-trip cost composer (Task 3 deferred minor, defined once here).
+
+    ``max(0, base_cost + fund_cost(direction, rates))``: the long funding leg
+    raises the total, the short rebate lowers it floored at 0, and the signed
+    leg stays available via fund_cost for the net-return column.
+    """
+    return max(0.0, base_cost + fund_cost(direction, rates))
+
+
+def net_ret(gross_ret, base_cost, direction, rates):
+    """Signed net return for the net column: gross minus the FULL signed cost
+    (base + signed funding leg, no floor). None gross -> None."""
+    if gross_ret is None:
+        return None
+    return gross_ret - (base_cost + fund_cost(direction, rates))
+
+
+def ev_r(p_lb, a, b, c):
+    """Selector expectancy in R: ``[p_lb*a - (1-p_lb)*b - c_total] / b``.
+
+    Time-expiry and invalidation are non-wins in training labels (0R beyond
+    costs in selector EV; realized returns are reported separately).
+    ``b <= 0`` (or any missing input) -> -inf: unselectable, never an error.
+    """
+    if (p_lb is None or a is None or b is None or c is None
+            or b <= 0):
+        return float("-inf")
+    return (p_lb * a - (1.0 - p_lb) * b - c) / b
+
+
+def _cluster_key(cluster):
+    if cluster is None:
+        return None
+    if isinstance(cluster, (str, int, float, bool, tuple, frozenset)):
+        return cluster
+    return repr(cluster)
+
+
+def shadow_select(setups, K=15, ev_hurdle=0.1, paused=False,
+                  disabled=()):
+    """Shadow-only pick: ``EV_R >= ev_hurdle``, ranked by EV_R, K/day ceiling,
+    at most CLUSTER_CAP (2) per |rho|>0.7 cluster. Returns ``set[id]``.
+
+    Each setup dict carries ``id`` plus ``p_lb`` (aliases ``p_hat_lb``/``p``),
+    ``a`` (``a_tgt``), ``b`` (``b_stop``), ``c`` (``c_total``/``cost_total``),
+    ``funding`` (``funding_state``; ``"unavailable"`` -> never selected) and
+    an optional ``cluster`` label (default: its own id, i.e. uncorrelated).
+    Missing p/a/b/c, NaN EV, paused, or a disabled rule_id -> silent skip.
+    Emission, state, monitoring, ranking and flags are never touched here.
+    """
+    if paused:
+        return set()
+    off = set(disabled or ())
+    scored = []
+    for s in setups or []:
+        sid = (s.get("id") if isinstance(s, dict) else None)
+        if sid is None:
+            continue
+        if s.get("rule_id") in off:
+            continue
+        fund = s.get("funding", s.get("funding_state", "ok"))
+        if fund == "unavailable":
+            continue
+        p = s.get("p_lb", s.get("p_hat_lb", s.get("p")))
+        a = s.get("a", s.get("a_tgt"))
+        b = s.get("b", s.get("b_stop"))
+        c = s.get("c", s.get("c_total", s.get("cost_total")))
+        ev = ev_r(p, a, b, c)
+        if not ev >= ev_hurdle:
+            continue
+        scored.append((ev, sid, _cluster_key(s.get("cluster", sid))))
+    scored.sort(key=lambda t: (-t[0], str(t[1])))
+    picked, per_cluster = set(), {}
+    for ev, sid, cluster in scored:
+        if len(picked) >= K:
+            break
+        n = per_cluster.get(cluster, 0)
+        if n >= CLUSTER_CAP:
+            continue
+        per_cluster[cluster] = n + 1
+        picked.add(sid)
+    return picked
+
+
+def apply_shadow_flags(conn, selected, ev_by_id=None, p_by_id=None):
+    """Write shadow columns only (shadow_selected [+ev_r] [+p_lb]) for every
+    watcher_setup row. State, substate, monitoring and all scanner tables are
+    never touched, so unselected setups stay exactly as emitted (active)."""
+    ensure_watcher_tables(conn)
+    selected = set(selected or [])
+    ev_by_id = ev_by_id or {}
+    p_by_id = p_by_id or {}
+    ids = [r[0] for r in conn.execute("SELECT id FROM watcher_setup").fetchall()]
+    for sid in ids:
+        sets = ["shadow_selected=?"]
+        params = [1 if sid in selected else 0]
+        if sid in ev_by_id and ev_by_id[sid] is not None:
+            sets.append("ev_r=?")
+            params.append(ev_by_id[sid])
+        if sid in p_by_id and p_by_id[sid] is not None:
+            sets.append("p_lb=?")
+            params.append(p_by_id[sid])
+        params.append(sid)
+        conn.execute(
+            f"UPDATE watcher_setup SET {', '.join(sets)} WHERE id=?", params)
+    conn.commit()
+    return len(selected & set(ids))
