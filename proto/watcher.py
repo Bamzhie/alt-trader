@@ -607,3 +607,374 @@ def cusum_candidate(ctx):
 
 
 cusum_candidate.last_reason = ""
+
+
+# ---------------------------------------------------------------------------
+# Task 6: lifecycle state machine + persistence + recovery.
+#
+# Standalone sqlite3 conn-taking functions (no Store dependency, so legacy
+# scan/scorer/store paths are untouched). Per-bar order (spec S3):
+# gap/stale -> unavailable overlay, else barrier resolution with the stop
+# first, else close-based invalidation (never masks a touch), else time
+# expiry. Emission consumes cusum() fire events, never raw bars.
+# ---------------------------------------------------------------------------
+
+WATCHER_SETUP_DDL = """
+CREATE TABLE IF NOT EXISTS watcher_setup (
+  id TEXT PRIMARY KEY,          -- rule_id:coin:src_bar_ts
+  rule_id TEXT NOT NULL,        -- t1-break-v1 | cusum-raw-v1 | ...
+  coin TEXT NOT NULL, symbol TEXT NOT NULL,
+  src TEXT NOT NULL,            -- t1_break | cusum_long | cusum_short
+  direction TEXT NOT NULL,      -- LONG | SHORT
+  src_bar_ts INTEGER NOT NULL, entry REAL NOT NULL,
+  b_stop REAL NOT NULL, a_tgt REAL NOT NULL,
+  stop_px REAL NOT NULL, tgt_px REAL NOT NULL,
+  stop_dist_pct REAL NOT NULL, tgt_dist_pct REAL NOT NULL,
+  N_bars INTEGER NOT NULL, trail TEXT NOT NULL DEFAULT 'none',
+  state TEXT NOT NULL DEFAULT 'active',        -- active | invalidated | expired | resolved
+  substate TEXT,                -- stop | target | time | gap | thesis
+  monitoring TEXT NOT NULL DEFAULT 'ok',       -- ok | unavailable
+  price_source TEXT NOT NULL DEFAULT 'perp_trades',
+  cost_total REAL, cost_floor INTEGER DEFAULT 0,
+  funding_state TEXT, funding_projected REAL, fund_stress REAL,
+  shadow_selected INTEGER DEFAULT 0, ev_r REAL, p_lb REAL,
+  invalid_price REAL, last_eval_bar INTEGER, unavailable_bars INTEGER DEFAULT 0,
+  created_at INTEGER NOT NULL, closed_at INTEGER
+);
+"""
+
+WATCHER_EVAL_DDL = """
+CREATE TABLE IF NOT EXISTS watcher_eval (
+  setup_id TEXT REFERENCES watcher_setup(id),
+  bar_ts INTEGER NOT NULL, state TEXT NOT NULL, monitoring TEXT NOT NULL,
+  ret_gross REAL, ret_net REAL, note TEXT,
+  PRIMARY KEY (setup_id, bar_ts)
+);
+"""
+
+WATCHER_CHECKPOINT_DDL = """
+CREATE TABLE IF NOT EXISTS watcher_checkpoint (
+  coin TEXT NOT NULL, rule_id TEXT NOT NULL, watermark INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (coin, rule_id)
+);
+"""
+
+# Composite per-bar states returned by eval_bar. Stored split into
+# (state, substate): resolved_stop -> (resolved, stop), resolved_target ->
+# (resolved, target), expired_time -> (expired, time), expired_gap ->
+# (expired, gap), invalidated -> (invalidated, thesis).
+TERMINAL_STATES = ("resolved_stop", "resolved_target", "expired_time",
+                   "expired_gap", "invalidated")
+
+# Gap-expiry: 48 consecutive unavailable bars -> censored expired_gap.
+GAP_EXPIRY_BARS = 48
+
+# Full-recompute reconciliation tolerance: mismatch beyond this ->
+# monitoring=unavailable (state overlay preserved).
+RECOMPUTE_TOL = 1e-9
+
+# Per-(coin, rule) emission cooldowns (T1 24h, CUSUM 12h): suppress
+# duplicate alerts, not independence claims.
+EMIT_COOLDOWN_S = {T1_RULE_ID: 86400, CUSUM_RULE_ID: 43200}
+
+
+def _split_state(composite):
+    if composite == "active":
+        return ("active", None)
+    if composite in ("resolved_stop", "resolved_target"):
+        return ("resolved", composite.rsplit("_", 1)[1])
+    if composite in ("expired_time", "expired_gap"):
+        return ("expired", composite.rsplit("_", 1)[1])
+    if composite == "invalidated":
+        return ("invalidated", "thesis")
+    raise ValueError(f"unknown lifecycle state {composite!r}")
+
+
+def _join_state(state, substate):
+    if state == "active":
+        return "active"
+    if state == "resolved":
+        return f"resolved_{substate}"
+    if state == "expired":
+        return f"expired_{substate}"
+    if state == "invalidated":
+        return "invalidated"
+    raise ValueError(f"unknown stored state {(state, substate)!r}")
+
+
+def ensure_watcher_tables(conn):
+    """Create watcher_setup / watcher_eval (exact spec S4 DDL) plus the
+    watcher_checkpoint watermark table. Additive; idempotent on reopen.
+    Trail runtime columns (be_pending/be_moved) are added after the verbatim
+    DDL so the spec CREATE TABLE text stays exact."""
+    conn.executescript(WATCHER_SETUP_DDL)
+    conn.executescript(WATCHER_EVAL_DDL)
+    conn.executescript(WATCHER_CHECKPOINT_DDL)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(watcher_setup)")}
+    for col in ("be_pending", "be_moved"):
+        if col not in cols:
+            conn.execute(
+                f"ALTER TABLE watcher_setup ADD COLUMN {col} INTEGER DEFAULT 0")
+    conn.commit()
+
+
+def cusum_fire_ids(zs, k=0.5, H=4.0):
+    """(side, index) fire events from cusum(). Emission consumes these fire
+    events, never raw bars, so one firing yields one candidate (no
+    double-count)."""
+    res = cusum(zs, k=k, H=H)
+    fires = ([("LONG", i) for i in res["long_idx"]]
+             + [("SHORT", i) for i in res["short_idx"]])
+    fires.sort(key=lambda t: t[1])
+    return fires
+
+
+def _setup_row(setup):
+    rule_id = setup["rule_id"]
+    coin = setup["coin"]
+    src_bar_ts = setup["src_bar_ts"]
+    sid = setup.get("id") or _setup_id(rule_id, coin, src_bar_ts)
+    entry = setup["entry"]
+    direction = setup["direction"]
+    b_stop = setup.get("b_stop", 0.0)
+    a_tgt = setup.get("a_tgt", 0.0)
+    stop_px = setup.get("stop_px")
+    tgt_px = setup.get("tgt_px")
+    if stop_px is None or tgt_px is None:
+        stop_px, tgt_px = levels(entry, direction, b_stop, a_tgt)
+    import time as _t
+    return {
+        "id": sid, "rule_id": rule_id, "coin": coin,
+        "symbol": setup.get("symbol", coin),
+        "src": setup.get("src", ""),
+        "direction": direction, "src_bar_ts": src_bar_ts, "entry": entry,
+        "b_stop": b_stop, "a_tgt": a_tgt,
+        "stop_px": stop_px, "tgt_px": tgt_px,
+        "stop_dist_pct": setup.get("stop_dist_pct", b_stop * 100.0),
+        "tgt_dist_pct": setup.get("tgt_dist_pct", a_tgt * 100.0),
+        "N_bars": setup.get("N_bars", 288),
+        "trail": setup.get("trail", "none"),
+        "price_source": setup.get("price_source", "perp_trades"),
+        "cost_total": setup.get("cost_total"),
+        "cost_floor": setup.get("cost_floor", 0),
+        "funding_state": setup.get("funding"),
+        "created_at": setup.get("created_at", int(_t.time())),
+    }
+
+
+def emit_setup(conn, setup):
+    """Persist one setup; returns its id. Dedupe: an exact
+    rule_id:coin:src_bar_ts repeat returns the same id with no new row.
+    Cooldown: a new src bar within the per-rule window (T1 24h, CUSUM 12h)
+    of an existing same-(coin, rule) row is suppressed (existing id, no
+    new row)."""
+    ensure_watcher_tables(conn)
+    row = _setup_row(setup)
+    hit = conn.execute("SELECT id FROM watcher_setup WHERE id=?",
+                       (row["id"],)).fetchone()
+    if hit:
+        return hit[0]
+    cooldown = EMIT_COOLDOWN_S.get(row["rule_id"], 0)
+    if cooldown:
+        prior = conn.execute(
+            "SELECT id FROM watcher_setup WHERE coin=? AND rule_id=?"
+            " AND ABS(src_bar_ts - ?) < ? ORDER BY src_bar_ts DESC LIMIT 1",
+            (row["coin"], row["rule_id"], row["src_bar_ts"],
+             cooldown)).fetchone()
+        if prior:
+            return prior[0]
+    conn.execute(
+        """INSERT OR IGNORE INTO watcher_setup
+           (id, rule_id, coin, symbol, src, direction, src_bar_ts, entry,
+            b_stop, a_tgt, stop_px, tgt_px, stop_dist_pct, tgt_dist_pct,
+            N_bars, trail, state, monitoring, price_source, cost_total,
+            cost_floor, funding_state, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'active', 'ok',
+                   ?,?,?,?,?)""",
+        (row["id"], row["rule_id"], row["coin"], row["symbol"], row["src"],
+         row["direction"], row["src_bar_ts"], row["entry"], row["b_stop"],
+         row["a_tgt"], row["stop_px"], row["tgt_px"], row["stop_dist_pct"],
+         row["tgt_dist_pct"], row["N_bars"], row["trail"],
+         row["price_source"], row["cost_total"], row["cost_floor"],
+         row["funding_state"], row["created_at"]))
+    conn.commit()
+    return row["id"]
+
+
+def _load_setup(conn, setup_id):
+    cur = conn.execute("SELECT * FROM watcher_setup WHERE id=?", (setup_id,))
+    row = cur.fetchone()
+    if row is None:
+        raise ValueError(f"unknown setup {setup_id!r}")
+    return dict(zip([d[0] for d in cur.description], row))
+
+
+def _stop_touch(direction, low, high, stop_px):
+    if direction == LONG:
+        return low <= stop_px
+    return high >= stop_px
+
+
+def _tgt_touch(direction, low, high, tgt_px):
+    if direction == LONG:
+        return high >= tgt_px
+    return low <= tgt_px
+
+
+def eval_bar(conn, setup_id, bar, ctx):
+    """Evaluate one ordered closed bar; returns (state, monitoring).
+
+    Per-bar order: gap/stale -> unavailable overlay (else barrier
+    resolution, stop first), else close-based invalidation (never masks a
+    touch), else time expiry. apply_breakeven runs exactly once per ordered
+    closed bar; post-move touches use the moved stop with the stop-first
+    rule. Terminal rows are immutable; eval writes are idempotent
+    (INSERT OR IGNORE). Recompute mismatch beyond 1e-9 forces
+    monitoring=unavailable with the state preserved.
+    """
+    ensure_watcher_tables(conn)
+    import time as _t
+    srow = _load_setup(conn, setup_id)
+    composite = _join_state(srow["state"], srow["substate"])
+    if composite in TERMINAL_STATES:
+        return (composite, srow["monitoring"])
+    ctx = dict(ctx or {})
+    now = ctx.get("now", int(_t.time()))
+    bar_ts = (bar or {}).get("ts", ctx.get("bar_ts"))
+    if bar_ts is None:
+        raise ValueError("eval_bar needs bar['ts'] or ctx['bar_ts']")
+
+    def _write(state, monitoring, note, ret_gross=None, **extra):
+        st, sub = _split_state(state)
+        fields = {"state": st, "substate": sub, "monitoring": monitoring,
+                  "last_eval_bar": bar_ts}
+        fields.update(extra)
+        sets = ", ".join(f"{k}=?" for k in fields)
+        # Terminal guard: only a live (active) row may be rewritten, so a
+        # row that became terminal concurrently is never overwritten.
+        conn.execute(f"UPDATE watcher_setup SET {sets} WHERE id=? AND state='active'",
+                     tuple(fields.values()) + (setup_id,))
+        conn.execute(
+            """INSERT OR IGNORE INTO watcher_eval
+               (setup_id, bar_ts, state, monitoring, ret_gross, ret_net, note)
+               VALUES (?,?,?,?,?,?,?)""",
+            (setup_id, bar_ts, state, monitoring, ret_gross, None, note))
+        conn.commit()
+
+    # 1. Gap/stale -> unavailable overlay; 48 consecutive -> expired_gap.
+    stale = bool(ctx.get("missing")) or bar is None
+    if not stale:
+        try:
+            o, h, l, c = bar["o"], bar["h"], bar["l"], bar["c"]
+        except (KeyError, TypeError):
+            o = h = l = c = None
+        if (o is None or h is None or l is None or c is None
+                or bar["ts"] + BAR_SEC > now):
+            stale = True
+    if stale:
+        ub = (srow["unavailable_bars"] or 0) + 1
+        if ub >= GAP_EXPIRY_BARS:
+            _write("expired_gap", "unavailable",
+                   f"censored: {ub} consecutive unavailable bars",
+                   unavailable_bars=ub, closed_at=int(_t.time()))
+            return ("expired_gap", "unavailable")
+        _write("active", "unavailable", "gap/stale bar: monitoring unavailable",
+               unavailable_bars=ub)
+        return ("active", "unavailable")
+
+    # Ordered closed bar: exactly one breakeven step, then barriers.
+    trail = {"entry": srow["entry"], "direction": srow["direction"],
+             "b_stop": srow["b_stop"], "stop_px": srow["stop_px"],
+             "tgt_px": srow["tgt_px"],
+             "pending": bool(srow.get("be_pending")),
+             "moved": bool(srow.get("be_moved"))}
+    trail = apply_breakeven(trail, bar["c"])
+    stop_px, tgt_px = trail["stop_px"], trail["tgt_px"]
+    trail_extra = {"be_pending": 1 if trail.get("pending") else 0,
+                   "be_moved": 1 if trail.get("moved") else 0}
+    if trail.get("moved") and not srow.get("be_moved"):
+        trail_extra["stop_px"] = stop_px
+
+    recompute_bad = False
+    if ("recompute_expected" in ctx and "recompute_actual" in ctx
+            and ctx["recompute_expected"] is not None
+            and ctx["recompute_actual"] is not None):
+        recompute_bad = (abs(ctx["recompute_actual"]
+                             - ctx["recompute_expected"]) > RECOMPUTE_TOL)
+
+    # 2. Barriers, stop first: same-bar stop+target -> stop.
+    low, high = bar["l"], bar["h"]
+    direction = srow["direction"]
+    try:
+        ret_gross = cumret(srow["entry"], bar["c"], direction)
+    except (ValueError, ZeroDivisionError):
+        ret_gross = None
+    mon = "unavailable" if recompute_bad else "ok"
+    extra_note = "; recompute mismatch" if recompute_bad else ""
+    if _stop_touch(direction, low, high, stop_px):
+        _write("resolved_stop", mon,
+               "stop touch (same-bar stop+target -> stop)" + extra_note,
+               ret_gross=ret_gross, unavailable_bars=0,
+               closed_at=int(_t.time()), **trail_extra)
+        return ("resolved_stop", mon)
+    if _tgt_touch(direction, low, high, tgt_px):
+        _write("resolved_target", mon, "target touch" + extra_note,
+               ret_gross=ret_gross, unavailable_bars=0,
+               closed_at=int(_t.time()), **trail_extra)
+        return ("resolved_target", mon)
+
+    # 3. Close-based invalidation (never masks a touch: barriers won above).
+    if ctx.get("invalidate"):
+        _write("invalidated", mon, "close-based invalidation" + extra_note,
+               ret_gross=ret_gross, unavailable_bars=0,
+               invalid_price=ctx.get("invalid_price"),
+               closed_at=int(_t.time()), **trail_extra)
+        return ("invalidated", mon)
+
+    # 4. Time expiry.
+    age = ctx.get("age_bars")
+    if age is None:
+        age = (bar_ts - srow["src_bar_ts"]) // BAR_SEC
+    if age >= srow["N_bars"]:
+        _write("expired_time", mon,
+               f"time-bar: age {age} >= N {srow['N_bars']}" + extra_note,
+               ret_gross=ret_gross, unavailable_bars=0,
+               closed_at=int(_t.time()), **trail_extra)
+        return ("expired_time", mon)
+
+    _write("active", mon, "no touch" + extra_note,
+           ret_gross=ret_gross, unavailable_bars=0, **trail_extra)
+    return ("active", mon)
+
+
+def checkpoint(conn, coin, rule, watermark):
+    """Atomic hourly watermark per (coin, rule). Idempotent upsert; the
+    watermark never rewinds (MAX)."""
+    ensure_watcher_tables(conn)
+    import time as _t
+    conn.execute(
+        """INSERT INTO watcher_checkpoint (coin, rule_id, watermark, updated_at)
+           VALUES (?,?,?,?)
+           ON CONFLICT(coin, rule_id) DO UPDATE SET
+             watermark=MAX(watcher_checkpoint.watermark, excluded.watermark),
+             updated_at=excluded.updated_at""",
+        (coin, rule, int(watermark), int(_t.time())))
+    conn.commit()
+    return int(watermark)
+
+
+def replay_since(conn, coin, rule):
+    """Restart recovery: watermark plus live (non-terminal) setup ids for
+    (coin, rule). Re-emits dedupe by id and terminal rows stay immutable,
+    so replaying missed closed bars after this point is idempotent with no
+    duplicate actives."""
+    ensure_watcher_tables(conn)
+    row = conn.execute(
+        "SELECT watermark FROM watcher_checkpoint WHERE coin=? AND rule_id=?",
+        (coin, rule)).fetchone()
+    actives = [r[0] for r in conn.execute(
+        "SELECT id FROM watcher_setup WHERE coin=? AND rule_id=?"
+        " AND state='active' ORDER BY src_bar_ts",
+        (coin, rule)).fetchall()]
+    return {"watermark": row[0] if row else None, "active_ids": actives}
