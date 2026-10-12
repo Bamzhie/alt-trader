@@ -657,10 +657,6 @@ class App:
                 order = list(SORT_KEYS)
                 self.sort_key = order[(order.index(self.sort_key) + 1) % len(order)]
                 self.sel = 0
-            elif ch == ord("w"):
-                self.args.write_logs = not self.args.write_logs
-                self.status = ("logging ON (flagged + shadow)" if self.args.write_logs
-                               else "logging OFF")
             elif ch in (ord("\n"), ord("j")) and not self.detail:
                 self.detail = True
             elif ch == ord("\n") and self.detail:
