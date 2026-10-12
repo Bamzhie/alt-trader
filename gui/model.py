@@ -544,7 +544,8 @@ def validate_interval(value):
 # ---------------------------------------------------------------------------
 # Watcher panel (display only, Task 7). Research-labeled text lines for
 # watcher_setup rows. Scanner sorting, ranking and flags are never touched
-# here; Qt widget wiring is a follow-up (report-only ships first).
+# here; the Qt watcher dock (qtgui/app.py, watcher UI Task 5) renders these
+# same helpers — the report-only deferral is landed.
 # ---------------------------------------------------------------------------
 
 def watcher_row_text(row):

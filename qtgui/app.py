@@ -45,10 +45,11 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QBrush, QKeySequence, QPainter, QPixmap, \
     QShortcut, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import QApplication, QButtonGroup, QComboBox, \
-    QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, \
-    QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QPlainTextEdit, \
-    QPushButton, QSpinBox, QSplitter, QStatusBar, QStackedWidget, QTableWidget, \
-    QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget
+    QDockWidget, QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout, \
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, \
+    QPlainTextEdit, QPushButton, QSpinBox, QSplitter, QStatusBar, \
+    QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, \
+    QVBoxLayout, QWidget
 
 # --- reuse: worker layer + shared display constants (tkinter-free classes) --
 from gui.app import ACTIVITY, DIR_CHOICES, POLL_MS, SIGNAL_ANCHORS, \
@@ -58,6 +59,8 @@ from gui.app import ACTIVITY, DIR_CHOICES, POLL_MS, SIGNAL_ANCHORS, \
 from gui import model
 from proto import picks as picks_mod
 from proto import report as report_mod
+from proto import watcher_feed as watcher_feed_mod
+from proto import watcher_report as watcher_report_mod
 from proto.planner import MAX_LEVERAGE
 
 from . import theme as _theme
@@ -88,6 +91,58 @@ RAIL_PAGES = (("scanner", "Scanner", "◉"), ("watchlist", "Watchlist", "★"),
 
 # In-app event ring buffer size (recent-logs lists, Q4 brief: max 50).
 EVENTS_MAX = 50
+
+# Watcher setup dock columns (watcher UI Task 5): setup id + rule/coin/dir +
+# the STATE_WORDS verb verbatim + the entry/stop/tgt trio. Header text
+# matches the TUI watcher screen columns one-for-one (parity test pins
+# this); state cells are never reworded (the shared view-model owns them).
+WATCHER_COLUMNS = ("id", "rule", "coin", "dir", "state", "entry", "stop",
+                   "tgt")
+WATCHER_HEADINGS = {"id": "ID", "rule": "RULE", "coin": "COIN", "dir": "DIR",
+                    "state": "STATE", "entry": "ENTRY", "stop": "STOP",
+                    "tgt": "TGT"}
+WATCHER_WIDTHS = {"id": 170, "rule": 120, "coin": 90, "dir": 60,
+                  "state": 110, "entry": 100, "stop": 100, "tgt": 100}
+
+
+def watcher_correlated_lines(db_path):
+    """CORRELATED OPENS section lines for the Qt watcher detail pane.
+
+    Calls ``proto.watcher_report.correlated_opens`` and shapes the lines
+    exactly like ``format_watcher_report``'s CORRELATED OPENS section (same
+    header, same per-group shape, same proxy note). Task 6 owns the shared
+    cross-surface helper and will unify this with the TUI/tk surfaces —
+    this stays byte-identical to the report until then. A missing/locked
+    DB yields [] (no section), never a raise.
+    """
+    try:
+        conn = watcher_feed_mod.open_ro(db_path)
+    except Exception:
+        return []
+    try:
+        groups = watcher_report_mod.correlated_opens(conn)
+    except Exception:
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    lines = ["CORRELATED OPENS (>1 active in group; not independent bets)"]
+    if not groups:
+        lines.append("  none")
+    else:
+        for g in groups:
+            extra = (f" n_eff={g['n_eff']:.2f} "
+                     f"(rho-bar={g['measured_rho']})"
+                     if g["n_eff"] is not None else "")
+            if g["proxy"]:
+                extra += f" [{g['proxy']}]"
+            lines.append(f"  {g['group']}: n={g['n']} "
+                         f"shadow={len(g['shadow_selected'])}{extra}")
+            for sid in g["ids"]:
+                lines.append(f"    {sid}")
+    return lines
 
 _QT_ANCHOR = {
     "center": Qt.AlignmentFlag.AlignCenter,
@@ -214,6 +269,11 @@ class RadarWindow(QMainWindow):
         self._last_stats_ts = 0.0
         self.selected_coin = None
         self._last_errors = {}          # {coin: reason} from the last scan
+        self.watcher_panel = None       # WatcherPanel from the worker (or None)
+        self.watcher_error = None       # contained watcher failure text
+        self.watcher_selected = None    # setup id, never a row index
+        self._watcher_ids = []          # dock table order, parallel to rows
+        self._watcher_paused = False    # re-synced from every worker panel
         self.digest = {"picks": [], "watch": [], "new": []}
         self._plan_cache = {}           # coin -> {"plan": Plan|None, "err": str|None}
         self._plans_pending = set()
@@ -232,6 +292,7 @@ class RadarWindow(QMainWindow):
 
         self._build_topbar()
         self._build_pages()
+        self._build_watcher_dock()
         self._build_status()
         shortcut = QShortcut(QKeySequence("Ctrl+Q"), self)
         shortcut.activated.connect(self._on_close)
@@ -258,6 +319,9 @@ class RadarWindow(QMainWindow):
         self._tick_timer.timeout.connect(self._tick)
         self._tick_timer.start()
         self._render_topbar()
+        # Watcher first (same order as tkinter): the ctor activity label
+        # stays the stats one below, which the build test pins.
+        self._submit("watcher")
         self._submit("stats")
 
     # -------------------------------------------------------- launch snapshot
@@ -973,6 +1037,75 @@ class RadarWindow(QMainWindow):
         lay.addWidget(self.lbl_statusline, 2)
         bar.addWidget(inner, 1)
 
+    def _build_watcher_dock(self):
+        """Watcher setup dock (additive; scanner table/sort/workers untouched).
+
+        Lands the Task 7-deferred Qt watcher panel: a setup QTableWidget +
+        a read-only detail pane, fed worker-side through the existing
+        queue->QTimer poll (the shared Worker already serves the watcher
+        jobs, same as tkinter). Selection is the setup id, never the row
+        index, so it survives refresh reorders. Detail text comes from the
+        shared model helper (STATE_WORDS verbs verbatim, research banner
+        first) plus the report-shaped correlated-opens section.
+        """
+        dock = QDockWidget(
+            "Watcher — setups (research, shadow-only — no orders)", self)
+        dock.setObjectName("watcherDock")
+        body = QWidget()
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(4)
+
+        table = QTableWidget(0, len(WATCHER_COLUMNS))
+        table.setHorizontalHeaderLabels(
+            [WATCHER_HEADINGS[c] for c in WATCHER_COLUMNS])
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
+        table.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection)
+        table.setShowGrid(False)
+        table.setWordWrap(False)
+        table.setFont(_theme.mono_font())
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(_theme.ROW_HEIGHT)
+        header = table.horizontalHeader()
+        header.setStretchLastSection(True)
+        for i, col in enumerate(WATCHER_COLUMNS):
+            header.resizeSection(i, WATCHER_WIDTHS[col])
+        table.itemSelectionChanged.connect(self._on_watcher_select)
+        lay.addWidget(table, 3)
+        self.watcher_table = table
+
+        self.watcher_detail = QTextEdit()
+        self.watcher_detail.setReadOnly(True)
+        self.watcher_detail.setFont(
+            _theme.mono_font(_theme.DETAIL_POINT_SIZE))
+        self.watcher_detail.setLineWrapMode(
+            QTextEdit.LineWrapMode.WidgetWidth)
+        self.watcher_detail.setMinimumHeight(56)
+        self.watcher_detail.setPlainText("watcher loading…")
+        lay.addWidget(self.watcher_detail, 2)
+
+        row = QHBoxLayout()
+        self.btn_watcher_refresh = QPushButton("Refresh watcher")
+        self.btn_watcher_refresh.clicked.connect(self.refresh_watcher)
+        row.addWidget(self.btn_watcher_refresh)
+        self.btn_watcher_pause = QPushButton("Pause watcher")
+        self.btn_watcher_pause.clicked.connect(self._on_watcher_pause)
+        row.addWidget(self.btn_watcher_pause)
+        self.btn_watcher_disable = QPushButton("Disable rule")
+        self.btn_watcher_disable.clicked.connect(self._on_watcher_disable)
+        row.addWidget(self.btn_watcher_disable)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        dock.setWidget(body)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self.watcher_dock = dock
+        # Brief Step 1 shape: dock.table is the setup table.
+        dock.table = self.watcher_table
+
     def _fmt_ts(self, ts):
         try:
             return time.strftime("%m-%d %H:%M", time.localtime(float(ts)))
@@ -1324,6 +1457,123 @@ class RadarWindow(QMainWindow):
         self._plan_jobs.put({"coin": coin, "stake": self.stake,
                              "leverage_cap": self.leverage_cap})
 
+    # ------------------------------------------- watcher dock (additive only)
+    @staticmethod
+    def _watcher_px(value):
+        return f"{value:.8g}" if isinstance(value, (int, float)) else "—"
+
+    def refresh_watcher(self):
+        """Queue a worker-side watcher reload (read-only feed)."""
+        self._submit("watcher", selected_id=self.watcher_selected)
+
+    def _on_watcher(self, msg):
+        """Render a worker watcher result; failures stay contained.
+
+        A None panel renders the "watcher data unavailable" fallback in
+        the dock only — the scanner table is never touched here (mirrors
+        tkinter's _on_watcher).
+        """
+        panel = msg.get("panel")
+        self.watcher_panel = panel
+        self.watcher_error = msg.get("error")
+        if panel is not None:
+            if panel.selected_id is not None:
+                self.watcher_selected = panel.selected_id
+            self._watcher_paused = any(
+                str(n).startswith("paused") for n in (panel.notices or []))
+        self._render_watcher()
+
+    def _render_watcher(self):
+        table = self.watcher_table
+        self._refilling = True
+        try:
+            table.setRowCount(0)
+            self._watcher_ids = []
+            panel = self.watcher_panel
+            if panel is None:
+                self._set_watcher_detail_text(
+                    model.watcher_detail_text(None, self.watcher_selected))
+            else:
+                order = model.watcher_order(panel)
+                self._watcher_ids = list(order)
+                table.setRowCount(len(order))
+                for r, sid in enumerate(order):
+                    d = (panel.by_id or {}).get(sid) or {}
+                    cells = [sid, d.get("rule", "?"), d.get("coin", "?"),
+                             d.get("direction", "?"), d.get("state", "?"),
+                             self._watcher_px(d.get("entry")),
+                             self._watcher_px(d.get("stop_px")),
+                             self._watcher_px(d.get("tgt_px"))]
+                    for c, text in enumerate(cells):
+                        item = _CellItem(str(text))
+                        item.setData(Qt.ItemDataRole.UserRole, sid)
+                        item.setToolTip(str(text))
+                        table.setItem(r, c, item)
+                if self.watcher_selected not in (panel.by_id or {}) \
+                        and order:
+                    self.watcher_selected = order[0]
+                if self.watcher_selected in self._watcher_ids:
+                    table.selectRow(
+                        self._watcher_ids.index(self.watcher_selected))
+                self._set_watcher_detail_text(
+                    self._watcher_detail_full_text())
+        finally:
+            self._refilling = False
+        self._sync_watcher_pause_label()
+
+    def _watcher_detail_full_text(self):
+        """Shared model detail text + the report-shaped correlated section."""
+        text = model.watcher_detail_text(self.watcher_panel,
+                                         self.watcher_selected)
+        if self.watcher_panel is not None:
+            lines = watcher_correlated_lines(self.db)
+            if lines:
+                text = text + "\n\n" + "\n".join(lines)
+        return text
+
+    def _set_watcher_detail_text(self, text):
+        self.watcher_detail.setPlainText(text or "")
+
+    def _sync_watcher_pause_label(self):
+        try:
+            self.btn_watcher_pause.setText(
+                "Resume watcher" if self._watcher_paused else "Pause watcher")
+        except (AttributeError, RuntimeError):
+            pass
+
+    def _on_watcher_select(self, *_a):
+        if self._refilling:
+            return
+        sel = (self.watcher_table.selectionModel().selectedRows()
+               if self.watcher_table.selectionModel() else [])
+        if not sel:
+            return
+        item = self.watcher_table.item(sel[0].row(), 0)
+        sid = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if not sid:
+            return
+        # Selection is the setup id, never the row index, so it survives
+        # refresh reorders (the flicker fix).
+        self.watcher_selected = sid
+        self._set_watcher_detail_text(self._watcher_detail_full_text())
+
+    def _on_watcher_pause(self):
+        """Toggle the global pause switch (worker-side Task 2 writer)."""
+        self._submit("watcher_pause", paused=not self._watcher_paused,
+                     selected_id=self.watcher_selected)
+
+    def _on_watcher_disable(self):
+        """Disable the selected setup's rule (worker-side Task 2 writer)."""
+        panel = self.watcher_panel
+        detail = ((getattr(panel, "by_id", None) or {}).get(
+            self.watcher_selected) if panel is not None else None)
+        rule = (detail or {}).get("rule")
+        if not rule:
+            self._set_error("no watcher setup selected — nothing to disable")
+            return
+        self._submit("watcher_disable", rule=rule, disabled=True,
+                     selected_id=self.watcher_selected)
+
     def _shutdown(self):
         """Close-time work: snapshot, stop timers, retire worker lanes."""
         if self._closing:
@@ -1396,6 +1646,14 @@ class RadarWindow(QMainWindow):
         if msg.get("venue"):
             self.venue = dict(msg["venue"])
         if not msg.get("ok", True):
+            if kind in ("watcher", "watcher_pause", "watcher_disable"):
+                # Worker-side watcher failure: contained fallback in the
+                # dock only, never the global scanner error path.
+                self._on_watcher({"kind": kind, "ok": True, "panel": None,
+                                  "error": "watcher data unavailable: "
+                                  f"{msg.get('error', 'unknown error')}"})
+                self._finish(kind)
+                return
             if kind == "disk_snapshot":
                 self._finish(kind)
                 return
@@ -1418,6 +1676,9 @@ class RadarWindow(QMainWindow):
                    "stats": self._on_stats,
                    "resolve": self._on_resolve, "collect": self._on_collect,
                    "lookup": self._on_lookup,
+                   "watcher": self._on_watcher,
+                   "watcher_pause": self._on_watcher,
+                   "watcher_disable": self._on_watcher,
                    "plan": self._on_plan, "ready": self._on_ready}.get(kind)
         if handler is not None:
             handler(msg)
