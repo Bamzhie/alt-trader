@@ -19,6 +19,7 @@ Read-only: no order code path exists in this app, and no keys are held.
 
 import os
 import queue
+import sqlite3
 import threading
 import time
 import tkinter as tk
@@ -33,6 +34,7 @@ from proto import outcomes as outcomes_mod
 from proto import picks as picks_mod
 from proto import report as report_mod
 from proto import scan as scanmod
+from proto import watcher_feed as watcher_feed_mod
 from proto.app import App as ProtoApp
 
 from . import model
@@ -69,7 +71,9 @@ SIGNAL_ANCHORS = {"rank": "center", "dir": "center", "coin": "w",
 
 ACTIVITY = {"scan": "scanning", "collect": "collecting",
             "resolve": "resolving", "stats": "refreshing stats",
-            "lookup": "looking up"}
+            "lookup": "looking up", "watcher": "refreshing watcher",
+            "watcher_pause": "toggling watcher pause",
+            "watcher_disable": "disabling watcher rule"}
 
 
 class Worker(threading.Thread):
@@ -252,7 +256,43 @@ class Worker(threading.Thread):
                     "card": card, "cached": False}
         # NOTE: "plan" jobs run on PlanWorker (own lane), never here — a plan
         # queued behind a ~50s scan starved every click ("fetching…" forever).
+        if cmd in ("watcher", "watcher_pause", "watcher_disable"):
+            return self._watcher_job(app, job)
         return {"kind": cmd, "ok": False, "error": f"unknown job: {cmd!r}"}
+
+    def _watcher_job(self, app, job):
+        """Watcher read path + pause/disable writers (watcher UI, Task 4).
+
+        ALL SQLite stays on this thread. Reads go through the read-only
+        feed; pause/disable persist the spec-mandated meta switches via
+        the Task 2 writers, then reload. Any DB failure is contained
+        (panel None + error text) so the scanner view stays intact.
+        """
+        cmd = job.get("cmd")
+        if cmd in ("watcher_pause", "watcher_disable"):
+            if not os.path.isfile(app.args.db):
+                return {"kind": cmd, "ok": True, "panel": None,
+                        "error": "watcher data unavailable: "
+                                 f"watcher db missing: {app.args.db}"}
+            conn = sqlite3.connect(app.args.db)
+            try:
+                if cmd == "watcher_pause":
+                    watcher_feed_mod.set_paused(conn,
+                                                bool(job.get("paused")))
+                else:
+                    watcher_feed_mod.set_rule_disabled(
+                        conn, str(job.get("rule", "")),
+                        bool(job.get("disabled", True)))
+            finally:
+                conn.close()
+        try:
+            panel = watcher_feed_mod.load_panel(
+                app.args.db, selected_id=job.get("selected_id"))
+        except watcher_feed_mod.WatcherUnavailable as e:
+            return {"kind": cmd, "ok": True, "panel": None,
+                    "error": f"watcher data unavailable: {e}"}
+        return {"kind": cmd, "ok": True, "panel": panel,
+                "selected_id": panel.selected_id}
 
 
 class PlanWorker(threading.Thread):
@@ -356,6 +396,11 @@ class RadarGUI(tk.Tk):
         self._last_stats_ts = 0.0
         self.selected_coin = None
         self._last_errors = {}          # {coin: reason} from the last scan
+        self.watcher_panel = None       # WatcherPanel from the worker (or None)
+        self.watcher_error = None       # contained watcher failure text
+        self.watcher_selected = None    # setup id, never a row index
+        self._watcher_ids = []          # listbox order, parallel to the widget
+        self._watcher_paused = False    # re-synced from every worker panel
         self.digest = {"picks": [], "watch": [], "new": []}
         self._plan_cache = {}           # coin -> {"plan": Plan|None, "err": str|None}
         self._plans_pending = set()
@@ -386,6 +431,9 @@ class RadarGUI(tk.Tk):
 
         self.after(POLL_MS, self._poll)
         self.after(TICK_MS, self._tick)
+        # Watcher first: the ctor-submit order pins var_activity to the
+        # pre-existing "refreshing stats" text (test_gui.py pins it).
+        self._submit("watcher")
         self._submit("stats")
 
 
@@ -724,6 +772,65 @@ class RadarGUI(tk.Tk):
                    command=lambda: self._submit("resolve")).pack(
             side=tk.TOP, anchor=tk.W, pady=(5, 0))
 
+        # ---- watcher side panel (additive; scan table/sort untouched) ----
+        # Setup list (one-liners) + tk.Text detail, fed by the Worker
+        # thread through the same queue -> poll path as every other job.
+        watch_pane = ttk.Frame(paned)
+        paned.add(watch_pane, weight=1)
+
+        watch_frame = ttk.LabelFrame(
+            watch_pane,
+            text="Watcher — setups (research, shadow-only — no orders)",
+            padding=4)
+        watch_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        wlist_row = ttk.Frame(watch_frame)
+        wlist_row.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.watcher_list = tk.Listbox(
+            wlist_row, selectmode=tk.BROWSE, exportselection=False,
+            height=10, background=_theme.DETAIL_BG,
+            foreground=_theme.TEXT, relief=tk.FLAT)
+        self.watcher_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        wscr = ttk.Scrollbar(wlist_row, orient=tk.VERTICAL,
+                             command=self.watcher_list.yview)
+        self.watcher_list.configure(yscrollcommand=wscr.set)
+        wscr.pack(side=tk.RIGHT, fill=tk.Y)
+        self.watcher_list.bind("<<ListboxSelect>>",
+                               self._on_watcher_select)
+        self._bind_scroll(self.watcher_list)
+
+        wdet_frame = ttk.LabelFrame(watch_frame,
+                                    text="Setup detail (review only)",
+                                    padding=2)
+        wdet_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(4, 0))
+        self.watcher_detail = tk.Text(
+            wdet_frame, wrap=tk.WORD, state=tk.DISABLED, height=12,
+            font=tkfont.nametofont("TkFixedFont"),
+            background=_theme.DETAIL_BG, foreground=_theme.TEXT,
+            relief=tk.FLAT, padx=8, pady=6)
+        wdet_frame.rowconfigure(0, weight=1)
+        wdet_frame.columnconfigure(0, weight=1)
+        self.watcher_detail.grid(row=0, column=0, sticky="nsew")
+        wdscr = ttk.Scrollbar(wdet_frame, orient=tk.VERTICAL,
+                              command=self.watcher_detail.yview)
+        self.watcher_detail.configure(yscrollcommand=wdscr.set)
+        wdscr.grid(row=0, column=1, sticky="ns")
+        self.watcher_detail.tag_configure("warn",
+                                          foreground=_theme.WARN_FG)
+        self._bind_scroll(self.watcher_detail)
+        self._set_watcher_detail_text("watcher loading…")
+
+        wbtn = ttk.Frame(watch_frame)
+        wbtn.pack(side=tk.BOTTOM, fill=tk.X, pady=(4, 0))
+        ttk.Button(wbtn, text="Refresh watcher",
+                   command=self.refresh_watcher).pack(side=tk.LEFT, padx=2)
+        self.btn_watcher_pause = ttk.Button(wbtn, text="Pause watcher",
+                                            command=self._on_watcher_pause)
+        self.btn_watcher_pause.pack(side=tk.LEFT, padx=2)
+        ttk.Button(wbtn, text="Disable rule",
+                   command=self._on_watcher_disable).pack(side=tk.LEFT,
+                                                          padx=2)
+
     def _build_status(self):
         bar = ttk.Frame(self, padding=(8, 3))
         bar.pack(side=tk.BOTTOM, fill=tk.X)
@@ -895,6 +1002,98 @@ class RadarGUI(tk.Tk):
                             else f"auto-scan resumed ({self.interval}s)")
         self._render_status()
 
+    # ----------------------------------- watcher side panel (additive only)
+    def refresh_watcher(self):
+        """Queue a worker-side watcher reload (read-only feed)."""
+        self._submit("watcher", selected_id=self.watcher_selected)
+
+    def _on_watcher(self, msg):
+        """Render a worker watcher result; failures stay contained.
+
+        A None panel renders the "watcher data unavailable" fallback in
+        the side pane only — the scan table is never touched here.
+        """
+        panel = msg.get("panel")
+        self.watcher_panel = panel
+        self.watcher_error = msg.get("error")
+        if panel is not None:
+            if panel.selected_id is not None:
+                self.watcher_selected = panel.selected_id
+            self._watcher_paused = any(
+                str(n).startswith("paused") for n in (panel.notices or []))
+        self._render_watcher()
+
+    def _render_watcher(self):
+        box = self.watcher_list
+        box.delete(0, tk.END)
+        self._watcher_ids = []
+        panel = self.watcher_panel
+        if panel is None:
+            self._set_watcher_detail_text(
+                model.watcher_detail_text(None, self.watcher_selected))
+            self._sync_watcher_pause_label()
+            return
+        order = model.watcher_order(panel)
+        self._watcher_ids = list(order)
+        for sid in order:
+            detail = (panel.by_id or {}).get(sid) or {}
+            box.insert(tk.END, model.watcher_row_text(detail))
+        if self.watcher_selected not in (panel.by_id or {}) and order:
+            self.watcher_selected = order[0]
+        if self.watcher_selected in self._watcher_ids:
+            idx = self._watcher_ids.index(self.watcher_selected)
+            box.selection_set(idx)
+            box.see(idx)
+        self._set_watcher_detail_text(
+            model.watcher_detail_text(panel, self.watcher_selected))
+        self._sync_watcher_pause_label()
+
+    def _set_watcher_detail_text(self, text):
+        self.watcher_detail.configure(state=tk.NORMAL)
+        self.watcher_detail.delete("1.0", tk.END)
+        for line in text.splitlines():
+            tag = "warn" if line.lstrip().startswith("⚠") else ""
+            self.watcher_detail.insert(tk.END, line + "\n", tag)
+        self.watcher_detail.configure(state=tk.DISABLED)
+        self.watcher_detail.yview_moveto(0.0)
+
+    def _sync_watcher_pause_label(self):
+        try:
+            self.btn_watcher_pause.configure(
+                text=("Resume watcher" if self._watcher_paused
+                      else "Pause watcher"))
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _on_watcher_select(self, _event=None):
+        sel = self.watcher_list.curselection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if 0 <= idx < len(self._watcher_ids):
+            # Selection is the setup id, never the row index, so it
+            # survives refresh reorders (the flicker fix).
+            self.watcher_selected = self._watcher_ids[idx]
+            self._set_watcher_detail_text(model.watcher_detail_text(
+                self.watcher_panel, self.watcher_selected))
+
+    def _on_watcher_pause(self):
+        """Toggle the global pause switch (worker-side Task 2 writer)."""
+        self._submit("watcher_pause", paused=not self._watcher_paused,
+                     selected_id=self.watcher_selected)
+
+    def _on_watcher_disable(self):
+        """Disable the selected setup's rule (worker-side Task 2 writer)."""
+        panel = self.watcher_panel
+        detail = ((getattr(panel, "by_id", None) or {}).get(
+            self.watcher_selected) if panel is not None else None)
+        rule = (detail or {}).get("rule")
+        if not rule:
+            self._set_error("no watcher setup selected — nothing to disable")
+            return
+        self._submit("watcher_disable", rule=rule, disabled=True,
+                     selected_id=self.watcher_selected)
+
     def _on_select(self, event):
         sel = event.widget.selection()
         if not sel:
@@ -943,6 +1142,16 @@ class RadarGUI(tk.Tk):
             except Exception:
                 pass
         self.destroy()
+        try:
+            # Free this window's Tk wrappers HERE on the creating thread.
+            # Otherwise they pile up as cyclic trash and the *next* window's
+            # worker thread ends up running their Tcl-touching finalizers
+            # (tkinter is not thread-safe; a foreign-thread Tcl call into a
+            # dead interpreter stalls the worker and the join times out).
+            import gc
+            gc.collect()
+        except Exception:
+            pass
 
     # -------------------------------------------------- jobs and results
     def _submit(self, cmd, **params):
@@ -1001,6 +1210,9 @@ class RadarGUI(tk.Tk):
                    "disk_snapshot": self._on_disk_snapshot,
                    "resolve": self._on_resolve, "collect": self._on_collect,
                    "lookup": self._on_lookup,
+                   "watcher": self._on_watcher,
+                   "watcher_pause": self._on_watcher,
+                   "watcher_disable": self._on_watcher,
                    "plan": self._on_plan, "ready": self._on_ready}.get(kind)
         if handler is not None:
             handler(msg)
