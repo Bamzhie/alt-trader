@@ -373,3 +373,70 @@ def apply_breakeven(state, close):
     else:
         raise ValueError(f"direction must be LONG or SHORT, got {direction!r}")
     return s
+
+
+# ---------------------------------------------------------------------------
+# Task 4: event study + N selection + kill gate.
+#
+# Horizons fixed: {12, 48, 96, 288} bars of 5m (1h/4h/8h/24h); the kill gate
+# checks {12, 48, 288}. Costs enter only as sensitivity bands, never to pick
+# N. No I/O.
+# ---------------------------------------------------------------------------
+
+N_GRID = (12, 48, 96, 288)
+KILL_HORIZONS = (12, 48, 288)
+
+
+def cumret(c0, ch, direction):
+    """Cumulative signed return ``dir * ln(ch / c0)`` (+1 long, -1 short)."""
+    return _dir_sign(direction) * math.log(ch / c0)
+
+
+def _mean(xs):
+    return sum(xs) / len(xs)
+
+
+def _sd_pop(xs, mean):
+    var = sum((x - mean) ** 2 for x in xs) / len(xs)
+    return math.sqrt(var) if var > 0 else 0.0
+
+
+def event_score(cand, plac):
+    """Placebo-adjusted score ``(mean_c - mean_p) / SD_c`` (population SD).
+
+    ``SD_c == 0`` (or empty input) -> 0.0, never NaN. Dimensionless.
+    """
+    cand = list(cand)
+    plac = list(plac)
+    if not cand or not plac:
+        return 0.0
+    if min(cand) == max(cand):
+        # Zero variance (exact): score undefined -> 0.0, never NaN.
+        # (Avoids float dust from sum()/len() making var a tiny positive.)
+        return 0.0
+    mean_c, mean_p = _mean(cand), _mean(plac)
+    sd_c = _sd_pop(cand, mean_c)
+    if sd_c == 0:
+        return 0.0
+    return (mean_c - mean_p) / sd_c
+
+
+def select_N(curves):
+    """``argmax`` of per-horizon scores over the fixed grid {12,48,96,288}.
+
+    Extra keys ignored; ties keep the earliest horizon.
+    """
+    best_h, best_s = None, None
+    for h in N_GRID:
+        s = curves[h]
+        if best_s is None or s > best_s:
+            best_h, best_s = h, s
+    return best_h
+
+
+def kill_check(gross, net):
+    """True (= kill) only when gross<=0 at all {12,48,288} AND net<=0 at all
+    three. Any positive horizon on either leg -> False (no kill)."""
+    gross_kill = all(gross[h] <= 0 for h in KILL_HORIZONS)
+    net_kill = all(net[h] <= 0 for h in KILL_HORIZONS)
+    return bool(gross_kill and net_kill)
