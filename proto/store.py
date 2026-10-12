@@ -484,12 +484,16 @@ class Store:
                     FROM signal_log WHERE ts >= ? ORDER BY score DESC""",
                 (row[0] - window_s,))]
 
-    def log_signal(self, sc, flagged, tier=2):
+    def log_signal(self, sc, flagged, tier=2, flag_version=2):
         """Insert one scorecard. flagged=False writes a shadow row.
 
         flagged must already be computed with the stake-aware rule
         (Scorecard.is_actionable(stake) and score >= threshold); this method
         only stamps the row with the flag rule version it was written under.
+
+        flag_version=2 = v2 score threshold; flag_version=3 = v3 score
+        threshold (docs/grok-review.md). Historical rows stay comparable by
+        filtering on flag_version (spec SS6.1).
         """
         cur = self.conn.execute(
             """INSERT INTO signal_log
@@ -501,8 +505,7 @@ class Store:
                 score_v3, direction_v3, initiation, flow_state,
                 oi_change_1h_pct, opening_for, opening_against, book_agree,
                 funding_crowd, score_rule)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,2,?,?,
-                       ?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (int(time.time()), sc.coin, sc.venue, 1 if flagged else 0,
              sc.score, sc.lean, sc.direction, sc.earlyness,
              sc.magnitude_parts.get("VOL"), sc.magnitude_parts.get("BOOK"),
@@ -512,13 +515,12 @@ class Store:
              sc.price, sc.change_24h_pct, sc.quote_vol_24h, sc.spread_pct,
              sc.funding_rate, sc.min_notional,
              ",".join(v.code for v in sc.vetoes),
-             1 if sc.tradeable else 0, tier, sc.oi_notional,
+             1 if sc.tradeable else 0, tier, flag_version, sc.oi_notional,
              sc.oi_change_pct,
              getattr(sc, "score_v3", None), getattr(sc, "direction_v3", None),
              getattr(sc, "initiation", None), getattr(sc, "flow_state", None),
              getattr(sc, "oi_change_1h_pct", None),
-             getattr(sc, "opening_for", None),
-             getattr(sc, "opening_against", None),
+             getattr(sc, "opening_for", None), getattr(sc, "opening_against", None),
              getattr(sc, "book_agree", None),
              getattr(sc, "funding_crowd", None),
              getattr(sc, "score_rule", None)))

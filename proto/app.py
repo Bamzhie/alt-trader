@@ -5,6 +5,7 @@ Continuous refresh against MEXC with a curses TUI: ranked LONG/SHORT table,
 detail view with the full scoring breakdown and trade plan, and veto visibility.
 
     python3 -m proto.app --stake 0.10 --coins 150 --interval 60
+    python3 -m proto.app --use-v3 --log-threshold 40  # v3 shadow score mode
 
 Keys: arrows select | ENTER detail | d long/short/both | s sort | p pause |
       w write logs | q quit
@@ -47,6 +48,7 @@ class App:
         self.detail = False
         self.dir_filter = "both"     # both | long | short
         self.sort_key = "score"
+        self.use_v3 = getattr(args, "use_v3", False)
         self.paused = False
         self.status = "starting..."
         self.last_scan = 0.0
@@ -124,10 +126,15 @@ class App:
         log_errors = 0
         if self.args.write_logs:
             for sc in cards:
+                score_val = sc.score_v3 if (self.use_v3 and sc.score_v3 is not None) else sc.score
+                threshold = self.args.log_threshold
                 flagged = (sc.is_actionable(self.args.stake)
-                           and sc.score >= self.args.log_threshold)
+                           and score_val is not None
+                           and score_val >= threshold)
                 try:
-                    sid = self.store.log_signal(sc, flagged=flagged, tier=2)
+                    fv = 3 if self.use_v3 else 2
+                    sid = self.store.log_signal(sc, flagged=flagged, tier=2,
+                                               flag_version=fv)
                     plan = getattr(sc, "plan", None)
                     if flagged and plan is not None and getattr(
                             plan, "valid", False):
@@ -207,7 +214,7 @@ class App:
                         f"{self.status}".ljust(w - 4))
 
         header = (f"{'#':<3}{'DIR':<5}{'COIN':<15}{'PRICE':>13}{'24H%':>8}"
-                  f"{'VOL24':>10}{'LEAN':>7}{'EARLY':>7}{'SCORE':>7}  FLAGS")
+                  f"{'VOL24':>10}{'LEAN':>7}{'EARLY':>7}{'SCORE':>7}{'V3':>7}  FLAGS")
         cw.addstr(4, 2, header[:w - 4], curses.A_BOLD)
         cw.hline(5, 2, curses.ACS_HLINE, w - 4)
 
@@ -229,9 +236,10 @@ class App:
                                                  self.args.stake):
                 flags.append("WATCH")
             attr = curses.A_REVERSE if (i + start) == self.sel else curses.A_NORMAL
+            v3_display = (f"{c.score_v3:>7.1f}" if getattr(c, "score_v3", None) is not None else f"{'—':>7}")
             line = (f"{i+start+1:<3}{arrow:<5}{c.coin:<15}{c.price:>13.8g}"
                     f"{c.change_24h_pct:>7.1f}%{vol_s:>10}{c.lean:>7.2f}"
-                    f"{c.earlyness:>7.2f}{c.score:>7.1f}  {' '.join(flags)}")
+                    f"{c.earlyness:>7.2f}{c.score:>7.1f}{v3_display}  {' '.join(flags)}")
             try:
                 cw.addstr(y, 2, line[:w - 4], attr)
             except curses.error:
@@ -274,9 +282,10 @@ class App:
         cw.erase()
         cw.border(0)
         arrow = {"LONG": "▲", "SHORT": "▼"}.get(card.direction, "•")
-        cw.addstr(0, 2, (f" {card.coin} {arrow} {card.direction} · score {card.score} "
-                         f"· lean {card.lean:+.2f} · earlyness {card.earlyness:.2f} "
-                         f"[ENTER back]").ljust(w - 4), curses.A_BOLD)
+        cw.addstr(0, 2, (f"{card.coin} {arrow} {card.direction} · score {card.score}"
+                         + (f" · v3 {card.score_v3}" if getattr(card, "score_v3", None) is not None else "")
+                         + f" · lean {card.lean:+.2f} · earlyness {card.earlyness:.2f}"
+                         + f"  [ENTER back]").ljust(w - 4), curses.A_BOLD)
         cw.hline(1, 2, curses.ACS_HLINE, w - 4)
 
         y = 3
@@ -311,6 +320,21 @@ class App:
         if any(isinstance(n, str) and "UNVALIDATED" in n for n in card.notes):
             put("  ⚠ TIER 2 · UNVALIDATED — no outcome history exists for this "
                 "score yet; treat as experimental", curses.A_DIM)
+        # v3 shadow score detail
+        if getattr(card, "score_v3", None) is not None:
+            v3_init = getattr(card, "initiation", None)
+            v3_flow = getattr(card, "flow_state", None)
+            v3_dir = getattr(card, "direction_v3", None)
+            v3_parts = getattr(card, "v3_parts", {})
+            put(f"  v3 shadow: score_v3={card.score_v3}  dir_v3={v3_dir}"
+                + (f"  initiation={v3_init:.2f}" if v3_init is not None else "")
+                + (f"  flow={v3_flow}" if v3_flow else ""))
+            if v3_parts:
+                put(f"  v3 parts: activity={v3_parts.get('activity','?')}"
+                    f" location={v3_parts.get('location','?')}"
+                    f" opening_for={v3_parts.get('opening_for','?')}"
+                    f" book_agree={v3_parts.get('book_agree','?')}"
+                    + (f" htf_aligned={v3_parts.get('htf_aligned','?')}" if 'htf_aligned' in v3_parts else ""))
         if card.coin in self.last_errors:
             put(f"  ⚠ last error: {self.last_errors[card.coin]}", curses.A_DIM)
         # Counter-trend labels are surfaced, never swallowed (spec SS4) —
@@ -432,7 +456,7 @@ def run_headless(app, iterations=None):
                      if app.universe_error else ""))
             print("=" * 100)
             print(f"{'#':<3}{'DIR':<5}{'COIN':<15}{'PRICE':>13}{'24H%':>8}"
-                  f"{'VOL24':>10}{'LEAN':>7}{'EARLY':>7}{'SCORE':>7}  FLAGS")
+                  f"{'VOL24':>10}{'LEAN':>7}{'EARLY':>7}{'SCORE':>7}{'V3':>7}  FLAGS")
             print("-" * 100)
 
             shown = 0
@@ -446,9 +470,10 @@ def run_headless(app, iterations=None):
                 if c.min_notional and not fits_stake(c.min_notional,
                                                      app.args.stake):
                     flags.append("WATCH")
+                v3_disp = f"{c.score_v3:>7.1f}" if getattr(c, "score_v3", None) is not None else "      —"
                 print(f"{shown+1:<3}{arrow:<5}{c.coin:<15}{c.price:>13.8g}"
                       f"{c.change_24h_pct:>7.1f}%{vol_s:>10}{c.lean:>7.2f}"
-                      f"{c.earlyness:>7.2f}{c.score:>7.1f}  {' '.join(flags)}")
+                      f"{c.earlyness:>7.2f}{c.score:>7.1f}{v3_disp}  {' '.join(flags)}")
                 shown += 1
 
             # Vetoed: excluded from ranking, still visible + shadow-logged.
@@ -460,7 +485,8 @@ def run_headless(app, iterations=None):
                 for c in vet[:5]:
                     arrow = {"LONG": "▲", "SHORT": "▼"}.get(c.direction, "•")
                     codes = ",".join(v.code for v in c.vetoes)
-                    print(f"   {arrow} {c.coin:<15}{c.score:>7.1f}  veto:{codes}")
+                    v3v = f"{c.score_v3:>7.1f}" if getattr(c, "score_v3", None) is not None else "      —"
+                print(f"   {arrow} {c.coin:<15}{c.score:>7.1f}{v3v}  veto:{codes}")
 
             top = next((c for c in rows if c.actionable), None)
             if top:
@@ -493,6 +519,11 @@ def main():
     ap.add_argument("--interval", type=int, default=60)
     ap.add_argument("--db", default="data/signals.db")
     ap.add_argument("--log-threshold", type=float, default=24.0)
+    ap.add_argument("--use-v3", action="store_true",
+                    help="use score_v3 (shadow) for the flag threshold and "
+                         "ranking instead of the v2 score. With this flag, "
+                         "the log-threshold applies to score_v3 instead of score "
+                         "(recommend: --use-v3 --log-threshold 40)")
     ap.add_argument("--write-logs", action="store_true", default=True)
     ap.add_argument("--no-logs", dest="write_logs", action="store_false")
     ap.add_argument("--headless", action="store_true",
