@@ -1045,8 +1045,24 @@ class RadarGUI(tk.Tk):
             box.selection_set(idx)
             box.see(idx)
         self._set_watcher_detail_text(
-            model.watcher_detail_text(panel, self.watcher_selected))
+            self._watcher_detail_full_text())
         self._sync_watcher_pause_label()
+
+    def _watcher_detail_full_text(self):
+        """Shared model detail text + the shared CORRELATED OPENS section.
+
+        Same join as the Qt dock's `_watcher_detail_full_text`: the pure
+        model text first, then the report-shaped lines from the ONE
+        shared helper (``watcher_feed.correlated_lines``). A None panel
+        keeps the contained-fallback text with no section.
+        """
+        text = model.watcher_detail_text(self.watcher_panel,
+                                         self.watcher_selected)
+        if self.watcher_panel is not None:
+            lines = watcher_feed_mod.correlated_lines(self.db)
+            if lines:
+                text = text + "\n\n" + "\n".join(lines)
+        return text
 
     def _set_watcher_detail_text(self, text):
         self.watcher_detail.configure(state=tk.NORMAL)
@@ -1074,8 +1090,7 @@ class RadarGUI(tk.Tk):
             # Selection is the setup id, never the row index, so it
             # survives refresh reorders (the flicker fix).
             self.watcher_selected = self._watcher_ids[idx]
-            self._set_watcher_detail_text(model.watcher_detail_text(
-                self.watcher_panel, self.watcher_selected))
+            self._set_watcher_detail_text(self._watcher_detail_full_text())
 
     def _on_watcher_pause(self):
         """Toggle the global pause switch (worker-side Task 2 writer)."""

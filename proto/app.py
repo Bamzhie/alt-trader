@@ -25,7 +25,7 @@ from . import planner as pl
 from .scan import build_universe, score_universe, venue_health, UNIVERSE_BUDGET
 from .scorer import fits_stake
 from .store import Store
-from .watcher_feed import WatcherUnavailable, load_panel
+from .watcher_feed import WatcherUnavailable, correlated_lines, load_panel
 from .watcher_view import RESEARCH_BANNER
 
 SORT_KEYS = {
@@ -529,6 +529,15 @@ class App:
                 pass
 
         help_txt = ("↑↓ select  ENTER detail  w/ESC scanner  q quit")
+        y_corr = 6 + len(order[start:start + body_h])
+        for line in correlated_lines(self.args.db):
+            if y_corr >= h - 2:
+                break
+            try:
+                cw.addstr(y_corr, 2, line[:w - 4], curses.A_DIM)
+            except curses.error:
+                pass
+            y_corr += 1
         cw.addstr(h - 2, 2, help_txt[:w - 4])
         cw.refresh()
 
@@ -587,6 +596,11 @@ class App:
         last = (f" · last closed bar {panel.last_bar_ts}"
                 if panel.last_bar_ts is not None else "")
         put(f"  {asof}{last}", curses.A_DIM)
+        corr = correlated_lines(self.args.db)
+        if corr:
+            put("")
+            for line in corr:
+                put(line, curses.A_DIM)
 
         cw.addstr(h - 2, 2, "ENTER back   w/ESC scanner   q quit"[:w - 4])
         cw.refresh()

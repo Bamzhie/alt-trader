@@ -177,6 +177,34 @@ def correlated_opens(conn, clusters=None, rho=None):
     return groups
 
 
+def correlated_section_lines(conn, clusters=None, rho=None):
+    """CORRELATED OPENS section lines, shaped exactly as
+    :func:`format_watcher_report` renders them (same header, same
+    per-group shape, same proxy note).
+
+    Task 6 shared shape: every watcher surface (TUI table + detail,
+    tkinter detail, Qt detail) renders these lines verbatim via
+    :func:`proto.watcher_feed.correlated_lines`, so the report and all
+    three surfaces stay byte-identical.
+    """
+    lines = ["CORRELATED OPENS (>1 active in group; not independent bets)"]
+    groups = correlated_opens(conn, clusters, rho)
+    if not groups:
+        lines.append("  none")
+    else:
+        for g in groups:
+            extra = (f" n_eff={g['n_eff']:.2f} "
+                     f"(rho-bar={g['measured_rho']})"
+                     if g["n_eff"] is not None else "")
+            if g["proxy"]:
+                extra += f" [{g['proxy']}]"
+            lines.append(f"  {g['group']}: n={g['n']} "
+                         f"shadow={len(g['shadow_selected'])}{extra}")
+            for sid in g["ids"]:
+                lines.append(f"    {sid}")
+    return lines
+
+
 def _fmt_pct(x):
     return "n/a" if x is None else f"{100.0 * x:+.2f}%"
 
@@ -230,20 +258,7 @@ def format_watcher_report(conn, clusters=None, rho=None, paused=None,
     if not gross_net_rows(conn):
         L.append("  (none)")
     L.append("")
-    L.append("CORRELATED OPENS (>1 active in group; not independent bets)")
-    groups = correlated_opens(conn, clusters, rho)
-    if not groups:
-        L.append("  none")
-    else:
-        for g in groups:
-            extra = (f" n_eff={g['n_eff']:.2f} (rho-bar={g['measured_rho']})"
-                     if g["n_eff"] is not None else "")
-            if g["proxy"]:
-                extra += f" [{g['proxy']}]"
-            L.append(f"  {g['group']}: n={g['n']} "
-                     f"shadow={len(g['shadow_selected'])}{extra}")
-            for sid in g["ids"]:
-                L.append(f"    {sid}")
+    L.extend(correlated_section_lines(conn, clusters, rho))
     L.append("")
     L.append("ASSUMPTIONS (every estimate labeled; venue values trace to "
              "logged rows)")

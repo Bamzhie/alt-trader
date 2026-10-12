@@ -60,7 +60,6 @@ from gui import model
 from proto import picks as picks_mod
 from proto import report as report_mod
 from proto import watcher_feed as watcher_feed_mod
-from proto import watcher_report as watcher_report_mod
 from proto.planner import MAX_LEVERAGE
 
 from . import theme as _theme
@@ -108,41 +107,14 @@ WATCHER_WIDTHS = {"id": 170, "rule": 120, "coin": 90, "dir": 60,
 def watcher_correlated_lines(db_path):
     """CORRELATED OPENS section lines for the Qt watcher detail pane.
 
-    Calls ``proto.watcher_report.correlated_opens`` and shapes the lines
-    exactly like ``format_watcher_report``'s CORRELATED OPENS section (same
-    header, same per-group shape, same proxy note). Task 6 owns the shared
-    cross-surface helper and will unify this with the TUI/tk surfaces —
-    this stays byte-identical to the report until then. A missing/locked
-    DB yields [] (no section), never a raise.
+    Task 6: thin pointer to the ONE shared helper
+    (``proto.watcher_feed.correlated_lines``), which every watcher
+    surface renders verbatim — TUI table + detail, tkinter detail, and
+    this dock. Shape/wording stay byte-identical to
+    ``format_watcher_report``'s CORRELATED OPENS section. A
+    missing/locked DB yields [] (no section), never a raise.
     """
-    try:
-        conn = watcher_feed_mod.open_ro(db_path)
-    except Exception:
-        return []
-    try:
-        groups = watcher_report_mod.correlated_opens(conn)
-    except Exception:
-        return []
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    lines = ["CORRELATED OPENS (>1 active in group; not independent bets)"]
-    if not groups:
-        lines.append("  none")
-    else:
-        for g in groups:
-            extra = (f" n_eff={g['n_eff']:.2f} "
-                     f"(rho-bar={g['measured_rho']})"
-                     if g["n_eff"] is not None else "")
-            if g["proxy"]:
-                extra += f" [{g['proxy']}]"
-            lines.append(f"  {g['group']}: n={g['n']} "
-                         f"shadow={len(g['shadow_selected'])}{extra}")
-            for sid in g["ids"]:
-                lines.append(f"    {sid}")
-    return lines
+    return watcher_feed_mod.correlated_lines(db_path)
 
 _QT_ANCHOR = {
     "center": Qt.AlignmentFlag.AlignCenter,

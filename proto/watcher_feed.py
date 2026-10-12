@@ -18,6 +18,7 @@ key storage, no execution code.
 import os
 import sqlite3
 
+from proto import watcher_report as _report
 from proto.watcher_view import WatcherPanel, build_panel
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "set_paused",
     "set_rule_disabled",
     "load_panel",
+    "correlated_lines",
 ]
 
 # Spec S4 columns of watcher_setup, in DDL order, plus the trail-runtime
@@ -211,3 +213,29 @@ def load_panel(db_path, selected_id=None) -> WatcherPanel:
         conn.close()
     return build_panel(rows, evals, selected_id=selected_id, paused=paused,
                        disabled=disabled)
+
+
+def correlated_lines(db_path, clusters=None, rho=None) -> list:
+    """CORRELATED OPENS section lines for one DB path (Task 6 shared helper).
+
+    The ONE helper every watcher surface renders: TUI table + detail,
+    tkinter detail, Qt detail. Calls
+    :func:`proto.watcher_report.correlated_opens` and shapes the lines
+    exactly like :func:`proto.watcher_report.format_watcher_report`'s
+    CORRELATED OPENS section (same header, same per-group shape, same
+    proxy note). A missing/locked/unreadable DB yields ``[]`` (no
+    section), never a raise, so draw paths stay contained.
+    """
+    try:
+        conn = open_ro(db_path)
+    except Exception:
+        return []
+    try:
+        return _report.correlated_section_lines(conn, clusters, rho)
+    except Exception:
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
