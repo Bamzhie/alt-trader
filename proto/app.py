@@ -8,7 +8,7 @@ detail view with the full scoring breakdown and trade plan, and veto visibility.
     python3 -m proto.app --use-v3 --log-threshold 40  # v3 shadow score mode
 
 Keys: arrows select | ENTER detail | d long/short/both | s sort | p pause |
-      w write logs | q quit
+      w watcher | W write logs | q quit
 
 Read-only. Places no orders, holds no keys.
 """
@@ -25,6 +25,8 @@ from . import planner as pl
 from .scan import build_universe, score_universe, venue_health, UNIVERSE_BUDGET
 from .scorer import fits_stake
 from .store import Store
+from .watcher_feed import WatcherUnavailable, load_panel
+from .watcher_view import RESEARCH_BANNER
 
 SORT_KEYS = {
     "score": lambda c: -c.score,
@@ -61,6 +63,12 @@ class App:
         self.log_errors = 0          # store write failures, last scan_once
         self.universe_error = None   # last universe refresh failure, if any
         self._uni_at = 0.0           # when self.uni was last refreshed
+        # Watcher screen (additive; scanner state above untouched).
+        self.show_watcher = False
+        self.watcher_detail = False
+        self.watcher_selected = None  # setup id, never a row index
+        self.watcher_panel = None
+        self.watcher_error = None
 
     # ---------- data ----------
     def refresh_universe(self):
@@ -267,7 +275,7 @@ class App:
             y += 1
 
         help_txt = ("↑↓ select  ENTER detail  d long/short/both  s sort  "
-                    "p pause  w logs  q quit")
+                    "p pause  w watcher  q quit")
         cw.addstr(h - 2, 2, help_txt[:w - 4])
         cw.refresh()
 
@@ -366,6 +374,223 @@ class App:
         cw.addstr(h - 2, 2, "ENTER back   q quit"[:w - 4])
         cw.refresh()
 
+    # ---------- watcher screen (additive; scanner draws/keys untouched) ----------
+    def watcher_order(self, panel):
+        """Setup ids, active first — the single order every watcher
+        surface walks (selection indexes this, never row position)."""
+        order = []
+        for key in ("active", "unavailable", "invalidated", "expired",
+                    "resolved"):
+            order.extend(panel.groups.get(key, []))
+        return order
+
+    def refresh_watcher(self):
+        """Reload the watcher panel from the DB (read-only feed).
+
+        Selection stays pinned to the setup id across reloads. Any
+        failure is contained: panel None + error text, scanner intact.
+        """
+        try:
+            self.watcher_panel = load_panel(self.args.db,
+                                            selected_id=self.watcher_selected)
+            if self.watcher_panel.selected_id is not None:
+                self.watcher_selected = self.watcher_panel.selected_id
+            self.watcher_error = None
+        except WatcherUnavailable as e:
+            self.watcher_panel = None
+            self.watcher_error = str(e)
+        except Exception as e:  # noqa: BLE001 - draw path must never crash
+            self.watcher_panel = None
+            self.watcher_error = f"{type(e).__name__}: {e}"
+        return self.watcher_panel
+
+    def _watcher_move(self, delta):
+        panel = self.watcher_panel
+        if panel is None:
+            return
+        order = self.watcher_order(panel)
+        if not order:
+            return
+        if self.watcher_selected not in order:
+            self.watcher_selected = order[0]
+            return
+        i = order.index(self.watcher_selected)
+        self.watcher_selected = order[min(len(order) - 1, max(0, i + delta))]
+
+    def on_key(self, ch):
+        """Minimal key-dispatch seam: watcher keys consumed here.
+
+        Returns True when handled; False lets the main loop apply the
+        existing scanner branches untouched. Note: ``w`` now toggles
+        the watcher screen (previously the write-logs toggle); the
+        logging itself (scan_once writes) is untouched and its toggle
+        lives on ``W``.
+        """
+        if ch == ord("w"):
+            if self.watcher_detail:
+                self.watcher_detail = False
+            else:
+                self.show_watcher = not self.show_watcher
+                if self.show_watcher:
+                    self.refresh_watcher()
+            return True
+        if ch == ord("W"):
+            self.args.write_logs = not self.args.write_logs
+            self.status = ("logging ON (flagged + shadow)"
+                           if self.args.write_logs else "logging OFF")
+            return True
+        if not self.show_watcher:
+            return False
+        if ch == 27:
+            self.show_watcher = False
+            self.watcher_detail = False
+            return True
+        if ch in (ord("\n"), ord("j")):
+            self.watcher_detail = not self.watcher_detail
+            return True
+        if ch == curses.KEY_DOWN:
+            self._watcher_move(1)
+            return True
+        if ch == curses.KEY_UP:
+            self._watcher_move(-1)
+            return True
+        return False
+
+    @staticmethod
+    def _fmt_px(v):
+        return f"{v:.8g}" if isinstance(v, (int, float)) else "—"
+
+    def draw_watcher(self, stdscr, h, w):
+        cw = stdscr
+        cw.erase()
+        cw.border(0)
+        if self.watcher_panel is None and self.watcher_error is None:
+            self.refresh_watcher()
+        panel = self.watcher_panel
+
+        cw.addstr(0, 2, (" ALT RADAR · WATCHER setups · research, shadow-only"
+                         " · read-only ")[:w - 4], curses.A_BOLD)
+        if panel is None:
+            try:
+                cw.addstr(2, 2, " watcher data unavailable — scanner intact"
+                                " (DB missing or locked)".ljust(w - 4))
+                if self.watcher_error:
+                    cw.addstr(3, 2, f" {self.watcher_error}"[:w - 4],
+                              curses.A_DIM)
+            except curses.error:
+                pass
+            cw.addstr(h - 2, 2, "w/ESC scanner  q quit"[:w - 4])
+            cw.refresh()
+            return
+
+        banner = panel.notices[0] if panel.notices else RESEARCH_BANNER
+        cw.addstr(1, 2, f" {banner}".ljust(w - 4))
+        asof = f"data as of {panel.asof_ts}" if panel.asof_ts else "no data yet"
+        last = (f" · last closed bar {panel.last_bar_ts}"
+                if panel.last_bar_ts is not None else "")
+        try:
+            cw.addstr(2, 2, f" {asof}{last}".ljust(w - 4), curses.A_DIM)
+        except curses.error:
+            pass
+
+        header = (f"{'ID':<10}{'RULE':<12}{'COIN':<10}{'DIR':<6}"
+                  f"{'STATE':<12}ENTRY→STOP/TGT")
+        cw.addstr(4, 2, header[:w - 4], curses.A_BOLD)
+        # Plain "-" (not curses.ACS_HLINE): this screen must render on a
+        # fake stdscr with no curses init in tests.
+        cw.hline(5, 2, "-", w - 4)
+
+        order = self.watcher_order(panel)
+        if self.watcher_selected not in panel.by_id and order:
+            self.watcher_selected = order[0]
+        body_h = max(1, h - 9)
+        start = 0
+        try:
+            cur = order.index(self.watcher_selected) if order else 0
+        except ValueError:
+            cur = 0
+        if cur >= body_h:
+            start = cur - body_h + 1
+        for i, sid in enumerate(order[start:start + body_h]):
+            y = 6 + (i - start)
+            d = panel.by_id.get(sid, {})
+            line = (f"{sid[-10:]:<10}{str(d.get('rule', '?')):<12}"
+                    f"{str(d.get('coin', '?')):<10}"
+                    f"{str(d.get('direction', '?')):<6}"
+                    f"{d.get('state', '?'):<12}"
+                    f"{self._fmt_px(d.get('entry'))}→"
+                    f"{self._fmt_px(d.get('stop_px'))}/"
+                    f"{self._fmt_px(d.get('tgt_px'))}")
+            attr = (curses.A_REVERSE if sid == self.watcher_selected
+                    else curses.A_NORMAL)
+            try:
+                cw.addstr(y, 2, line[:w - 4], attr)
+            except curses.error:
+                pass
+
+        help_txt = ("↑↓ select  ENTER detail  w/ESC scanner  q quit")
+        cw.addstr(h - 2, 2, help_txt[:w - 4])
+        cw.refresh()
+
+    def draw_watcher_detail(self, stdscr, h, w):
+        panel = self.watcher_panel
+        if panel is None:
+            self.draw_watcher(stdscr, h, w)
+            return
+        d = panel.by_id.get(self.watcher_selected)
+        if d is None:
+            self.draw_watcher(stdscr, h, w)
+            return
+
+        cw = stdscr
+        cw.erase()
+        cw.border(0)
+        cw.addstr(0, 2, (f"{d.get('coin', '?')} {d.get('direction', '?')} · "
+                         f"{d.get('state', '?')}  [ENTER back]").ljust(w - 4),
+                  curses.A_BOLD)
+        # Plain "-" (not curses.ACS_HLINE): no-curses-init test rendering.
+        cw.hline(1, 2, "-", w - 4)
+
+        y = 3
+
+        def put(s, attr=curses.A_NORMAL):
+            nonlocal y
+            if y < h - 2:
+                try:
+                    cw.addstr(y, 2, s[:w - 4], attr)
+                except curses.error:
+                    pass
+                y += 1
+
+        for n in panel.notices:
+            put(n, curses.A_BOLD)
+        put("")
+        put(f"  rule {d.get('rule', '?')} · src bar {d.get('src_bar_ts', '?')}"
+            f" · monitoring {d.get('monitoring', '?')}")
+        put(f"  entry {self._fmt_px(d.get('entry'))} · stop "
+            f"{self._fmt_px(d.get('stop_px'))} · tgt "
+            f"{self._fmt_px(d.get('tgt_px'))} · invalid "
+            f"{self._fmt_px(d.get('invalid_price'))}")
+        put(f"  state {d.get('state', '?')}")
+        if d.get("missing"):
+            put(f"  missing/stale: {', '.join(map(str, d['missing']))}",
+                curses.A_DIM)
+        cost = d.get("cost") or {}
+        put(f"  cost total {cost.get('total', '?')} · floor "
+            f"{cost.get('floor', '?')} · funding "
+            f"{cost.get('funding_state', '?')}", curses.A_DIM)
+        put(f"  ev_r {d.get('ev_r', '?')} · p_lb {d.get('p_lb', '?')} · "
+            f"shadow {'yes' if d.get('shadow_selected') else 'no'}",
+            curses.A_DIM)
+        asof = (f"data as of {panel.asof_ts}" if panel.asof_ts
+                else "no data yet")
+        last = (f" · last closed bar {panel.last_bar_ts}"
+                if panel.last_bar_ts is not None else "")
+        put(f"  {asof}{last}", curses.A_DIM)
+
+        cw.addstr(h - 2, 2, "ENTER back   w/ESC scanner   q quit"[:w - 4])
+        cw.refresh()
+
     # ---------- loop ----------
     def loop(self, stdscr):
         curses.curs_set(0)
@@ -387,7 +612,12 @@ class App:
                 self.scan_once()
 
             h, w = stdscr.getmaxyx()
-            if self.detail:
+            if self.show_watcher:
+                if self.watcher_detail:
+                    self.draw_watcher_detail(stdscr, h, w)
+                else:
+                    self.draw_watcher(stdscr, h, w)
+            elif self.detail:
                 self.draw_detail(stdscr, h, w)
             else:
                 self.draw_table(stdscr, h, w)
@@ -395,6 +625,8 @@ class App:
             ch = stdscr.getch()
             if ch == -1:
                 time.sleep(0.4)
+                continue
+            if self.on_key(ch):
                 continue
             if ch in (ord("q"), 27):
                 from . import snapshot as _snap
