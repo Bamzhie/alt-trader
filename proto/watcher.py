@@ -293,3 +293,83 @@ def btc_drift_7d(btc_closes_5m):
 def v3_snapshot(bars, **kw):
     """L5/initiation/direction via the existing scorer (delegate, not a copy)."""
     return scorer.score_v3(bars, **kw)
+
+
+# ---------------------------------------------------------------------------
+# Task 3: geometry + costs + funding + breakeven trail.
+#
+# Distances are return fractions throughout; no price rounding (tick rules
+# unverified). Funding sign: a positive MEXC rate means longs pay, so
+# ``fund_cost = sign(direction) * sum(rates)``; the short rebate is floored
+# at 0 in ``c_total`` while the signed leg is kept for the net column.
+# ---------------------------------------------------------------------------
+
+LONG = "LONG"
+SHORT = "SHORT"
+
+
+def _dir_sign(direction):
+    if direction == LONG:
+        return 1.0
+    if direction == SHORT:
+        return -1.0
+    raise ValueError(f"direction must be LONG or SHORT, got {direction!r}")
+
+
+def fund_cost(direction, rates):
+    """Signed funding leg: ``sign(direction) * sum(rates)`` over scheduled
+    settlements in ``[entry, entry+N]``. Long ``+sum``, short ``-sum``."""
+    return _dir_sign(direction) * sum(rates)
+
+
+def fund_stress(fund_now, n_settlements):
+    """Named stress scenario (not historical net): ``3 * fund_now * n``."""
+    return 3.0 * fund_now * n_settlements
+
+
+def geometry(sigma, N, c_total, k_s, k_t):
+    """``(b_stop, a_tgt)`` as fractions: ``b = max(k_s*sigma*sqrt(N),
+    10*c_total)``, ``a = k_t*sigma*sqrt(N)``."""
+    return (max(k_s * sigma * math.sqrt(N), 10.0 * c_total),
+            k_t * sigma * math.sqrt(N))
+
+
+def levels(entry, direction, b_stop, a_tgt):
+    """``(stop_px, tgt_px)`` from fractional distances. LONG stop sits
+    below entry, SHORT mirrors above; no rounding."""
+    if direction == LONG:
+        return (entry * (1.0 - b_stop), entry * (1.0 + a_tgt))
+    if direction == SHORT:
+        return (entry * (1.0 + b_stop), entry * (1.0 - a_tgt))
+    raise ValueError(f"direction must be LONG or SHORT, got {direction!r}")
+
+
+def apply_breakeven(state, close):
+    """Breakeven trail step; returns a new state dict (input unmutated).
+
+    Trigger: 5m close at >= ``entry + 1*b_stop`` (LONG) or <=
+    ``entry - 1*b_stop`` (SHORT). The trigger bar only arms ``pending``
+    (pre-trigger touches keep the original stop); the move ``stop -> entry``
+    applies on the next call (next bar open). Post-move the state is
+    immutable, and same-bar touches use the moved stop with the stop-first
+    rule. State keys: ``entry, direction, b_stop, stop_px, tgt_px, moved,
+    pending``.
+    """
+    s = dict(state)
+    if s.get("moved", False):
+        return s
+    if s.get("pending", False):
+        s["stop_px"] = s["entry"]
+        s["moved"] = True
+        s["pending"] = False
+        return s
+    entry, b, direction = s["entry"], s["b_stop"], s["direction"]
+    if direction == LONG:
+        if close >= entry * (1.0 + b):
+            s["pending"] = True
+    elif direction == SHORT:
+        if close <= entry * (1.0 - b):
+            s["pending"] = True
+    else:
+        raise ValueError(f"direction must be LONG or SHORT, got {direction!r}")
+    return s
