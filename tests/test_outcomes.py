@@ -71,8 +71,10 @@ def outcome_rows(store, sid):
 
 
 def rotation_fixture():
-    """160-coin venue universe, all tradeable at stake 0.10. Volume rank 115
-    is coin OLD - outside the 150 the scan rotation picks up."""
+    """160-coin venue universe. Volume rank 115 is coin OLD - under the old
+    150-coin rotation it sat outside the picked set; under the stakeless
+    full sweep every eligible coin is covered, so resolution must work from
+    collector bars for 7d regardless (never REST)."""
     tk, det = {}, {}
     for rank in range(160):
         coin = "OLD" if rank == 115 else f"COIN{rank:03d}"
@@ -115,7 +117,8 @@ def test_rotated_out_coin_still_resolves():
     sid = insert_signal(st, coin="OLD")
     colmod.append_bars(tmp, "OLD", future_bars(2016))
 
-    # The signal coin sits in the venue map but outside the current rotation.
+    # The signal coin sits in the venue map; the stakeless sweep covers the
+    # full eligible set, so it is always in the universe too.
     tk, det = rotation_fixture()
     restore = install_scan_feeds(tk, det)
     try:
@@ -123,10 +126,10 @@ def test_rotated_out_coin_still_resolves():
     finally:
         restore()
     rotation_coins = [c for _, c in rotation]
-    check("fixture: rotation fills 150", len(rotation_coins) == 150,
+    check("fixture: stakeless sweep covers all 160", len(rotation_coins) == 160,
           str(len(rotation_coins)))
-    check("fixture: signal coin absent from current rotation",
-          "OLD" not in rotation_coins, str(rotation_coins[:5]))
+    check("fixture: signal coin covered by the full sweep",
+          "OLD" in rotation_coins, str(rotation_coins[:5]))
     symbol_map = {scanmod.canon(s): s for s in tk}   # venue map, not rotation
 
     # REST answers with only 500 bars (cap: 2000) -> 7d is impossible from it.

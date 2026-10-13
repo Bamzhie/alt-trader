@@ -90,6 +90,39 @@ def plan_levels(direction, price, stop_reference, atr_value=None):
             "tp1": tp1, "tp2": tp2}
 
 
+# Dashboard reference size (spec section 2): plans shown on demand use this
+# fixed notional. It is a display reference, not a position: no leverage
+# headroom and no liquidation claims without venue maintenance-margin and
+# mark-price inputs.
+REFERENCE_NOTIONAL = 100.0
+
+
+def reference_plan(levels):
+    """On-demand reference display plan for frozen setup levels.
+
+    `levels` is a plan_levels() dict (entry_low/entry_high/stop/tp1/tp2).
+    Returns levels, R-multiples and the reference stop-risk in USDT at
+    REFERENCE_NOTIONAL. Deliberately carries NO leverage, NO liquidation or
+    headroom fields: those need venue maintenance-margin inputs this release
+    does not have.
+    """
+    entry_mid = (levels["entry_low"] + levels["entry_high"]) / 2
+    stop_frac = (abs(entry_mid - levels["stop"]) / entry_mid
+                 if entry_mid else 0.0)
+    return {
+        "notional": REFERENCE_NOTIONAL,
+        "entry_low": levels["entry_low"],
+        "entry_high": levels["entry_high"],
+        "stop": levels["stop"],
+        "tp1": levels["tp1"],
+        "tp2": levels["tp2"],
+        "r_multiple_tp1": 2.0,
+        "r_multiple_tp2": 5.0,
+        "stop_risk": REFERENCE_NOTIONAL * stop_frac,
+        "note": "reference size, not a position",
+    }
+
+
 def compute_leverage(stake, risk_per_trade_pct, stop_distance_pct,
                      max_leverage=MAX_LEVERAGE):
     """

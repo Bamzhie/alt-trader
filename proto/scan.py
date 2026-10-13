@@ -167,36 +167,47 @@ def is_synthetic(coin, detail_row=None):
     return any(t in coin for t in SYNTH_MARKERS)
 
 
-# Universe groups for one scan cycle (spec SS3): three DISJOINT groups, deduped
-# by coin, filled in priority order 80 -> 40 -> 30, shortfall spilling into the
-# remainder so the budget still fills.
-GROUP_TRADEABLE = 80    # min_notional <= stake, ranked by 24h quote volume
-GROUP_TAIL = 40         # MEXC-only when Bybit's map is known, else lowest-volume
-GROUP_ROTATION = 30     # rolling window over the remainder, pointer in meta
-ROTATION_KEY = "rotation_ptr"
-
-
-def rotation_pointer(store):
-    """Rotation offset into the remainder group, persisted in meta.
-
-    0 when unset or unparsable - a bad pointer must never stop the scan.
+def build_universe(stake=None, budget=None, store=None):
     """
-    try:
-        return int(store.get_meta(ROTATION_KEY, 0) or 0)
-    except (TypeError, ValueError):
-        return 0
+    Stakeless scan universe: every eligible MEXC USDT perp, 24h-volume ranked.
 
+    Eligibility is structural only: USDT-quoted contracts, synthetics
+    (equity / index / commodity / FX plates) excluded, deduped by canonical
+    coin name. Stake groups, `tradeable` gating, stake-gated thresholds, the
+    tail and the rotation window are removed (dashboard spec section 2):
+    `stake` is accepted for caller compatibility and deliberately ignored,
+    so a small stake can never shrink membership. `min_notional` is venue
+    info for detail display, never consulted here (an unknown minimum is
+    included, not fail-closed).
 
-def advance_rotation(store, consumed):
-    """Move the rotation pointer forward by `consumed` remainder coins.
+    `budget=None` (default) means the full eligible set: the sweep window
+    walks everything with (done, total) progress reported by score_universe.
+    An int budget caps to the first N volume-ranked coins (the CLI --coins /
+    app analysis cap). `store` is accepted for compatibility and unused.
 
-    Returns the new pointer. Read-time modulo against the current remainder
-    keeps it in range; the stored value only ever grows, so the window keeps
-    sweeping forward even as the remainder itself changes between cycles.
+    Returns [(symbol, coin)].
     """
-    ptr = rotation_pointer(store) + max(0, int(consumed))
-    store.set_meta(ROTATION_KEY, ptr)
-    return ptr
+    tk = mexc.tickers()
+    det = mexc.details()
+
+    pool = {}
+    for sym in tk:
+        if not sym.endswith("_USDT"):
+            continue
+        coin = canon(sym)
+        if not coin or is_synthetic(coin, det.get(sym)):
+            continue
+        pool.setdefault(coin, []).append(sym)
+    out = []
+    for coin, syms in pool.items():
+        # Two symbols canonicalising to one coin: keep the plain COIN_USDT
+        # form (e.g. AAA_USDT over AAA-PERP_USDT) so the choice is stable.
+        out.append((sorted(syms, key=lambda s: (len(s), s))[0], coin))
+    out.sort(key=lambda sc: (-_fnum(tk.get(sc[0], {}).get("amount24")),
+                             sc[0]))
+    if budget is not None:
+        out = out[:max(0, int(budget))]
+    return out
 
 
 # Bybit symbol map for the OI leg (spec SS4): {coin: Bybit raw symbol}.
@@ -274,10 +285,11 @@ def _bybit_oi(coin, price, quality_errors=None, oi_extra=None):
         return None, None
 
 
-# Guaranteed scan universe: 80 stake-tradeable + 40 tail + 30 rotation,
-# disjoint, spilling to fill. One constant so build_universe's default and
-# the CLI's --coins default can never drift apart (a smaller --coins would
-# silently drop the guaranteed tail from every scan).
+# Interactive scan budget: how many top-volume coins one analyse pass
+# scores by default (--coins). The UNIVERSE itself is stakeless and uncapped
+# (build_universe default budget=None); this only caps per-cycle analysis so
+# one cycle stays inside its time budget. Kept as one constant so the CLI's
+# --coins default can never drift apart from it.
 UNIVERSE_BUDGET = 150
 
 
@@ -286,7 +298,7 @@ def find_symbol(coin, tickers, details):
 
     Pure lookup over bulk ticker/detail maps: canonical-name match on USDT
     perps, synthetics excluded. Powers on-demand scoring for coins outside
-    the current scan rotation (the Find box's Enter path).
+    the current analysis slice (the Find box's Enter path).
     """
     want = canon(str(coin or ""))
     if not want:
@@ -300,86 +312,6 @@ def find_symbol(coin, tickers, details):
     return None
 
 
-def build_universe(stake, budget=UNIVERSE_BUDGET, store=None):
-    """
-    Stake-aware scan universe: disjoint groups that fill `budget`.
-
-    Groups, in priority order, deduped by coin:
-      1. tradeable - min_notional <= stake (an unknown minimum is fail-closed
-         and excluded), ranked by 24h quote volume, first 80.
-      2. tail - coins Bybit does not list (MEXC-only) when that map is
-         available, otherwise the 40 lowest-volume coins. Lowest volume first
-         either way, so the thin end of the book gets guaranteed coverage.
-      3. rotation - 30 from whatever remains, starting at meta:rotation_ptr.
-    Any group shortfall spills across the rest of the remainder so the budget
-    still fills; the three groups never overlap.
-
-    With `store`, the pointer is read from and advanced in meta by the number
-    of remainder coins consumed, so the window sweeps forward every cycle and
-    survives restarts. `budget=None` means uncapped (full universe).
-
-    Returns [(symbol, coin)].
-    """
-    tk = mexc.tickers()
-    det = mexc.details()
-
-    pool = []
-    for sym, row in tk.items():
-        if not sym.endswith("_USDT"):
-            continue
-        coin = canon(sym)
-        if not coin or is_synthetic(coin, det.get(sym)):
-            continue
-        pool.append((sym, coin))
-    pool.sort(key=lambda sc: _fnum(tk.get(sc[0], {}).get("amount24")),
-              reverse=True)
-
-    picked = []
-    used = set()
-
-    def take(items):
-        """Append unused items until the budget is full. Returns count taken."""
-        n = 0
-        for it in items:
-            if budget is not None and len(picked) >= budget:
-                break
-            if it[1] in used:
-                continue
-            picked.append(it)
-            used.add(it[1])
-            n += 1
-        return n
-
-    def stake_ok(sc):
-        price = _fnum(tk.get(sc[0], {}).get("lastPrice"))
-        row = det.get(sc[0]) or {}
-        n = mexc.min_notional(sc[0], row, price)
-        return n is not None and n <= stake
-
-    # 1. tradeable by stake, vol-ranked
-    take([sc for sc in pool if stake_ok(sc)][:GROUP_TRADEABLE])
-
-    # 2. tail: MEXC-only when the Bybit map answers, else lowest-volume slice
-    bybit_set = _bybit_symbol_set()
-    tail_pool = [sc for sc in pool if sc[1] not in used]
-    if bybit_set is not None:
-        tail_pool = [sc for sc in tail_pool if sc[1] not in bybit_set]
-    take(list(reversed(tail_pool))[:GROUP_TAIL])
-
-    # 3. rotation window over the remainder, then shortfall spill
-    remainder = [sc for sc in pool if sc[1] not in used]
-    consumed = 0
-    if remainder:
-        n = len(remainder)
-        ptr = (rotation_pointer(store) if store is not None else 0) % n
-        window = [remainder[(ptr + i) % n] for i in range(min(GROUP_ROTATION, n))]
-        consumed += take(window)
-        start = (ptr + len(window)) % n
-        consumed += take([remainder[(start + i) % n] for i in range(n)])
-
-    if store is not None and consumed:
-        advance_rotation(store, consumed)
-    return picked
 
 
 # Measurement universe policy (design §4): the full set of MEXC perpetual
@@ -387,7 +319,7 @@ def build_universe(stake, budget=UNIVERSE_BUDGET, store=None):
 # eligibility filters, independent of the interactive top-N budget and the
 # rotation window. Any change to these filters is a new policy version, which
 # changes the config hash and therefore the episode cohort.
-MEASUREMENT_UNIVERSE_POLICY = "mexc_full_v1"
+MEASUREMENT_UNIVERSE_POLICY = "mexc_full_stakeless_v2"
 
 
 def eligible_pool(tickers, details):
@@ -579,9 +511,9 @@ def analyse_one(sym, coin, detail, tk_row, stake, errors=None,
         return fail(f"{type(e).__name__}: {e}")
 
 
-def score_universe(ranked, det, tk, stake, analyse=None, errors=None,
+def score_universe(ranked, det, tk, stake=None, analyse=None, errors=None,
                    stagger=STAGGER_S, max_workers=MAX_WORKERS,
-                   attach_plans=False, max_leverage=None):
+                   attach_plans=False, max_leverage=None, progress_fn=None):
     """Concurrent per-coin fetch+score (spec SS3).
 
     12 workers; the first wave of submissions is staggered 100ms apart so
@@ -589,6 +521,9 @@ def score_universe(ranked, det, tk, stake, analyse=None, errors=None,
     inside analyse_one passes through LIMITER (20 req/s venue-wide).
     Coins that fail are excluded from the returned scorecards AND recorded
     in `errors` as {coin: reason} - never silently dropped.
+    `stake` is plumbing for attached plans only, never a universe filter.
+    `progress_fn(done, total)` fires after each coin completes so the sweep
+    window walks the full set with visible (done, total) progress.
     """
     analyse = analyse or analyse_one
     # attach_plans rides along only when the analyser accepts it (analyse_one
@@ -597,6 +532,8 @@ def score_universe(ranked, det, tk, stake, analyse=None, errors=None,
     _takes_plans = (analyse is analyse_one or "attach_plans"
                     in _inspect.signature(analyse).parameters)
     cards = []
+    total = len(ranked)
+    done = 0
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futs = []
         for i, (sym, coin) in enumerate(ranked):
@@ -614,6 +551,12 @@ def score_universe(ranked, det, tk, stake, analyse=None, errors=None,
             sc = f.result()
             if sc:
                 cards.append(sc)
+            done += 1
+            if progress_fn is not None:
+                try:
+                    progress_fn(done, total)
+                except Exception:
+                    pass  # progress display must never break scoring
     return cards
 
 
@@ -627,9 +570,9 @@ def cli_parser():
                     help="how many coins to analyse (default: the full "
                          "universe budget, so the guaranteed tail is scanned)")
     ap.add_argument("--db", default="data/signals.db",
-                    help="signal db; rotation pointer persists here across runs")
+                    help="signal db; sweep records persist here across runs")
     ap.add_argument("--no-logs", action="store_true",
-                    help="in-memory store: rotation pointer does not persist")
+                    help="in-memory store: sweep record does not persist")
     return ap
 
 
@@ -639,18 +582,22 @@ def main():
     print(f"ALT RADAR prototype scan  ·  stake ${args.stake:.2f}  ·  read-only\n")
 
     t0 = time.time()
-    # Same wiring as the app: a Store is what carries the rotation pointer, so
-    # every scan path advances it. File db by default (survives restarts);
-    # --no-logs keeps the run disk-free via an in-memory store.
+    # Same wiring as the app: the full stakeless universe every cycle
+    # (store accepted for caller compatibility; no rotation pointer).
+    # File db by default; --no-logs keeps the run disk-free via in-memory.
     store = Store(":memory:") if args.no_logs else Store(args.db)
-    uni = build_universe(args.stake, store=store)
+    uni = build_universe()
+    # One Bybit ticker request per universe refresh fills the OI symbol map
+    # the per-coin OI leg reads (never one request per coin).
+    _bybit_symbol_set()
     det = mexc.details()
     tk = mexc.tickers()
     print(f"universe: {len(uni)} USDT perps (synthetics removed)  "
           f"[{time.time()-t0:.1f}s]")
 
-    # Rank by 24h quote volume so the scan budget goes to coins with real
-    # liquidity, then take the top N for analysis.
+    # Rank by 24h quote volume so the analysis budget goes to coins with
+    # real liquidity first; the sweep record below still counts the full
+    # eligible set separately from what this cycle evaluated.
     ranked = sorted(
         uni,
         key=lambda sc: _fnum(tk.get(sc[0], {}).get("amount24")),
@@ -663,8 +610,13 @@ def main():
     errors = {}
     cards = score_universe(ranked, det, tk, args.stake, errors=errors)
 
-    print(f"scored {len(cards)} coins · failed {len(errors)}/{len(ranked)}  "
+    print(f"sweep complete: evaluated {len(ranked)}/{len(uni)} eligible · "
+          f"scored {len(cards)} coins · failed {len(errors)}/{len(ranked)}  "
           f"[{time.time()-t1:.1f}s]\n")
+    # Post-cut writer (Task 3, spec section 1): every completed sweep logs a
+    # sweep-complete journal event + a dashboard snapshot row.
+    from . import watcher_journal as _wj
+    _wj.record_sweep(store.conn, len(uni), len(ranked))
     for v, st in venue_health().items():
         if not st["ok"]:
             print(f"  WARNING: {v.upper()} degraded ({st['fails']} failures) - "
@@ -685,8 +637,6 @@ def main():
         notes = []
         if c.vetoes:
             notes.append("veto:" + ",".join(v.code for v in c.vetoes))
-        if c.min_notional and c.min_notional > args.stake:
-            notes.append("WATCH(min notional)")
         vol = getattr(c, "quote_vol_24h", 0.0)
         vol_s = f"${vol/1e6:.1f}M" if vol >= 1e6 else f"${vol/1e3:.0f}K"
         print(f"{i:<3}{arrow:<5}{c.coin:<14}{c.price:>13.8g}{c.change_24h_pct:>7.1f}%"
@@ -720,8 +670,8 @@ def main():
         print(pl.format_plan(plan, c))
         break
     else:
-        print("no coin in this scan produced a valid trade plan (all vetoed, "
-              "unplannable, or min-notional blocked at this stake)")
+        print("no coin in this scan produced a valid trade plan (all vetoed "
+              "or geometrically unplannable)")
 
     print(f"\ntotal {time.time()-t0:.1f}s")
     store.close()

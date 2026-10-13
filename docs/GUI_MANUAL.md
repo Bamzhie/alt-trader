@@ -317,6 +317,51 @@ which days' picks held up at 4h/24h, and whether any score band or
 direction separates from coin-flip after costs. Unresolved horizons show
 0 (pending) — a young day's 24h column fills in the next day's run.
 
+## 10b. Watcher setups view (research, shadow-only)
+
+The watcher view lists **setup** rows (trigger rule, coin, direction,
+entry/stop/target, invalidation price, lifecycle state, cost
+assumptions, EV_R/p̂_LB, shadow flag) from the read-only watcher feed.
+It is research-labeled until the holdout passes: the scanner views,
+ranking, flags and plans are untouched, and nothing here ever places
+an order.
+
+Where to find it on each surface:
+
+| Surface | How to open | Layout |
+|---|---|---|
+| TUI | `w` toggles the watcher screen; `ENTER` opens the detail, `w`/`ESC` returns to the scanner | Setup table (ID · RULE · COIN · DIR · STATE · ENTRY→STOP/TGT) + detail pane + CORRELATED OPENS section |
+| tkinter | Side panel beside the scan table (Refresh watcher / Pause watcher / Disable rule buttons) | Setup list + read-only detail text + CORRELATED OPENS section |
+| Qt | Watcher dock, right side (same three buttons) | Setup table (ID · RULE · COIN · DIR · STATE · ENTRY · STOP · TGT) + read-only detail + CORRELATED OPENS section |
+
+> **TUI key rebinding:** `w` now toggles the watcher screen (it used to
+> toggle write-logs). The logging toggle moved to **`W`** (uppercase);
+> scan logging itself is untouched, as are all scanner keys and sorts.
+
+What to check on screen: the research banner
+(`WATCHER (research, shadow-only — scanner untouched; no orders)`)
+first; lifecycle states verbatim (`active`, `invalidated`, `expired`,
+`resolved` — never reworded); the rationale lines (rule, monitoring,
+missing/stale inputs, cost, ev_r/p_lb, shadow yes/no); `data as of` +
+last-closed-bar stamps; the `CORRELATED OPENS` section (groups with
+>1 active setup are not independent bets); the `paused — setups
+listed but not acted on` notice when paused. A missing/locked DB
+shows `watcher data unavailable` with the scanner intact; an empty
+feed shows the silence-valid line. Pause and per-rule disable take
+effect immediately, persist to `meta`, and read back on every surface.
+
+Manual visual-pass checklist (three reads against one fixture DB):
+
+| Date | Fixture | TUI (`w`) | tkinter panel | Qt dock | Result |
+|---|---|---|---|---|---|
+| 2026-10-12 | temp fixture DB: 2 active same-coin setups (BBB, `t1-break-v1`) + 1 resolved (AAA); paused + unpaused variants | states verbatim, rationale + CORRELATED n=2 + pause notice read | same via model render path | same via offscreen render | PASS |
+
+Reads were verified headless (fake-stdscr TUI draws, pure-model
+tkinter text, offscreen Qt widget text) by
+`tests/test_watcher_ui_parity.py`; screenshots N/A on a headless
+host. Re-run the checklist against a real display before relying on
+pixel layout.
+
 ## 11. Status bar & messages
 
 Three slots, left to right:
@@ -599,3 +644,71 @@ leverage cap are versioned into a `config_hash`. Mixed configs are tolerated
 and reported as separate cohorts, never merged. GUI and daemon logging the
 same coin under one config is safe: ordering and late-observation rules
 prevent duplicate open episodes.
+
+## 16. Qt trader dashboard (research, read-only)
+
+The PySide6 app (`qtgui/`) carries a research dashboard alongside the
+scanner views. Everything on it is read-only and stakeless: no orders are
+placed anywhere, no stake sizes anything, and no model scores or
+success-estimate copy appears on any dashboard surface.
+
+**Dashboard dock.** Four stat cards (Active Setups, Eligible Perps with
+eligible vs evaluated counts shown separately, Monitoring Coverage, New
+Setups 24h) with day-over-day deltas against the snapshot covering the
+same point 24h earlier, or an honest "comparison unavailable" when no
+prior snapshot covers it. Below the cards: the Top Signals table (one row
+per active setup, LONG/SHORT pill, rule-evidence cells, expiry
+countdowns) with Direction / Market / Horizon (4h default, N=48; 24h,
+N=288) / Sort filters, under the research banner. Pre-cut snapshots and
+journal rows are filtered out at read time, so cohorts never pool across
+the epoch cut.
+
+**Bottom row.** Market Movers (Gainers / Losers / High Volume from the
+latest sweep's quotes — "market quotes unavailable" before any scan),
+Recent Analysis (last 5 emission/transition journal rows) and Activity
+Log (newest journal rows including sweep-complete). Missing data renders
+shorter honest copy, never an inferred value.
+
+**Dashboard pages dock (six tabs).**
+
+| Tab | Contents |
+|---|---|
+| Dashboard | Card values + stamp mirror (full cards and table stay in the dock above) |
+| Watchlist | Starred coins, persisted in `meta` (`dash_star:<COIN>`); Star/Unstar buttons |
+| Signals | Full setup ledger (active + invalidated/expired/resolved history) with direction filter and history toggle |
+| Analysis | Indicator board (latest closed-bar eval per setup: monitoring, gross/net marked returns), monitoring coverage, and the event-study N grid / kill horizons block, labeled dev-only (no stored result) |
+| Trades | Hypothetical-only ledger: "No orders placed — hypothetical outcomes only". Rows show frozen entry/stop/target, the reference stop-risk at 100 USDT (reference size, not a position) and the latest marked return or "pending" |
+| Settings | Watcher pause + per-trigger disable switches (they write the same `watcher_paused` / `watcher_disabled:<rule>` meta flags the panels read) and two display prefs: follow each scan result, and compact analysis lines. No threshold, leverage or stake editing exists on this page |
+
+Coins with no active setup show "no setup yet" plus the blocking reason
+(veto / cooldown / missing data / recently invalidated). Zero setups is a
+valid silence, every stamp is a closed-bar `data as of`, and feed/DB
+failures degrade to contained fallback copy with the scanner intact.
+
+## 16b. Qt terminal visual verification (1536×1024 offscreen renders)
+
+Dev-only renderer: `python3 scripts/render_dashboard.py [--outdir DIR]`.
+Builds the window offscreen (`QT_QPA_PLATFORM=offscreen`) at exactly
+1536×1024 against a temp SQLite fixture (two active setups via
+`emit_setup`, one invalidation + one expiry via `log_event`, one
+completed sweep via the real `record_sweep` writer, a two-snapshot
+pair for card deltas; offline quote/history fixtures ride the
+test-only `dash_market_data` / history seams; detail bars ride the
+`show_detail_bars` seam). A socket tripwire raises on any network
+attempt. Saves `region_*.png` per region plus `full_1536x1024.png`.
+The PNGs are throwaway artifacts (kept outside the repo); the
+pass/fail record below is the durable checklist.
+
+Latest pass: 2026-10-13, fixture as above, renderer exit 0, no
+network touched.
+
+| Region | File | Result | Notes vs the mockup |
+|---|---|---|---|
+| topbar | `region_topbar.png` (1520×50) | PASS | Logo, title, subtitle, READ-ONLY + TIER-2 badges, scan UTC, IDLE dot + "no scan yet", "Next scan: paused", MEXC pill, UTC clock, gear. 50px = spec 48–52. No clipping. |
+| rail | `region_rail.png` (145×934) | PASS | Scanner/Watchlist/Outcomes/Logs/Settings + selected highlight, API/venue/account blocks from real state, wrapped without clipping. 145px = spec 140–150. |
+| cards | `region_cards.png` (869×167) | PASS | 4 binding cards (Active Setups, Eligible Perps as eligible/evaluated counts, Monitoring Coverage + gauge, New Setups 24h) with datatype deltas, sparklines + gauge arcs, no overflow ("eligible 120 · evaluated 118" fits). No confidence/tier copy. |
+| table | `region_table.png` (845×120) | PASS w/ observation | Headers in order, AAA row with LONG pill + sparkline + countdown; BBB correctly hidden under the default 4h filter (288-bar setup). Columns total wider than the 845px pane so SIGNAL/EXPIRES/chevron need the horizontal scrollbar; long cells elide with "…". Content reachable, nothing painted outside cells — recorded for a Task-5 follow-up, not changed here. |
+| overview | `region_overview.png` (467×92) | PASS | BTC + ETH rows: badge, name, price, signed 24h% in gain/loss color, sparklines. No TOTAL row. |
+| detail | `region_detail.png` (467×537) | PASS w/ observation | AAA LONG header, pill, sparkline, 5m/15m/1H/4H/1D tabs (no 1m), candle + volume + EMA chart, validity + next-update lines, Analysis/Trade Plan/Metrics tabs, data-as-of stamp. "expired 11635h ago" is a fixture artifact (fake-old fixture ts vs the wall clock), not a formatter defect. |
+| bottom | `region_bottom.png` | PASS | Market Movers (Gainers/Losers/High Volume from offline quotes), Recent Analysis (last-5 emissions/transitions, sweep-complete excluded), Activity Log (real journal rows verbatim, newest first, sweep-complete included). Empty DB renders "no activity yet". Long setup-id tokens wrap mid-token (standard label wrapping, no data loss). |
+| full | `full_1536x1024.png` | PASS | No horizontal page overflow; status bar visible; right column scrolls (Coin detail dock below the fold, reachable). Contrast: light ink on dark navy throughout, gain/loss colors legible. |

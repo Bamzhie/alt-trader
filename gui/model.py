@@ -15,6 +15,7 @@ from proto import planner as pl
 from proto.app import SORT_KEYS  # sorting semantics shared with the TUI
 from proto.planner import MAX_LEVERAGE
 from proto.scorer import Scorecard, Veto, fits_stake
+from proto.watcher_view import GROUP_KEYS, RESEARCH_BANNER
 
 # Direction filters accepted by filter_cards / shown in the toolbar combo.
 DIR_FILTERS = ("both", "long", "short")
@@ -538,3 +539,126 @@ def validate_interval(value):
     if v < MIN_INTERVAL:
         raise ValueError(f"interval must be at least {MIN_INTERVAL}s, got {value!r}")
     return v
+
+
+# ---------------------------------------------------------------------------
+# Watcher panel (display only, Task 7). Research-labeled text lines for
+# watcher_setup rows. Scanner sorting, ranking and flags are never touched
+# here; the Qt watcher dock (qtgui/app.py, watcher UI Task 5) renders these
+# same helpers — the report-only deferral is landed.
+# ---------------------------------------------------------------------------
+
+def watcher_row_text(row):
+    """One-line display for a watcher_setup mapping (dict or row-like).
+
+    ``'AAA LONG active ev=+0.41 [SHADOW]'``; missing numbers render n/a,
+    funding-unavailable rows carry FUND?. Pure (no Tk, no network).
+    """
+    if not isinstance(row, dict):
+        try:
+            row = dict(row)
+        except (TypeError, ValueError):
+            return "n/a"
+    coin = row.get("coin", "?")
+    direction = row.get("direction", "?")
+    state = row.get("state", "?")
+    sub = row.get("substate")
+    if sub:
+        state = f"{state}/{sub}"
+    ev = row.get("ev_r")
+    ev_txt = "n/a" if ev is None else f"{float(ev):+.2f}"
+    bits = [f"{coin} {direction} {state} ev={ev_txt}"]
+    if row.get("shadow_selected"):
+        bits.append("[SHADOW]")
+    if (row.get("funding") or row.get("funding_state")) == "unavailable":
+        bits.append("[FUND?]")
+    return " ".join(bits)
+
+
+def watcher_panel_lines(rows, paused=False, disabled=()):
+    """Research-labeled panel lines for an iterable of watcher_setup
+    mappings. Display only: order preserved, nothing ranked or flagged."""
+    lines = ["WATCHER (research, shadow-only — scanner untouched; no orders)"]
+    if disabled:
+        lines[0] += f" [disabled: {','.join(disabled)}]"
+    if paused:
+        lines[0] += " [PAUSED]"
+    rows = list(rows or [])
+    if not rows:
+        return lines + ["  no watcher setups"]
+    return lines + [f"  {watcher_row_text(r)}" for r in rows]
+
+
+def watcher_order(panel):
+    """Setup ids, active first — the single order every watcher surface
+    walks (selection indexes this, never row position).
+
+    Pure (no Tk, no network): walks the shared view-model's groups in
+    GROUP_KEYS order, the same order proto.app.App.watcher_order uses.
+    """
+    groups = getattr(panel, "groups", {}) or {}
+    order = []
+    for key in GROUP_KEYS:
+        order.extend(groups.get(key, ()))
+    return list(order)
+
+
+def _watcher_px(v):
+    return f"{v:.8g}" if isinstance(v, (int, float)) else "—"
+
+
+def watcher_detail_text(panel, selected_id=None):
+    """Full watcher-detail text for one setup id (read-only, review-only).
+
+    Pure (no Tk, no network): renders the shared view-model's detail dict
+    with STATE_WORDS verbs verbatim, the panel notices (research banner
+    first), and data-as-of stamps. A None panel renders the contained
+    "watcher data unavailable" fallback; an empty panel renders the
+    silence-valid line. Missing numbers render "—", never invented.
+    """
+    if panel is None:
+        return ("watcher data unavailable — scanner intact\n"
+                "  (DB missing or locked; the scan table above is unaffected)")
+    notices = list(getattr(panel, "notices", None) or [RESEARCH_BANNER])
+    by_id = getattr(panel, "by_id", None) or {}
+    sid = selected_id if selected_id is not None else getattr(
+        panel, "selected_id", None)
+    d = by_id.get(sid)
+    if d is None:
+        lines = list(notices) + [""]
+        if not by_id:
+            lines.append("no active setups — silence is valid")
+        else:
+            lines.append("select a setup for the full breakdown")
+        lines.append(_watcher_asof_line(panel))
+        return "\n".join(lines)
+    cost = d.get("cost") or {}
+    lines = list(notices) + [""]
+    lines.append(f"{d.get('coin', '?')} {d.get('direction', '?')} · "
+                 f"{d.get('state', '?')}")
+    lines.append(f"  rule {d.get('rule', '?')} · src bar "
+                 f"{d.get('src_bar_ts', '?')} · monitoring "
+                 f"{d.get('monitoring', '?')}")
+    lines.append(f"  entry {_watcher_px(d.get('entry'))} · stop "
+                 f"{_watcher_px(d.get('stop_px'))} · tgt "
+                 f"{_watcher_px(d.get('tgt_px'))} · invalid "
+                 f"{_watcher_px(d.get('invalid_price'))}")
+    lines.append(f"  state {d.get('state', '?')}")
+    if d.get("missing"):
+        lines.append(f"  missing/stale: {', '.join(map(str, d['missing']))}")
+    lines.append(f"  cost total {cost.get('total', '?')} · floor "
+                 f"{cost.get('floor', '?')} · funding "
+                 f"{cost.get('funding_state', '?')}")
+    lines.append(f"  ev_r {d.get('ev_r', '?')} · p_lb {d.get('p_lb', '?')} · "
+                 f"shadow {'yes' if d.get('shadow_selected') else 'no'}")
+    lines.append(f"  {_watcher_asof_line(panel)}")
+    return "\n".join(lines)
+
+
+def _watcher_asof_line(panel):
+    asof = getattr(panel, "asof_ts", 0)
+    last = getattr(panel, "last_bar_ts", None)
+    text = f"data as of {asof}" if asof else "no data yet"
+    if last is not None:
+        text += f" · last closed bar {last}"
+    return text

@@ -754,18 +754,28 @@ def run_cycle(store, eligible, *, config, now_fn=None, score_one=None,
                 # Persist the score row with its measurement metadata, then run
                 # the transactional lifecycle. The frozen plan rides the event.
                 signal_id = store.log_signal(card, flagged=True, tier=2)
-                store.record_measurement_observation(
-                    signal_id, obs_ts=obs_ts, data_quality="OK",
-                    degraded_reasons=None,
-                    last_bar_ts=getattr(card, "last_bar_ts", None),
-                    ticker_ts=getattr(card, "ticker_ts", None),
-                    stake=stake, log_threshold=threshold,
-                    leverage_cap=config.get("leverage_cap"),
-                    config_hash=cfg_hash, code_rev=CODE_REV)
-                event = ObservationEvent.qualifying(coin, venue, cfg_hash, obs_ts,
-                                                    signal_id, attempt_id)
-                process_observation(store, event, getattr(card, "plan", None),
-                                    versions, cfg_json, card=card)
+                if signal_id is None:
+                    # Dashboard epoch froze scanner writes (watcher-only):
+                    # journal the attempt without an episode, never crash.
+                    log_attempt(store, coin, cfg_hash, obs_ts,
+                                ObservationClass.UNKNOWN,
+                                degraded_reasons="watcher-only epoch:"
+                                " signal writes frozen",
+                                attempt_id=attempt_id)
+                else:
+                    store.record_measurement_observation(
+                        signal_id, obs_ts=obs_ts, data_quality="OK",
+                        degraded_reasons=None,
+                        last_bar_ts=getattr(card, "last_bar_ts", None),
+                        ticker_ts=getattr(card, "ticker_ts", None),
+                        stake=stake, log_threshold=threshold,
+                        leverage_cap=config.get("leverage_cap"),
+                        config_hash=cfg_hash, code_rev=CODE_REV)
+                    event = ObservationEvent.qualifying(
+                        coin, venue, cfg_hash, obs_ts, signal_id, attempt_id)
+                    process_observation(store, event,
+                                        getattr(card, "plan", None),
+                                        versions, cfg_json, card=card)
             else:
                 log_attempt(store, coin, cfg_hash, obs_ts, obs_class,
                             degraded_reasons=degraded_reasons,
