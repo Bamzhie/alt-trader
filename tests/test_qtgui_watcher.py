@@ -158,6 +158,11 @@ def make_window(db=None):
     check("plan lane retired", not win._plan_worker.is_alive(),
           "plan worker thread did not retire")
     win._tick_timer.stop()
+    # Drain ctor-queued results synchronously so every test starts from a
+    # deterministic state: the poll timer would otherwise deliver the ctor's
+    # success results at an arbitrary later moment, racing any direct
+    # _on_watcher injection (the t_unavailable flake).
+    win._poll()
     return win
 
 
