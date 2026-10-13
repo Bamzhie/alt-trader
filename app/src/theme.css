@@ -22,6 +22,8 @@
   --short: #e5484d;         /* short / failed criteria */
   /* charts */
   --chart-grid: #1e2637;
+  --ema50: #eab308;         /* EMA50 overlay on the candle chart */
+  --ema200: #8b5cf6;        /* EMA200 overlay on the candle chart */
 
   color-scheme: dark;
 }

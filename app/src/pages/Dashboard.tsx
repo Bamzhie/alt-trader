@@ -16,6 +16,8 @@ import { createClient } from "../api/client";
 import type { ApiClient } from "../api/client";
 import type { Snapshot, Setup } from "../api/types";
 import { FilterBar } from "../components/FilterBar";
+import { MarketOverview } from "../components/MarketOverview";
+import { CoinDetail } from "../components/CoinDetail";
 import { StatCards } from "../components/StatCards";
 import { TopSignalsTable } from "../components/TopSignalsTable";
 import { useDashboardStore } from "../store/dashboard";
@@ -177,6 +179,7 @@ export function Dashboard() {
   const horizonFilter = useDashboardStore((s) => s.horizonFilter);
   const directionFilter = useDashboardStore((s) => s.directionFilter);
   const sort = useDashboardStore((s) => s.sort);
+  const selectedCoin = useDashboardStore((s) => s.selectedCoin);
 
   const { snapshot, error } = useSnapshot(client);
 
@@ -212,6 +215,16 @@ export function Dashboard() {
   const coins = useMemo(() => rows.map((s) => s.coin), [rows]);
   const closes = useClosedCloses(client, coins);
 
+  // Blocking reason for the selected coin, from the snapshot's
+  // coins_without_setup (never invented — null when not listed).
+  const blockingReason = useMemo(() => {
+    if (!snapshot || selectedCoin === null) return null;
+    return (
+      snapshot.coins_without_setup.find((c) => c.coin === selectedCoin)
+        ?.blocking_reason ?? null
+    );
+  }, [snapshot, selectedCoin]);
+
   return (
     <section className="space-y-4 px-6 py-6">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -239,14 +252,8 @@ export function Dashboard() {
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            <RegionPlaceholder
-              title="Market Overview"
-              note="BTC and ETH overview rows build here in a later task."
-            />
-            <RegionPlaceholder
-              title="Coin Detail"
-              note="Chart, tabs, and trade plan build here in a later task."
-            />
+            <MarketOverview overview={snapshot.market_overview} />
+            <CoinDetail client={client} blockingReason={blockingReason} />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">

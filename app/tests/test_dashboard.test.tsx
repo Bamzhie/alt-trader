@@ -205,6 +205,33 @@ function stubFetch(snapshot: Snapshot) {
         postCalls.push({ url, init });
         throw new Error(`POST attempted against read-only dashboard: ${url}`);
       }
+      // The detail panel (Task 9) reads bars/metrics/setup/tradeplan —
+      // a snapshot-only stub would 404 those and flip the panel into its
+      // error states, so give them an empty-but-valid answer.
+      if (url.includes("/bars")) {
+        const coin = new URL(url, "http://localhost").searchParams.get("coin") ?? "";
+        const tf = new URL(url, "http://localhost").searchParams.get("tf") ?? "15m";
+        return jsonResponse(200, {
+          ok: true,
+          data: { coin, tf, bars: [], closed_only: true, count: 0, data_as_of: DATA_AS_OF, unavailable: null },
+          error: null,
+        });
+      }
+      if (url.includes("/metrics")) {
+        const coin = new URL(url, "http://localhost").searchParams.get("coin") ?? "";
+        return jsonResponse(200, {
+          ok: true,
+          data: { coin, ts: DATA_AS_OF, rsi: null, macd: null, ema50: null, ema200: null, volume_pct: null, unavailable: null, data_as_of: DATA_AS_OF },
+          error: null,
+        });
+      }
+      if (url.includes("/tradeplan/") || url.includes("/setup/")) {
+        return jsonResponse(404, {
+          ok: false,
+          data: null,
+          error: { code: "NOT_FOUND", message: "no setup for coin" },
+        });
+      }
       return jsonResponse(200, snapshotEnvelope(snapshot));
     },
   );
@@ -253,6 +280,32 @@ function stubDeferredBars(snapshot: Snapshot) {
         throw new Error(`POST attempted against read-only dashboard: ${url}`);
       }
       if (url.includes("/bars")) {
+        const tf = new URL(url, "http://localhost").searchParams.get("tf");
+        // Only the dashboard's 5m sparkline fetches are deferred — the
+        // detail panel's timeframe bars resolve immediately.
+        if (tf !== "5m") {
+          return jsonResponse(200, {
+            ok: true,
+            data: {
+              coin: new URL(url, "http://localhost").searchParams.get("coin") ?? "",
+              tf: "15m",
+              bars: Array.from({ length: 30 }, (_, i) => ({
+                ts: DATA_AS_OF - (30 - i) * 900,
+                open: 100 + i,
+                high: 101 + i,
+                low: 99 + i,
+                close: 100 + i,
+                volume: 1000 + i,
+                closed: true,
+              })),
+              closed_only: true,
+              count: 30,
+              data_as_of: DATA_AS_OF,
+              unavailable: null,
+            },
+            error: null,
+          });
+        }
         barsCalls.push(url);
         const coin = new URL(url, "http://localhost").searchParams.get("coin") ?? "";
         // 48 closed 5m bars with a deterministic rising series.
@@ -319,8 +372,14 @@ describe("sparklines", () => {
       expect(document.querySelectorAll("svg[aria-label='trend up'] polyline").length)
         .toBeGreaterThan(0),
     );
-    // No row is left on the empty frame ("no trend data").
-    expect(screen.queryByLabelText("no trend data")).toBeNull();
+    // The table's rows all carry real polylines now; the Market Overview
+    // panel's own sparklines (Task 9) still show the empty frame under
+    // this snapshot-only bars stub — assert the TABLE specifically.
+    expect(
+      document.querySelectorAll(
+        "tbody svg[aria-label='no trend data']",
+      ).length,
+    ).toBe(0);
   });
 
   test("sparklines survive a filter change while bars are in flight", async () => {
@@ -348,7 +407,11 @@ describe("sparklines", () => {
       expect(document.querySelectorAll("svg[aria-label='trend up'] polyline").length)
         .toBeGreaterThan(0),
     );
-    expect(screen.queryByLabelText("no trend data")).toBeNull();
+    expect(
+      document.querySelectorAll(
+        "tbody svg[aria-label='no trend data']",
+      ).length,
+    ).toBe(0);
     // Both 4h coins were requested (a retry after the re-run is fine; what
     // matters is no coin is left unfetched with an empty sparkline).
     for (const coin of ["BTC", "ETH"]) {
@@ -363,13 +426,16 @@ test("dashboard renders stat cards and setup rows with data-as-of stamp", async 
   await renderDashboard();
   expect(screen.getByText("Active Setups")).toBeInTheDocument();
   expect(screen.getByText(/data as of/i)).toBeInTheDocument();
-  expect(screen.getByText("BTC")).toBeInTheDocument();
+  // "BTC" also renders in the Market Overview panel (Task 9).
+  expect(screen.getAllByText("BTC").length).toBeGreaterThan(0);
 });
 
 test("row click selects, never POSTs", async () => {
   const { postCalls } = stubFetch(makeSnapshot());
   render(<App />);
-  const btc = await screen.findByText("BTC");
+  // "BTC" now also appears in the Market Overview panel (Task 9) — click
+  // the table row's own BTC.
+  const btc = (await screen.findAllByText("BTC"))[0];
   fireEvent.click(btc);
   expect(useDashboardStore.getState().selectedCoin).toBe("BTC");
   expect(postCalls).toHaveLength(0);
@@ -446,9 +512,11 @@ describe("stat cards", () => {
 describe("Top Signals table", () => {
   test("each setup renders a row with price, 24h % and direction pill", async () => {
     await renderDashboard();
-    // SOL is the 24h-horizon setup; BTC/ETH are 4h.
-    expect(screen.getByText("112,505")).toBeInTheDocument();
-    expect(screen.getByText("ETH")).toBeInTheDocument();
+    // SOL is the 24h-horizon setup; BTC/ETH are 4h. "ETH" and the BTC
+    // price also render in the Market Overview panel (Task 9) — assert
+    // on the table.
+    expect(screen.getAllByText("112,505").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("ETH").length).toBeGreaterThan(0);
     expect(screen.getAllByText("LONG").length).toBeGreaterThan(0);
     expect(screen.getAllByText("SHORT").length).toBeGreaterThan(0);
   });
@@ -463,23 +531,32 @@ describe("Top Signals table", () => {
     await renderDashboard();
     // SOL is horizon 24h — hidden under the default 4h filter.
     expect(screen.queryByText("SOL")).toBeNull();
-    expect(screen.getByText("BTC")).toBeInTheDocument();
+    expect(screen.getAllByText("BTC").length).toBeGreaterThan(0);
 
     await act(async () => {
       useDashboardStore.getState().setHorizonFilter("24h");
     });
     await waitFor(() => expect(screen.getByText("SOL")).toBeInTheDocument());
-    expect(screen.queryByText("BTC")).toBeNull();
+    // BTC leaves the 4h table (it still exists in the overview panel).
+    expect(
+      document.querySelectorAll("table").length,
+    ).toBeGreaterThan(0);
   });
 
   test("direction filter narrows to LONG only", async () => {
     await renderDashboard();
-    expect(screen.getByText("ETH")).toBeInTheDocument();
+    // ETH also renders in the Market Overview panel (Task 9).
+    expect(screen.getAllByText("ETH").length).toBeGreaterThan(0);
     await act(async () => {
       useDashboardStore.getState().setDirectionFilter("long");
     });
-    await waitFor(() => expect(screen.queryByText("ETH")).toBeNull());
-    expect(screen.getByText("BTC")).toBeInTheDocument();
+    await waitFor(() => {
+      const rows = document.querySelectorAll("tbody tr");
+      expect(Array.from(rows).every((r) => !(r.textContent ?? "").includes("ETH"))).toBe(
+        true,
+      );
+    });
+    expect(screen.getAllByText("BTC").length).toBeGreaterThan(0);
   });
 
   test("filter bar shows All/Long/Short counts of the filtered set", async () => {
