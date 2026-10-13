@@ -38,7 +38,7 @@
 
 ## 5. Pages + states (Section C)
 
-- Rail (`QStackedWidget`, Dashboard default): six pages — Dashboard, Watchlist (starred, `meta`-persisted), Signals (full setup ledger + history + filters), Analysis (indicator board + input coverage + event-study N/kill status, dev-labeled), Trades (**hypothetical-only** ledger: setups, plans, touches, horizon returns; "No orders placed — hypothetical outcomes, not P&L"), Settings (display preferences, pause/disable writing the same `meta` flags).
+- Dashboard pages dock (additive; existing scanner rail untouched): six pages — Dashboard, Watchlist (starred, `meta`-persisted), Signals (full setup ledger + history + filters), Analysis (indicator board + input coverage + event-study N/kill status, dev-labeled), Trades (**hypothetical-only** ledger: setups, plans, touches, horizon returns; "No orders placed — hypothetical outcomes, not P&L"), Settings (display preferences, pause/disable writing the same `meta` flags).
 - Settings may pause the watcher or disable a trigger; it may not edit thresholds or model parameters in place. Any strategy-parameter change requires a new immutable rule version and a separately labeled evaluation cohort. Remove leverage-cap editing from this release. Show only 100 USDT reference-notional stop-risk; do not present leverage headroom or liquidation safety without venue maintenance-margin and mark-price inputs.
 - Errors: zero setups → "silence is valid"; feed/DB failure → contained fallback, scanner intact; chart timeframe failure → "bars unavailable" per tab. Close-time honesty throughout (`data as of`, last closed bar).
 
