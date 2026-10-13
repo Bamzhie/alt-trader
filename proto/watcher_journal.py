@@ -135,3 +135,55 @@ def snapshot_pair(conn, now):
         " ORDER BY ts DESC, rowid DESC LIMIT 1",
         (now - DAY_S, latest_d["ts"])).fetchone()
     return (latest_d, _snap_row(prior))
+
+
+def setup_stats(conn, now=None):
+    """(active_setups, new_setups_24h, monitoring_coverage) for snapshots.
+
+    Read from watcher_setup when the table exists; (0, 0, None) when the
+    watcher has never run. Coverage is the fraction of ACTIVE setups with
+    monitoring='ok' (an operational data-quality metric, never setup
+    quality); None when no setup is active. Never raises: a missing or
+    unreadable table degrades to zeros, never a failed sweep record.
+    """
+    try:
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+    except Exception:
+        return 0, 0, None
+    if "watcher_setup" not in tables:
+        return 0, 0, None
+    now = int(time.time()) if now is None else int(now)
+    try:
+        active = conn.execute(
+            "SELECT COUNT(*) FROM watcher_setup WHERE state='active'"
+        ).fetchone()[0]
+        new24 = conn.execute(
+            "SELECT COUNT(*) FROM watcher_setup WHERE created_at >= ?",
+            (now - DAY_S,)).fetchone()[0]
+        ok = conn.execute(
+            "SELECT COUNT(*) FROM watcher_setup WHERE state='active'"
+            " AND monitoring='ok'").fetchone()[0]
+    except Exception:
+        return 0, 0, None
+    return active, new24, (ok / active if active else None)
+
+
+def record_sweep(conn, eligible_count, evaluated_count, ts=None):
+    """Record one completed universe sweep: journal event + snapshot.
+
+    The scan loop calls this once per completed sweep (Task 3, spec
+    section 1): a sweep-complete watcher_events row plus one
+    dashboard_snapshot row carrying the eligible vs evaluated counts.
+    Returns the snapshot ts.
+    """
+    ensure_journal(conn)
+    ts = int(time.time()) if ts is None else int(ts)
+    active, new24, coverage = setup_stats(conn, now=ts)
+    log_event(
+        conn, "sweep-complete", "",
+        f"sweep complete: evaluated {evaluated_count}/{eligible_count}"
+        f" eligible; active setups {active}; new 24h {new24}",
+        ts=ts)
+    return write_snapshot(conn, eligible_count, evaluated_count,
+                          active, new24, coverage, ts=ts)

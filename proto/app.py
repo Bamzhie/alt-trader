@@ -22,9 +22,9 @@ from . import mexc
 from . import scan as scanmod
 from . import indicators as ind
 from . import planner as pl
-from .scan import build_universe, score_universe, venue_health, UNIVERSE_BUDGET
-from .scorer import fits_stake
+from .scan import build_universe, score_universe, venue_health
 from .store import Store, writes_signals
+from . import watcher_journal as journalmod
 from .watcher_feed import WatcherUnavailable, correlated_lines, load_panel
 from .watcher_view import RESEARCH_BANNER
 
@@ -63,6 +63,7 @@ class App:
         self.log_errors = 0          # store write failures, last scan_once
         self.universe_error = None   # last universe refresh failure, if any
         self._uni_at = 0.0           # when self.uni was last refreshed
+        self.sweep_progress = (0, 0)  # (done, total) of the latest sweep
         # Watcher screen (additive; scanner state above untouched).
         self.show_watcher = False
         self.watcher_detail = False
@@ -72,14 +73,14 @@ class App:
 
     # ---------- data ----------
     def refresh_universe(self):
-        # store passed -> rotation pointer read/advanced each refresh, so the
-        # 30-coin rotation window sweeps forward and survives restarts.
-        # `universe_budget` is an OPTIONAL front-end hook (the GUI ties it to
-        # its --coins control); absent, the guaranteed 150-coin budget keeps
-        # applying exactly as before.
-        budget = getattr(self.args, "universe_budget", UNIVERSE_BUDGET)
-        self.uni = build_universe(self.args.stake, budget=budget,
-                                  store=self.store)
+        # Stakeless full universe (dashboard spec section 2): every eligible
+        # perp, every refresh. `universe_budget` is an OPTIONAL front-end hook
+        # (the GUI ties it to its --coins control); absent, the sweep walks
+        # the whole eligible set. One Bybit ticker request per refresh fills
+        # the OI symbol map the per-coin OI leg reads (never per coin).
+        budget = getattr(self.args, "universe_budget", None)
+        self.uni = build_universe(budget=budget, store=self.store)
+        scanmod._bybit_symbol_set()
         self.det = mexc.details()
         self.tk = mexc.tickers()
         self._uni_at = time.time()
@@ -116,6 +117,11 @@ class App:
             reverse=True)[: self.args.coins]
 
         errors = {}
+        self.sweep_progress = (0, len(ranked))
+
+        def _progress(done, total):
+            self.sweep_progress = (done, total)
+
         cards = score_universe(ranked, self.det, self.tk, self.args.stake,
                                errors=errors,
                                stagger=scanmod.STAGGER_S,
@@ -123,7 +129,8 @@ class App:
                                attach_plans=True,
                                max_leverage=getattr(
                                    self.args, "leverage_cap",
-                                   pl.MAX_LEVERAGE))
+                                   pl.MAX_LEVERAGE),
+                               progress_fn=_progress)
 
         # Log: flagged rows AND shadow rows (vetoed / sub-threshold). SS6.1a.
         # Flagged = stake-aware actionable AND above threshold (selective,
@@ -167,7 +174,15 @@ class App:
         self.cards = cards
         self.sel = 0
         self.last_scan = time.time()
-        self.status = (f"scanned {len(cards)} in {time.time()-t0:.0f}s · "
+        # Post-cut writer (Task 3, spec section 1): every completed sweep
+        # logs a sweep-complete journal event + a dashboard snapshot row
+        # carrying eligible vs evaluated counts separately.
+        evaluated = len(ranked)
+        eligible = len(self.uni)
+        self.sweep_progress = (evaluated, evaluated)
+        journalmod.record_sweep(self.store.conn, eligible, evaluated)
+        self.status = (f"sweeping {evaluated}/{eligible} · "
+                       f"scored {len(cards)} in {time.time()-t0:.0f}s · "
                        f"universe {len(self.uni)} · "
                        f"failed {len(errors)}/{len(ranked)}"
                        + (f" · log errors {log_errors}" if log_errors else "")
@@ -247,10 +262,9 @@ class App:
             arrow = {"LONG": "▲", "SHORT": "▼"}.get(c.direction, "•")
             vol = c.quote_vol_24h
             vol_s = f"${vol/1e6:.1f}M" if vol >= 1e6 else f"${vol/1e3:.0f}K"
+            # Stakeless model (spec section 2): min_notional is venue info
+            # for detail display, never a flag. No stake gating here.
             flags = []
-            if c.min_notional and not fits_stake(c.min_notional,
-                                                 self.args.stake):
-                flags.append("WATCH")
             attr = curses.A_REVERSE if (i + start) == self.sel else curses.A_NORMAL
             v3_display = (f"{c.score_v3:>7.1f}" if getattr(c, "score_v3", None) is not None else f"{'—':>7}")
             line = (f"{i+start+1:<3}{arrow:<5}{c.coin:<15}{c.price:>13.8g}"
@@ -717,9 +731,6 @@ def run_headless(app, iterations=None):
                 vol = c.quote_vol_24h
                 vol_s = f"${vol/1e6:.1f}M" if vol >= 1e6 else f"${vol/1e3:.0f}K"
                 flags = []
-                if c.min_notional and not fits_stake(c.min_notional,
-                                                     app.args.stake):
-                    flags.append("WATCH")
                 v3_disp = f"{c.score_v3:>7.1f}" if getattr(c, "score_v3", None) is not None else "      —"
                 print(f"{shown+1:<3}{arrow:<5}{c.coin:<15}{c.price:>13.8g}"
                       f"{c.change_24h_pct:>7.1f}%{vol_s:>10}{c.lean:>7.2f}"
