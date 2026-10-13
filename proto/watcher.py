@@ -9,6 +9,8 @@ never reimplemented) via :func:`v3_snapshot`.
 import math
 
 from proto import scorer
+from proto.watcher_journal import ensure_journal as _ensure_journal
+from proto.watcher_journal import log_event as _log_event
 
 BAR_SEC = 300
 HALF_HOUR_SEC = 1800
@@ -784,7 +786,7 @@ def emit_setup(conn, setup):
              cooldown)).fetchone()
         if prior:
             return prior[0]
-    conn.execute(
+    cur = conn.execute(
         """INSERT OR IGNORE INTO watcher_setup
            (id, rule_id, coin, symbol, src, direction, src_bar_ts, entry,
             b_stop, a_tgt, stop_px, tgt_px, stop_dist_pct, tgt_dist_pct,
@@ -798,7 +800,13 @@ def emit_setup(conn, setup):
          row["tgt_dist_pct"], row["N_bars"], row["trail"],
          row["price_source"], row["cost_total"], row["cost_floor"],
          row["funding_state"], row["created_at"]))
+    inserted = cur.rowcount
     conn.commit()
+    if inserted:
+        _ensure_journal(conn)
+        _log_event(conn, "emission", row["coin"],
+                   f"{row['id']} emitted ({row['direction']} "
+                   f"via {row['rule_id']})")
     return row["id"]
 
 
@@ -862,6 +870,15 @@ def eval_bar(conn, setup_id, bar, ctx):
                VALUES (?,?,?,?,?,?,?)""",
             (setup_id, bar_ts, state, monitoring, ret_gross, None, note))
         conn.commit()
+        # Append-only journal transitions (Task 2): invalidation + expiry
+        # only. Resolutions and live bars write no journal row; the
+        # sweep-complete kind is written by the scan loop.
+        if state == "invalidated":
+            _log_event(conn, "invalidation", srow["coin"],
+                       f"{setup_id} invalidated: {note}")
+        elif state in ("expired_time", "expired_gap"):
+            _log_event(conn, "expiry", srow["coin"],
+                       f"{setup_id} expired ({state}): {note}")
 
     # 1. Gap/stale -> unavailable overlay; 48 consecutive -> expired_gap.
     stale = bool(ctx.get("missing")) or bar is None
