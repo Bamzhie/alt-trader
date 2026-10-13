@@ -45,8 +45,8 @@ import time
 from types import SimpleNamespace
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QBrush, QKeySequence, QPainter, QPixmap, \
-    QShortcut, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QColor, QBrush, QKeySequence, QPainter, QPen, \
+    QPixmap, QShortcut, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import QApplication, QButtonGroup, QCheckBox, \
     QComboBox, QDockWidget, QFileDialog, QFrame, QGridLayout, QGroupBox, \
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, \
@@ -896,6 +896,171 @@ class DetailChartWidget(QWidget):
             p.end()
 
 
+# ---- KPI cards (rebuild Task 4: QPainter sparklines + coverage gauge) ----
+# Each card carries a sparkline over the last SPARKLINE_N 5-minute closes
+# (test/fixture seam: RadarWindow.dash_card_history maps card title ->
+# closes; the dock never fetches the venue itself). Histories shorter
+# than SPARKLINE_MIN_BARS render a flat unavailable state — points are
+# never invented. The Monitoring Coverage card additionally carries a
+# semicircular gauge over the snapshot's monitoring_coverage fraction
+# (None -> unavailable, never a guessed arc).
+SPARKLINE_N = 24
+SPARKLINE_MIN_BARS = 2
+SPARKLINE_UNAVAILABLE = "unavailable"
+
+
+def sparkline_points(history):
+    """Normalized [(x, y)] points in [0, 1]^2 from closes, or [].
+
+    [] when history is None, shorter than SPARKLINE_MIN_BARS, or has
+    no finite values — callers render the flat unavailable state.
+    A flat series maps to the vertical midline (no fake movement).
+    """
+    try:
+        vals = [float(v) for v in (history or [])]
+    except (TypeError, ValueError):
+        return []
+    vals = [v for v in vals if math.isfinite(v)]
+    if len(vals) < SPARKLINE_MIN_BARS:
+        return []
+    if len(vals) > SPARKLINE_N:
+        vals = vals[-SPARKLINE_N:]
+    lo, hi = min(vals), max(vals)
+    span = (hi - lo) or 1.0
+    n = len(vals)
+    if n < 2:
+        return []
+    return [(i / (n - 1),
+             0.5 if hi == lo else 1.0 - (v - lo) / span)
+            for i, v in enumerate(vals)]
+
+
+class SparklineWidget(QWidget):
+    """Single-polyline sparkline (pure QPainter, no data fetching).
+
+    set_history() takes closes oldest-first (or None); short/empty
+    histories set the unavailable flag and paint the honest flat
+    "unavailable" copy — never invented points.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._history = []
+        self.unavailable = True
+        self.setMinimumHeight(36)
+        self.setMinimumWidth(80)
+
+    def set_history(self, history):
+        try:
+            vals = [float(v) for v in (history or [])]
+        except (TypeError, ValueError):
+            vals = []
+        self._history = [v for v in vals if math.isfinite(v)]
+        self.unavailable = not bool(sparkline_points(self._history))
+        self.update()
+
+    def points(self):
+        """Normalized points, or [] when unavailable (test seam)."""
+        if self.unavailable:
+            return []
+        return sparkline_points(self._history)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.fillRect(self.rect(), QColor(_theme.SURFACE))
+            pad = 4
+            w, h = max(1, self.width()), max(1, self.height())
+            pts = self.points()
+            if not pts:
+                p.setPen(QPen(QColor(_theme.TEXT_DIM),
+                             1, Qt.PenStyle.DashLine))
+                mid = h // 2
+                p.drawLine(pad, mid, w - pad, mid)
+                p.setPen(QColor(_theme.TEXT_DIM))
+                p.drawText(self.rect(),
+                           Qt.AlignmentFlag.AlignCenter,
+                           SPARKLINE_UNAVAILABLE)
+                return
+            pw, ph = max(1, w - 2 * pad), max(1, h - 2 * pad)
+            xy = [(pad + x * pw, pad + y * ph) for x, y in pts]
+            p.setPen(QPen(QColor(_theme.ACCENT), 1.5))
+            prev = None
+            for pt in xy:
+                if prev is not None:
+                    p.drawLine(int(prev[0]), int(prev[1]),
+                               int(pt[0]), int(pt[1]))
+                prev = pt
+            last = xy[-1]
+            p.setBrush(QBrush(QColor(_theme.ACCENT)))
+            p.setPen(QPen(QColor(_theme.ACCENT), 1))
+            p.drawEllipse(int(last[0]) - 2, int(last[1]) - 2, 4, 4)
+        finally:
+            p.end()
+
+
+class CoverageGaugeWidget(QWidget):
+    """Semicircular coverage gauge (pure QPainter, no data fetching).
+
+    set_value() takes the monitoring_coverage fraction (or None);
+    None/non-finite sets the unavailable flag and paints the honest
+    "unavailable" copy — never a guessed arc.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.value = None
+        self.unavailable = True
+        self.setMinimumHeight(64)
+        self.setMinimumWidth(120)
+
+    def set_value(self, frac):
+        try:
+            v = None if frac is None else float(frac)
+        except (TypeError, ValueError):
+            v = None
+        if v is None or not math.isfinite(v):
+            self.value = None
+            self.unavailable = True
+        else:
+            self.value = max(0.0, min(1.0, v))
+            self.unavailable = False
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.fillRect(self.rect(), QColor(_theme.SURFACE))
+            w, h = max(1, self.width()), max(1, self.height())
+            pad = 8
+            dial = min(w - 2 * pad, 2 * (h - 2 * pad - 12))
+            dial = max(24, dial)
+            x0 = (w - dial) // 2
+            y0 = h - pad - 12 - dial // 2
+            rect = (x0, y0, dial, dial)
+            p.setPen(QPen(QColor(_theme.BORDER), 6,
+                         Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawArc(*rect, 180 * 16, 180 * 16)
+            if self.unavailable or self.value is None:
+                p.setPen(QColor(_theme.TEXT_DIM))
+                p.drawText(self.rect(),
+                           Qt.AlignmentFlag.AlignCenter,
+                           SPARKLINE_UNAVAILABLE)
+                return
+            p.setPen(QPen(QColor(_theme.ACCENT), 6,
+                         Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawArc(*rect, 180 * 16, -int(round(self.value * 180)) * 16)
+            p.setPen(QColor(_theme.TEXT))
+            p.drawText(self.rect(),
+                       Qt.AlignmentFlag.AlignHCenter
+                       | Qt.AlignmentFlag.AlignBottom,
+                       f"{self.value * 100.0:.1f}%")
+        finally:
+            p.end()
+
+
 # ---- dashboard pages (Task 7: bottom row + six pages, additive) ----
 # Six dashboard pages (the Dashboard dock from Task 5 is the first page;
 # the other five live as tabs in their own dock so the scanner rail,
@@ -1252,6 +1417,10 @@ class RadarWindow(QMainWindow):
         self.dash_sort = "Newest"
         self.dash_market_data = {}
         self.dash_cards_pair = (None, None)
+        # KPI cards (rebuild Task 4): per-title 5m-close histories feeding
+        # the card sparklines (test/fixture seam; the dock never fetches
+        # the venue). Empty by default -> flat unavailable sparklines.
+        self.dash_card_history = {}
         self.dash_rows = []
         self.dash_asof = ""
         # Dashboard pages (Task 7): bottom-row + six-page caches. Pause
@@ -2213,6 +2382,8 @@ class RadarWindow(QMainWindow):
         cards.setSpacing(4)
         self.dash_card_value = []
         self.dash_card_sub = []
+        self.dash_card_spark = []
+        self.dash_coverage_gauge = None
         for title, _value, _sub in format_dashboard_cards(None, None):
             frame = QFrame()
             frame.setObjectName("tile")
@@ -2230,6 +2401,13 @@ class RadarWindow(QMainWindow):
             s.setObjectName("headerStats")
             s.setWordWrap(True)
             fl.addWidget(s)
+            spark = SparklineWidget()
+            fl.addWidget(spark)
+            self.dash_card_spark.append(spark)
+            if title == "Monitoring Coverage":
+                gauge = CoverageGaugeWidget()
+                fl.addWidget(gauge)
+                self.dash_coverage_gauge = gauge
             cards.addWidget(frame)
             self.dash_card_value.append(v)
             self.dash_card_sub.append(s)
@@ -2332,6 +2510,22 @@ class RadarWindow(QMainWindow):
         return "\n".join(f"{t}\n{v}\n{s}"
                          for t, v, s in self.dashboard_cards())
 
+    def set_card_history(self, mapping):
+        """Per-title 5m-close histories for the card sparklines.
+
+        Pure seam (fixtures/tests only — no fetching): unknown titles
+        are ignored, and missing titles keep the flat unavailable
+        sparkline. Never raises.
+        """
+        try:
+            self.dash_card_history = dict(mapping or {})
+        except Exception:
+            self.dash_card_history = {}
+        try:
+            self._render_dashboard()
+        except Exception:
+            pass
+
     def dashboard_text(self):
         """Full dashboard page text (banner + cards + table + stamp)."""
         bits = [self.dash_banner.text(), self.dashboard_cards_text()]
@@ -2381,10 +2575,23 @@ class RadarWindow(QMainWindow):
         """Render cached cards + filtered rows (no I/O, never raises)."""
         try:
             cards = format_dashboard_cards(*self.dash_cards_pair)
-            for i, (_title, value, sub) in enumerate(cards):
+            for i, (title, value, sub) in enumerate(cards):
                 if i < len(self.dash_card_value):
                     self.dash_card_value[i].setText(value)
                     self.dash_card_sub[i].setText(sub)
+                if i < len(getattr(self, "dash_card_spark", [])):
+                    try:
+                        hist = (self.dash_card_history or {}).get(title)
+                    except Exception:
+                        hist = None
+                    self.dash_card_spark[i].set_history(hist)
+            try:
+                latest = (self.dash_cards_pair or (None, None))[0] or {}
+                cov = latest.get("monitoring_coverage")
+            except Exception:
+                cov = None
+            if getattr(self, "dash_coverage_gauge", None) is not None:
+                self.dash_coverage_gauge.set_value(cov)
             rows = filter_dashboard_rows(
                 self.dash_rows, dir=self.dash_dir,
                 market=self.dash_market, horizon=self.dash_horizon,
