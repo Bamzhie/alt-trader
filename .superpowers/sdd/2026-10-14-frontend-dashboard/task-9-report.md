@@ -129,3 +129,123 @@ liquidation/conviction), and the "select a coin" empty state.
   yet (the dashboard's `useClosedCloses` cache is scoped to the filtered
   table coins); overview sparklines render the empty frame until a later
   wiring pass — no fabricated data either way.
+
+## Fix round 1
+
+Review found five Important issues. All five fixed; the six minors stay
+deferred (404 vs network indistinguishable, vacuous null-RSI assertion,
+tier missing from banned-words guard, jsdom console noise, dead refs,
+lockfile spec mismatch).
+
+### 1. Client-side EMA overlay removed (controller ruling: REMOVE)
+
+**Ruling recorded:** the spec constraint is explicit — "frontend never
+computes indicators; indicators come from /metrics" — and the client-side
+EMA disagreed numerically with the backend's EMA (Metrics tab showed
+EMA 50 110,980.20 from /metrics while the chart overlay sat elsewhere,
+both labeled "EMA 50": wrong seed — `proto/indicators.py:45-55` seeds with
+the SMA of the first n closes, the client seeded with the close at index
+n-1 — plus a truncated window vs full history). Removal is the only fully
+honest option, so the overlays are GONE:
+
+- `CandleChart.tsx` — `ema50`/`ema200` props dropped from
+  `CandleChartProps` (kept minimal: the props are removed, not kept dead);
+  the `LineSeries` import, the `emaOverlay` helper and both overlay calls
+  deleted; the effect now depends on `[bars]` alone. The chart renders
+  candles + volume only until the real service provides EMA series via
+  `/bars` (contract change, out of scope).
+- `CoinDetail.tsx` — the entire EMA `useMemo` (smoothing constant, seed,
+  null-padding) deleted, along with the now-unused `Bar` type import. The
+  Metrics tab's `EMA 50` / `EMA 200` rows (scalars straight from
+  `/metrics`) are untouched — those are the honest source.
+- `theme.css` — the `--ema50` / `--ema200` tokens added for the overlays
+  are removed; no dead tokens left behind. All remaining chart colors
+  still come from `var(--*)`.
+
+Covering test: `test_detail.test.tsx` → "chart overlays > the frontend
+computes no indicator series — candles + volume only" (a source guard:
+no `LineSeries`/ema identifiers in CandleChart, no EMA smoothing constant
+in CoinDetail, no `--ema` tokens in theme.css), plus "CandleChart renders
+candles and volume with real bars" (the frame reports real data).
+
+### 2. Horizon-filter assertion restored (was a no-op)
+
+`test_dashboard.test.tsx` — the weakened
+`expect(document.querySelectorAll("table").length).toBeGreaterThan(0)`
+(trivially true whether or not filtering works) is replaced by the real
+assertion, in the same shape as the direction-filter test: after
+switching to 24h, **no `tbody tr` contains "BTC"**. Added the matching
+positive half — before the switch, some `tbody tr` *does* contain "BTC" —
+so the assertion has teeth in both directions and cannot pass vacuously.
+Scope is `tbody` because the Market Overview panel legitimately keeps its
+own BTC row outside the table.
+
+### 3. Stale cross-coin data flash on selection change
+
+`CoinDetail.tsx` — the four states (`setup`, `plan`, `metrics`, `bars`)
+are now reset to `{data: null, error: null}` at the **top of the effect
+body**, before the `selectedCoin === null` early return, keeping the
+cancellation flag. A BTC → ETH switch no longer renders "ETH - Bitcoin"
+with BTC's price/24h% or BTC candles while ETH's reads are in flight.
+The same reset covers the bars-per-timeframe key, since `barTimeframe` is
+in the effect's dependency list: a timeframe switch clears the previous
+timeframe's candles rather than drawing them under the new tab.
+
+Covering test: `test_detail.test.tsx` → "coin detail > switching coins
+clears the previous coin's data until the new coin lands". The stub parks
+every ETH read in flight (`deferCoin`); with BTC's data on screen the
+test asserts no BTC price, no "BTC - Bitcoin", no "Bitcoin", no RSI
+readout, the empty chart frame (`aria-label="no chart data"`) and
+"loading…" panes — then releases ETH and asserts ETH's own price/name and
+the populated chart frame render. The stub answers `/setup/<coin>`,
+`/tradeplan/<coin>` and `/metrics?coin=` with per-coin fixtures so the
+switch is observable (BTC vs ETH fixtures).
+
+### 4. MarketOverview mini sparklines wired from real closes
+
+`Dashboard.tsx` — the `coins` memo now unions the filtered table's coins
+with the snapshot's `market_overview` coins (BTC + ETH by contract), so
+`useClosedCloses` fetches real closed 5m closes for the overview rows
+even when a coin is filtered out of the table, and the resulting
+`closes` map is passed straight through as `closesByCoin`. No fabricated
+data: a coin whose bars never arrive keeps the honest empty frame.
+
+Covering test: `test_dashboard.test.tsx` → "sparklines > closed-bar
+sparklines survive the StrictMode effect race" now asserts
+`document.querySelectorAll("svg[aria-label='no trend data']").length`
+is **0** across the whole app (previously scoped to `tbody`, which let the
+dead overview frames pass). This fails against the old Dashboard (which
+passed no `closesByCoin`) and passes with the wiring.
+
+### 5. Chart effect re-running on every render while bars load
+
+`CoinDetail.tsx` — the inline `emptyBars(selectedCoin, barTimeframe)`
+literal (a new object identity every render, and `CandleChart`'s effect
+depends on `bars`, so each in-flight fetch tore down and recreated the
+chart) is replaced by `placeholderBars`, a `useMemo` keyed on
+`[selectedCoin, barTimeframe]` — the same key as the fetch effect. The
+chart is created once per coin+timeframe, not once per render.
+
+Covering test: same memoized-prop contract is exercised by the
+switching-coins test above (the empty frame must appear immediately on
+switch and the populated frame once bars land, with no intermediate
+churn); the source guard in test 1 pins the `[bars]`-only dependency.
+
+### Verification
+
+```
+$ cd app && npm run test
+ Test Files  10 passed (10)
+      Tests  141 passed (141)     (was 138; +2 net new tests, 1 reworked)
+
+$ npm run typecheck    # tsc --noEmit — clean
+$ npm run lint         # eslint . --max-warnings 0 — clean
+$ npm run build        # tsc --noEmit && vite build — ✓ built in 2.33s
+```
+
+TDD evidence (RED before the fix, same tests after): reverting only
+`app/src` and re-running the suites fails exactly the new/strengthened
+assertions — `switching coins clears the previous coin's data until the
+new coin lands`, `the frontend computes no indicator series`, and the
+StrictMode sparkline test's new whole-app "no trend data" === 0 guard —
+and nothing else.

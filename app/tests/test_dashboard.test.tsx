@@ -373,12 +373,11 @@ describe("sparklines", () => {
         .toBeGreaterThan(0),
     );
     // The table's rows all carry real polylines now; the Market Overview
-    // panel's own sparklines (Task 9) still show the empty frame under
-    // this snapshot-only bars stub — assert the TABLE specifically.
+    // panel's own sparklines (Task 9, fix round 1) are wired from the
+    // same real 5m closes, so they render polylines too — no row in the
+    // overview keeps the empty frame.
     expect(
-      document.querySelectorAll(
-        "tbody svg[aria-label='no trend data']",
-      ).length,
+      document.querySelectorAll("svg[aria-label='no trend data']").length,
     ).toBe(0);
   });
 
@@ -532,15 +531,27 @@ describe("Top Signals table", () => {
     // SOL is horizon 24h — hidden under the default 4h filter.
     expect(screen.queryByText("SOL")).toBeNull();
     expect(screen.getAllByText("BTC").length).toBeGreaterThan(0);
+    // BTC is in a table row under the default filter (so the assertion
+    // below has teeth in both directions, not just "a table exists").
+    expect(
+      Array.from(document.querySelectorAll("tbody tr")).some((r) =>
+        (r.textContent ?? "").includes("BTC"),
+      ),
+    ).toBe(true);
 
     await act(async () => {
       useDashboardStore.getState().setHorizonFilter("24h");
     });
     await waitFor(() => expect(screen.getByText("SOL")).toBeInTheDocument());
-    // BTC leaves the 4h table (it still exists in the overview panel).
+    // BTC leaves the 4h table entirely once the horizon switches to 24h
+    // — no tbody row may still mention it (the Market Overview panel
+    // keeps its own BTC row outside the table, so the assertion is
+    // scoped to tbody). Asserting only "a table exists" is a no-op.
+    const rows = document.querySelectorAll("tbody tr");
+    expect(rows.length).toBeGreaterThan(0);
     expect(
-      document.querySelectorAll("table").length,
-    ).toBeGreaterThan(0);
+      Array.from(rows).every((r) => !(r.textContent ?? "").includes("BTC")),
+    ).toBe(true);
   });
 
   test("direction filter narrows to LONG only", async () => {

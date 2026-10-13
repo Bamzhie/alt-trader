@@ -212,7 +212,15 @@ export function Dashboard() {
     return sortSetups(byDirection, sort);
   }, [filtered, directionFilter, sort]);
 
-  const coins = useMemo(() => rows.map((s) => s.coin), [rows]);
+  const coins = useMemo(() => {
+    // The Top Signals table's coins AND the Market Overview's own coins
+    // (BTC + ETH by contract): the overview sparklines are drawn from the
+    // same closed 5m closes cache, so a coin missing from the filtered
+    // table (e.g. under a 24h horizon filter) still gets its real closes
+    // and the overview row never keeps a dead empty frame.
+    const overviewCoins = snapshot?.market_overview.map((r) => r.coin) ?? [];
+    return Array.from(new Set([...rows.map((s) => s.coin), ...overviewCoins]));
+  }, [rows, snapshot]);
   const closes = useClosedCloses(client, coins);
 
   // Blocking reason for the selected coin, from the snapshot's
@@ -252,7 +260,10 @@ export function Dashboard() {
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            <MarketOverview overview={snapshot.market_overview} />
+            <MarketOverview
+              overview={snapshot.market_overview}
+              closesByCoin={closes}
+            />
             <CoinDetail client={client} blockingReason={blockingReason} />
           </div>
 

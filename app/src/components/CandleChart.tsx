@@ -1,15 +1,14 @@
-// CandleChart — closed-bar candlesticks with EMA50/EMA200 overlays and
-// a volume histogram, mounted on a div ref via Lightweight Charts (the
-// ONLY charting library in this app).
+// CandleChart — closed-bar candlesticks and a volume histogram, mounted
+// on a div ref via Lightweight Charts (the ONLY charting library in
+// this app). It renders candles + volume ONLY: the frontend never
+// computes indicators, so no EMA (or any other) overlay is drawn here —
+// the chart values must come from the service, not from bar closes.
 //
 // House rules:
 //   * CLOSED bars only — every bar is filtered on `closed` before it is
 //     drawn; an open bar is never rendered (close-time honesty).
 //   * Empty bars → an empty frame. No fabricated candles, no retry
 //     spinner, no placeholder series.
-//   * EMA arrays are (number|null)[] from the caller; null entries are
-//     skipped (a null EMA is unavailable, never 0), and a null/zero EMA
-//     value is never drawn as a flat zero line.
 //   * Colors come from the CSS custom properties resolved by the caller
 //     (getComputedStyle at mount) — never raw hexes in this module.
 //   * jsdom has no canvas: mount is wrapped so a chart-less environment
@@ -18,7 +17,6 @@ import { useEffect, useRef } from "react";
 import {
   createChart,
   CandlestickSeries,
-  LineSeries,
   HistogramSeries,
   type IChartApi,
   type ISeriesApi,
@@ -29,10 +27,6 @@ import type { Bars } from "../api/types";
 export interface CandleChartProps {
   /** Closed bars in chronological order. */
   bars: Bars;
-  /** EMA50 series aligned with `bars.bars`; null = unavailable. */
-  ema50: (number | null)[];
-  /** EMA200 series aligned with `bars.bars`; null = unavailable. */
-  ema200: (number | null)[];
 }
 
 /** Resolves a CSS custom property (theme token) to a literal value. */
@@ -50,7 +44,7 @@ function tokenValue(name: string, fallback: string): string {
   return value.startsWith("var(") ? fallback : value;
 }
 
-export function CandleChart({ bars, ema50, ema200 }: CandleChartProps) {
+export function CandleChart({ bars }: CandleChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick">[]>([]);
@@ -118,27 +112,6 @@ export function CandleChart({ bars, ema50, ema200 }: CandleChartProps) {
       })),
     );
 
-    // EMA overlays: skip null entries (unavailable is never drawn as 0).
-    const emaOverlay = (
-      values: (number | null)[],
-      color: string,
-    ): void => {
-      const points = closed
-        .map((b, i) => ({ t: b.ts, v: values[i] ?? null }))
-        .filter((p): p is { t: number; v: number } => p.v !== null)
-        .map((p) => ({ time: p.t as UTCTimestamp, value: p.v }));
-      if (points.length === 0) return;
-      const series = chart.addSeries(LineSeries, {
-        color,
-        lineWidth: 2,
-        priceLineVisible: false,
-        lastValueVisible: false,
-      });
-      series.setData(points);
-    };
-    emaOverlay(ema50, tokenValue("--ema50", "#eab308"));
-    emaOverlay(ema200, tokenValue("--ema200", "#8b5cf6"));
-
     // Volume histogram on its own overlay scale.
     const volumeSeries = chart.addSeries(HistogramSeries, {
       priceScaleId: "volume",
@@ -167,7 +140,7 @@ export function CandleChart({ bars, ema50, ema200 }: CandleChartProps) {
       chartRef.current = null;
       seriesRef.current = [];
     };
-  }, [bars, ema50, ema200]);
+  }, [bars]);
 
   return (
     <div

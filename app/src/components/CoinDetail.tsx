@@ -21,7 +21,6 @@ import { useEffect, useMemo, useState } from "react";
 import { createClient, ApiError } from "../api/client";
 import type { ApiClient } from "../api/client";
 import type {
-  Bar,
   Bars,
   Metrics,
   Setup,
@@ -143,14 +142,18 @@ export function CoinDetail({ client: clientProp, blockingReason }: CoinDetailPro
 
   // Reset + fetch on every coin switch. A coin without a setup 404s —
   // the panel then renders "no setup yet" with its blocking reason.
+  //
+  // The four states are cleared at the TOP of the effect (and for a null
+  // selection too): a coin switch BTC -> ETH must not keep the previous
+  // coin's setup/plan/metrics/bars on screen while ETH's reads are in
+  // flight — otherwise the header renders "ETH - Bitcoin" with BTC's
+  // price and the chart shows BTC candles until ETH's data lands.
   useEffect(() => {
-    if (selectedCoin === null) {
-      setSetup({ data: null, error: null });
-      setPlan({ data: null, error: null });
-      setMetrics({ data: null, error: null });
-      setBars({ data: null, error: null });
-      return;
-    }
+    setSetup({ data: null, error: null });
+    setPlan({ data: null, error: null });
+    setMetrics({ data: null, error: null });
+    setBars({ data: null, error: null });
+    if (selectedCoin === null) return;
     let cancelled = false;
     const coin = selectedCoin;
 
@@ -192,31 +195,14 @@ export function CoinDetail({ client: clientProp, blockingReason }: CoinDetailPro
     };
   }, [client, selectedCoin, barTimeframe]);
 
-  // EMA series aligned to the bars for the chart overlays. The EMA is
-  // computed over the bar closes here — the contract exposes no EMA
-  // series endpoint, and a null rendering would lose the overlay.
-  // (Hoisted above the early return so the hook order is stable.)
-  const { ema50, ema200 } = useMemo(() => {
-    const barsData: Bars | null = bars.data;
-    if (!barsData) return { ema50: [], ema200: [] };
-    const closed: Bar[] = barsData.bars.filter((b) => b.closed);
-    const closes = closed.map((b) => b.close);
-    const ema = (values: number[], period: number): (number | null)[] => {
-      const k = 2 / (period + 1);
-      const out: (number | null)[] = [];
-      let prev: number | null = null;
-      values.forEach((v, i) => {
-        if (i + 1 < period) {
-          out.push(null);
-          return;
-        }
-        prev = prev === null ? v : v * k + prev * (1 - k);
-        out.push(prev);
-      });
-      return out;
-    };
-    return { ema50: ema(closes, 50), ema200: ema(closes, 200) };
-  }, [bars.data]);
+  // The empty-bars object is memoized on coin + timeframe: an inline
+  // `emptyBars(...)` literal would be a NEW object identity every render,
+  // and CandleChart's effect depends on `bars`, so each in-flight fetch
+  // would tear down and recreate the chart. Same key as the effect above.
+  const placeholderBars = useMemo(
+    () => emptyBars(selectedCoin ?? "", barTimeframe),
+    [selectedCoin, barTimeframe],
+  );
 
   if (selectedCoin === null) {
     return (
@@ -297,11 +283,7 @@ export function CoinDetail({ client: clientProp, blockingReason }: CoinDetailPro
         </div>
       ) : (
         <div className="mt-3">
-          <CandleChart
-            bars={bars.data ?? emptyBars(selectedCoin, barTimeframe)}
-            ema50={ema50}
-            ema200={ema200}
-          />
+          <CandleChart bars={bars.data ?? placeholderBars} />
         </div>
       )}
 
