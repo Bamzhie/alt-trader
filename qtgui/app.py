@@ -1399,12 +1399,25 @@ class RadarWindow(QMainWindow):
         self.lbl_scan_utc = QLabel("Scan: --:--:--")
         self.lbl_scan_utc.setObjectName("headerStats")
         lay.addWidget(self.lbl_scan_utc)
+        # SCANNING dot + elapsed: driven ONLY by real worker/scan state
+        # (see _render_topbar) — never a hardcoded or invented timer.
+        self.lbl_scan_dot = QLabel("● IDLE")
+        self.lbl_scan_dot.setObjectName("scanDot")
+        self.lbl_scan_dot.setStyleSheet(f"color: {_theme.TEXT_DIM};")
+        lay.addWidget(self.lbl_scan_dot)
+        self.lbl_scan_elapsed = QLabel("no scan yet")
+        self.lbl_scan_elapsed.setObjectName("headerStats")
+        lay.addWidget(self.lbl_scan_elapsed)
         self.lbl_countdown = QLabel("Next scan: --:--")
         self.lbl_countdown.setObjectName("headerStats")
         lay.addWidget(self.lbl_countdown)
         self.lbl_venue = QLabel("MEXC –")
         self.lbl_venue.setObjectName("badgeVenue")
         lay.addWidget(self.lbl_venue)
+        # UTC clock (real UTC, refreshed on every tick/render).
+        self.lbl_clock = QLabel("--:--:-- UTC")
+        self.lbl_clock.setObjectName("headerStats")
+        lay.addWidget(self.lbl_clock)
         self.btn_gear = QPushButton("⚙")
         self.btn_gear.setFixedWidth(28)
         self.btn_gear.setToolTip("Open Settings")
@@ -1447,6 +1460,25 @@ class RadarWindow(QMainWindow):
             self.rail_buttons[key] = btn
             rail_lay.addWidget(btn)
         rail_lay.addStretch(1)
+        # Bottom status blocks: API + venue from REAL connection state
+        # (mexc_ok / self.venue, same sources as the top-bar pill), the
+        # account block states the read-only invariant (no keys held) —
+        # none of them ever hardcodes a "Connected" claim.
+        self.lbl_rail_api = QLabel("API: MEXC –")
+        self.lbl_rail_venue = QLabel("venue: Bybit –")
+        self.lbl_rail_account = QLabel("account: read-only (no keys)")
+        for block in (self.lbl_rail_api, self.lbl_rail_venue,
+                      self.lbl_rail_account):
+            block.setObjectName("railStatus")
+            block.setWordWrap(True)
+            block.setFont(_theme.ui_font(_theme.BASE_POINT_SIZE - 1))
+            block.setStyleSheet(f"color: {_theme.TEXT_DIM};")
+            rail_lay.addWidget(block)
+        # Selected-page green edge (ACC_POS accent). Rail-local override
+        # so qtgui/theme.py stays untouched.
+        rail.setStyleSheet(
+            "#railButton:checked { border-left: 2px solid %s; "
+            "font-weight: 700; }" % _theme.ACC_POS)
         row_lay.addWidget(rail)
 
         # ---- stacked pages ----
@@ -4276,7 +4308,7 @@ class RadarWindow(QMainWindow):
                 and time.time() - self._last_stats_ts >= STATS_EVERY_S):
             if self._submit("stats"):
                 self._last_stats_ts = time.time()
-        self._render_countdown()
+        self._render_topbar()
 
     # ------------------------------------------------------------ rendering
     def _render_all(self):
@@ -4306,13 +4338,35 @@ class RadarWindow(QMainWindow):
         return " · ".join(parts)
 
     def _render_topbar(self):
-        """Scan UTC stamp, live countdown, venue pill (top-bar widgets)."""
+        """Scan UTC stamp, live countdown, venue pill (top-bar widgets).
+
+        The SCANNING dot follows the real worker lane ("scan" in flight),
+        the elapsed label derives ONLY from last_scan_ts (honest "no scan
+        yet" before the first scan), the clock is real UTC, and the rail's
+        bottom status blocks mirror the same venue state — never a
+        hardcoded connection claim. No bell: there is no backing event
+        source, so omission is the correct state.
+        """
         if self.last_scan_ts:
             self.lbl_scan_utc.setText(
                 "Scan: " + time.strftime("%H:%M:%S",
                                          time.gmtime(self.last_scan_ts)) + " UTC")
+            delta = int(time.time() - self.last_scan_ts)
+            self.lbl_scan_elapsed.setText(
+                "elapsed %02d:%02d" % divmod(max(0, delta), 60))
         else:
             self.lbl_scan_utc.setText("Scan: --:--:--")
+            self.lbl_scan_elapsed.setText("no scan yet")
+        if "scan" in self._busy:
+            self.lbl_scan_dot.setText("● SCANNING")
+            self.lbl_scan_dot.setStyleSheet(
+                f"color: {_theme.LONG_FG};")
+        else:
+            self.lbl_scan_dot.setText("● IDLE")
+            self.lbl_scan_dot.setStyleSheet(
+                f"color: {_theme.TEXT_DIM};")
+        self.lbl_clock.setText(
+            time.strftime("%H:%M:%S", time.gmtime()) + " UTC")
         self._render_countdown()
         if self.mexc_ok is None:
             self.lbl_venue.setText("MEXC –")
@@ -4323,6 +4377,33 @@ class RadarWindow(QMainWindow):
         else:
             self.lbl_venue.setText("MEXC DEGRADED")
             self.lbl_venue.setStyleSheet(f"color: {_theme.ERROR_FG};")
+        self._render_rail_status()
+
+    def _render_rail_status(self):
+        """Rail bottom blocks from real venue/scan state (never hardcoded)."""
+        api = getattr(self, "lbl_rail_api", None)
+        venue_lbl = getattr(self, "lbl_rail_venue", None)
+        if api is not None:
+            if self.mexc_ok is None:
+                api.setText("API: MEXC –")
+                api.setStyleSheet(f"color: {_theme.TEXT_DIM};")
+            elif self.mexc_ok:
+                api.setText("API: MEXC ok")
+                api.setStyleSheet(f"color: {_theme.LONG_FG};")
+            else:
+                api.setText("API: MEXC DEGRADED")
+                api.setStyleSheet(f"color: {_theme.ERROR_FG};")
+        if venue_lbl is not None:
+            st = (self.venue or {}).get("bybit")
+            if st is None:
+                venue_lbl.setText("venue: Bybit –")
+                venue_lbl.setStyleSheet(f"color: {_theme.TEXT_DIM};")
+            elif st.get("ok"):
+                venue_lbl.setText("venue: Bybit ok")
+                venue_lbl.setStyleSheet(f"color: {_theme.LONG_FG};")
+            else:
+                venue_lbl.setText("venue: Bybit DEGRADED")
+                venue_lbl.setStyleSheet(f"color: {_theme.ERROR_FG};")
 
     def _countdown_text(self):
         """'Next scan: mm:ss' from interval − elapsed (or 'paused')."""
