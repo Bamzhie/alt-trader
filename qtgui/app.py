@@ -36,9 +36,11 @@ Read-only: no order code path exists, no keys are held.
 """
 
 import csv
+import math
 import os
 import queue
 import sqlite3
+import threading
 import time
 from types import SimpleNamespace
 
@@ -58,13 +60,14 @@ from gui.app import ACTIVITY, DIR_CHOICES, POLL_MS, SIGNAL_ANCHORS, \
     STATS_EVERY_S, TICK_MS, PlanWorker, Worker
 # --- reuse: ALL pure display/logic functions (never forked) ---
 from gui import model
+from proto import indicators as indicators_mod
 from proto import picks as picks_mod
 from proto import report as report_mod
 from proto import watcher_feed as watcher_feed_mod
 from proto import store as store_mod
-from proto.setup_copy import assert_clean, summarize_setup
+from proto.setup_copy import assert_clean, blocking_reason, summarize_setup
 from proto.watcher_view import RESEARCH_BANNER, SILENCE_VALID, STATE_WORDS
-from proto.planner import MAX_LEVERAGE
+from proto.planner import MAX_LEVERAGE, reference_plan
 
 from . import theme as _theme
 
@@ -381,7 +384,8 @@ def format_dashboard_cards(latest, prior):
 
 
 def setup_horizon_bucket(setup):
-    """'4h' for N_bars <= 48, '24h' above; None when N_bars is unknown.
+    """Exact-match horizon bucket from the geometry grid: 48->'4h',
+    288->'24h', anything else->None.
 
     Unknown-bucket rows are shown under both horizon filters (an
     unclassifiable active setup is never hidden by a filter).
@@ -393,9 +397,14 @@ def setup_horizon_bucket(setup):
     if n is None:
         return None
     try:
-        return "4h" if int(n) <= 48 else "24h"
+        n = int(n)
     except (TypeError, ValueError):
         return None
+    if n == 48:
+        return "4h"
+    if n == 288:
+        return "24h"
+    return None
 
 
 def setup_expiry_ts(setup):
@@ -534,6 +543,180 @@ def filter_dashboard_rows(rows, dir="All", market="All", horizon="4h",
     return out
 
 
+def cards_to_market(cards):
+    """Sweep Scorecards -> dash_market_data quotes (real venue numbers).
+
+    Each card already carries the sweep's ticker snapshot (price from
+    lastPrice, 24h% from riseFallRate, quote volume from amount24), so
+    the dashboard table/filter/sort go live with venue numbers. Cards
+    without a usable positive price are skipped; unusable 24h%/volume
+    degrade to None (rendered n/a) — quotes are never invented.
+    """
+    market = {}
+    for c in cards or []:
+        coin = getattr(c, "coin", None)
+        if not coin:
+            continue
+        try:
+            price = float(getattr(c, "price", None))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(price) or price <= 0:
+            continue
+        try:
+            chg = float(getattr(c, "change_24h_pct", None))
+            if not math.isfinite(chg):
+                chg = None
+        except (TypeError, ValueError):
+            chg = None
+        try:
+            vol = float(getattr(c, "quote_vol_24h", None))
+            if not math.isfinite(vol):
+                vol = None
+        except (TypeError, ValueError):
+            vol = None
+        name = getattr(c, "name", None) or str(coin)
+        market[str(coin)] = {"name": name, "price": price,
+                             "change_24h_pct": chg, "quote_vol_24h": vol}
+    return market
+
+
+# ---- coin detail (Task 6: timeframe chart + evidence tabs, additive) ----
+# Bar intervals offered on the chart. 1m is unsupported by the venue
+# adapter (proto/mexc.INTERVALS has no 1m key), so it is never a tab.
+DETAIL_TIMEFRAMES = ("5m", "15m", "1H", "4H", "1D")
+DETAIL_BAR_LIMIT = 200
+DETAIL_NO_BARS = "bars unavailable"
+
+
+def fetch_detail_bars(symbol, interval, limit=DETAIL_BAR_LIMIT):
+    """Live klines for the detail chart (app code paths ONLY, never tests).
+
+    Closed bars only — proto/mexc.klines already drops the still-forming
+    bar, so the chart's right edge is the last closed bar.
+    """
+    from proto import mexc as mexc_mod
+    return mexc_mod.klines(symbol, interval, limit=limit)
+
+
+def detail_metrics(bars):
+    """RSI/MACD/EMA50/EMA200/quote-volume from closed bars (pure).
+
+    Returns None fields when bars are missing or too short — callers
+    render honest unavailable copy, never a raise, never a guess.
+    """
+    empty = {"rsi": None, "macd_hist": None, "ema50": None,
+             "ema200": None, "vol_quote": None, "last_ts": None}
+    if not bars:
+        return dict(empty)
+    try:
+        closes = indicators_mod.closes(bars)
+        e50 = indicators_mod.ema(closes, 50)
+        e200 = indicators_mod.ema(closes, 200)
+        vols = indicators_mod.quote_volume(bars)
+        return {"rsi": indicators_mod.rsi(bars),
+                "macd_hist": indicators_mod.macd_histogram(bars),
+                "ema50": e50[-1] if e50 else None,
+                "ema200": e200[-1] if e200 else None,
+                "vol_quote": vols[-1] if vols else None,
+                "last_ts": bars[-1].get("ts")}
+    except Exception:
+        return dict(empty)
+
+
+def format_detail_metrics(metrics):
+    """Metrics-tab lines from detail_metrics() (all assert_clean)."""
+    metrics = metrics or {}
+    lines = []
+    rsi = metrics.get("rsi")
+    lines.append(f"RSI(14) {rsi:.1f}" if rsi is not None
+                 else "RSI unavailable — not enough closed bars")
+    macd = metrics.get("macd_hist")
+    lines.append(f"MACD histogram {macd:+.3f}" if macd is not None
+                 else "MACD unavailable — not enough closed bars")
+    e50 = metrics.get("ema50")
+    lines.append(f"EMA50 {e50:.8g}" if e50 is not None
+                 else "EMA50 unavailable — not enough closed bars")
+    e200 = metrics.get("ema200")
+    lines.append(f"EMA200 {e200:.8g}" if e200 is not None
+                 else "EMA200 unavailable — not enough closed bars")
+    vol = metrics.get("vol_quote")
+    lines.append(f"volume (quote) {vol:.8g}" if vol is not None
+                 else "volume unavailable — no closed bars")
+    last_ts = metrics.get("last_ts")
+    lines.append(f"last closed bar {last_ts}" if last_ts is not None
+                 else "last closed bar unavailable")
+    for line in lines:
+        assert_clean(line)
+    return lines
+
+
+def detail_setup_for_coin(panel, coin):
+    """(setup id, detail dict) of the ACTIVE setup for *coin*, or (None,
+    None). Selection is by coin over the panel's active group."""
+    if panel is None or coin is None:
+        return (None, None)
+    by_id = getattr(panel, "by_id", None) or {}
+    groups = getattr(panel, "groups", None) or {}
+    for sid in groups.get("active", []):
+        detail = by_id.get(sid) or {}
+        if detail.get("coin") == coin:
+            return (sid, detail)
+    return (None, None)
+
+
+def detail_blocking_ctx(panel, coin):
+    """blocking_reason() ctx for a coin with no active setup (pure).
+
+    Only stamps the last-evaluation time from the panel (last eval bar,
+    else the panel as-of stamp); every other branch of blocking_reason
+    keeps its honest default. Never raises.
+    """
+    ctx = {}
+    try:
+        if panel is not None:
+            last = getattr(panel, "last_bar_ts", None)
+            if last is None:
+                last = getattr(panel, "asof_ts", None)
+            if last:
+                ctx["last_eval_ts"] = last
+    except Exception:
+        pass
+    return ctx
+
+
+def detail_reference_plan_text(detail):
+    """On-demand reference-plan lines from a setup's frozen levels.
+
+    Entry/stop/target are the logged row values only; the notional is
+    the fixed 100 USDT reference (reference size, not a position). No
+    leverage, no liquidation claims — planner.reference_plan carries
+    neither. Missing levels render honest unavailable copy.
+    """
+    lines = []
+    try:
+        entry = float((detail or {}).get("entry"))
+        stop = float((detail or {}).get("stop_px"))
+        tgt = float((detail or {}).get("tgt_px"))
+    except (TypeError, ValueError):
+        entry = stop = tgt = None
+    if entry is None or stop is None or tgt is None:
+        lines = ["reference plan unavailable — "
+                 "frozen entry/stop/target incomplete"]
+    else:
+        plan = reference_plan({"entry_low": entry, "entry_high": entry,
+                               "stop": stop, "tp1": tgt, "tp2": tgt})
+        lines = ["reference size, not a position",
+                 f"reference notional {plan['notional']:.0f} USDT",
+                 f"entry {entry:.8g}",
+                 f"stop {stop:.8g}",
+                 f"target {tgt:.8g}",
+                 f"reference stop-risk {plan['stop_risk']:.2f} USDT"]
+    for line in lines:
+        assert_clean(line)
+    return "\n".join(lines)
+
+
 def watcher_correlated_lines(db_path):
     """CORRELATED OPENS section lines for the Qt watcher detail pane.
 
@@ -611,6 +794,100 @@ class _CellItem(QTableWidgetItem):
         if b is not None:
             return False
         return self.text().casefold() < str(other.text()).casefold()
+
+
+class DetailChartWidget(QWidget):
+    """Candlestick chart with EMA50/200 overlays + volume band (Task 6).
+
+    Bars are closed-bar dicts ({ts,o,h,l,c,vol,amount}, oldest first);
+    tests feed deterministic fixtures, the app feeds live mexc.klines.
+    Empty/None bars set the unavailable flag and paint the honest
+    "bars unavailable" copy for that tab — never a raise, never a gap
+    drawn as data.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.bars = None
+        self.unavailable = True
+        self.setMinimumHeight(180)
+
+    def set_bars(self, bars):
+        if bars:
+            self.bars = list(bars)
+            self.unavailable = False
+        else:
+            self.bars = None
+            self.unavailable = True
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        try:
+            p.fillRect(self.rect(), QColor(_theme.SURFACE))
+            if self.unavailable or not self.bars:
+                p.setPen(QColor(_theme.TEXT_DIM))
+                p.drawText(self.rect(),
+                           Qt.AlignmentFlag.AlignCenter, DETAIL_NO_BARS)
+                return
+            bars = self.bars
+            n = len(bars)
+            w, h = max(1, self.width()), max(1, self.height())
+            pad = 6
+            price_h = int((h - 2 * pad) * 0.72)
+            vol_top = pad + price_h + 4
+            vol_h = max(8, h - vol_top - pad)
+            plot_w = max(1, w - 2 * pad)
+            closes = [b["c"] for b in bars]
+            e50 = indicators_mod.ema(closes, 50)
+            e200 = indicators_mod.ema(closes, 200)
+            lo = min([b["l"] for b in bars]
+                     + ([e for e in (e50 + e200) if e] or [min(closes)]))
+            hi = max([b["h"] for b in bars]
+                     + ([e for e in (e50 + e200) if e] or [max(closes)]))
+            span = (hi - lo) or 1.0
+            vmax = max([float(b.get("amount") or 0.0) for b in bars]
+                       + [1.0])
+
+            def px(i):
+                return pad + plot_w * (i + 0.5) / n
+
+            def py(v):
+                return pad + price_h * (1.0 - (v - lo) / span)
+
+            cw = max(1.0, plot_w / n * 0.6)
+            for i, b in enumerate(bars):
+                up = b["c"] >= b["o"]
+                col = QColor(_theme.LONG_FG if up else _theme.SHORT_FG)
+                p.setPen(col)
+                x = px(i)
+                p.drawLine(int(x), int(py(b["h"])), int(x), int(py(b["l"])))
+                top, bot = int(py(max(b["o"], b["c"]))), int(
+                    py(min(b["o"], b["c"])))
+                p.fillRect(int(x - cw / 2), top, int(cw),
+                           max(1, bot - top), col)
+                v = float(b.get("amount") or 0.0)
+                vh = vol_h * v / vmax
+                p.fillRect(int(x - cw / 2), int(vol_top + vol_h - vh),
+                           int(cw), max(1, int(vh)),
+                           QColor(_theme.TEXT_DIM))
+
+            def poly(series, color):
+                if not series:
+                    return
+                off = n - len(series)
+                p.setPen(QColor(color))
+                prev = None
+                for j, v in enumerate(series):
+                    pt = (int(px(off + j)), int(py(v)))
+                    if prev is not None:
+                        p.drawLine(prev[0], prev[1], pt[0], pt[1])
+                    prev = pt
+
+            poly(e50, _theme.ACCENT)
+            poly(e200, _theme.INFO_FG)
+        finally:
+            p.end()
 
 
 class RadarWindow(QMainWindow):
@@ -692,6 +969,15 @@ class RadarWindow(QMainWindow):
         self.dash_cards_pair = (None, None)
         self.dash_rows = []
         self.dash_asof = ""
+        # Coin detail (Task 6): selected coin + per-(coin, interval) bar
+        # cache (None = that tab's fetch failed) + in-flight tokens so a
+        # late arrival never clobbers newer fixture/manual bars.
+        self.detail_coin = None
+        self.detail_setup_id = None
+        self.detail_cache = {}
+        self.detail_tokens = {}
+        self.detail_seq = 0
+        self.detail_text_cache = ""
         self._lookup_goto_scanner = False  # watchlist lookup: show on Scanner
         self._launch_snapshot_at = 0.0
         self._has_live_scan = False
@@ -707,6 +993,7 @@ class RadarWindow(QMainWindow):
         self._build_pages()
         self._build_watcher_dock()
         self._build_dashboard_dock()
+        self._build_detail_dock()
         self._build_status()
         shortcut = QShortcut(QKeySequence("Ctrl+Q"), self)
         shortcut.activated.connect(self._on_close)
@@ -1598,6 +1885,7 @@ class RadarWindow(QMainWindow):
                                                     DASH_TABLE_HEADINGS)),
                                            DASH_TABLE_WIDTHS)
         self.dash_table.setMinimumHeight(120)
+        self.dash_table.itemSelectionChanged.connect(self._on_dash_select)
         sv.addWidget(self.dash_table)
         lay.addWidget(sig_box, 1)
 
@@ -1741,6 +2029,354 @@ class RadarWindow(QMainWindow):
                     "dashboard data unavailable — scanner intact")
             except Exception:
                 pass
+
+    # ------------------------------------------------ coin detail (Task 6)
+    def _build_detail_dock(self):
+        """Coin detail dock (additive; rail/scanner/dashboard untouched).
+
+        Timeframe tabs 5m/15m/1H/4H/1D (no 1m — unsupported by the venue
+        adapter) with one candle+EMA50/200+volume chart each, validity +
+        next-update lines, and Analysis/Trade Plan/Metrics tabs. Coins
+        with no active setup show "no setup yet" + blocking reason in
+        the same panel. All reads are local + read-only; chart bars
+        arrive through the queue->poll path, per-tab failures render
+        "bars unavailable" for that tab only.
+        """
+        dock = QDockWidget("Coin detail — chart + plan (research)", self)
+        dock.setObjectName("detailDock")
+        body = QWidget()
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(4)
+
+        self.detail_head = QLabel("—")
+        self.detail_head.setObjectName("detailTitle")
+        self.detail_head.setFont(_theme.ui_font(_theme.BASE_POINT_SIZE + 2,
+                                                bold=True))
+        lay.addWidget(self.detail_head)
+        self.detail_sub = QLabel("select a coin for the full breakdown")
+        self.detail_sub.setObjectName("detailSubtitle")
+        self.detail_sub.setWordWrap(True)
+        lay.addWidget(self.detail_sub)
+
+        self.detail_tf_tabs = QTabWidget()
+        self.detail_charts = {}
+        for tf in DETAIL_TIMEFRAMES:
+            chart = DetailChartWidget()
+            self.detail_charts[tf] = chart
+            self.detail_tf_tabs.addTab(chart, tf)
+        self.detail_tf_tabs.currentChanged.connect(
+            self._on_detail_tab_changed)
+        lay.addWidget(self.detail_tf_tabs, 3)
+
+        self.detail_validity = QLabel("")
+        self.detail_validity.setObjectName("headerStats")
+        self.detail_validity.setWordWrap(True)
+        lay.addWidget(self.detail_validity)
+        self.detail_next = QLabel("")
+        self.detail_next.setObjectName("headerStats")
+        self.detail_next.setWordWrap(True)
+        lay.addWidget(self.detail_next)
+
+        self.detail_low_tabs = QTabWidget()
+        self.detail_analysis = QTextEdit()
+        self.detail_plan = QTextEdit()
+        self.detail_metrics_view = QTextEdit()
+        for view in (self.detail_analysis, self.detail_plan,
+                     self.detail_metrics_view):
+            view.setReadOnly(True)
+            view.setFont(_theme.mono_font(_theme.DETAIL_POINT_SIZE))
+        self.detail_low_tabs.addTab(self.detail_analysis, "Analysis")
+        self.detail_low_tabs.addTab(self.detail_plan, "Trade Plan")
+        self.detail_low_tabs.addTab(self.detail_metrics_view, "Metrics")
+        lay.addWidget(self.detail_low_tabs, 2)
+
+        self.detail_asof = QLabel("")
+        self.detail_asof.setObjectName("headerStats")
+        self.detail_asof.setWordWrap(True)
+        lay.addWidget(self.detail_asof)
+
+        dock.setWidget(body)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self.detail_dock = dock
+
+    def detail_timeframes(self):
+        """Chart tab intervals, in display order (test seam)."""
+        return [self.detail_tf_tabs.tabText(i)
+                for i in range(self.detail_tf_tabs.count())]
+
+    def _detail_panel(self):
+        """Current watcher panel, or None when the DB is unreadable."""
+        try:
+            return watcher_feed_mod.load_panel(self.db)
+        except Exception:
+            return None
+
+    def _detail_current_interval(self):
+        try:
+            return self.detail_tf_tabs.tabText(
+                self.detail_tf_tabs.currentIndex())
+        except Exception:
+            return DETAIL_TIMEFRAMES[0]
+
+    def show_coin_detail(self, coin):
+        """Select *coin* in the detail dock and render from local state.
+
+        Setup info renders immediately (read-only panel read); the
+        current timeframe tab fetches live bars on a background thread
+        only when the coin has an active setup and no cached bars.
+        Never raises, never blocks, never touches scanner widgets.
+        """
+        self.detail_coin = coin
+        panel = self._detail_panel()
+        _sid, _detail = detail_setup_for_coin(panel, coin)
+        self.detail_setup_id = _sid
+        self._render_detail_dock(panel)
+        if _sid is not None:
+            interval = self._detail_current_interval()
+            if (coin, interval) not in self.detail_cache:
+                self._fetch_detail_bars(coin, interval)
+
+    def show_detail_bars(self, coin, interval, bars):
+        """Test/fixture seam: set *bars* for (coin, interval) and render.
+
+        Empty/None bars mark that tab "bars unavailable". Invalidates
+        any in-flight fetch for the same key so a late arrival can
+        never clobber these bars.
+        """
+        if interval not in DETAIL_TIMEFRAMES:
+            return
+        if coin != self.detail_coin:
+            self.detail_coin = coin
+            self.detail_setup_id = detail_setup_for_coin(
+                self._detail_panel(), coin)[0]
+        self.detail_seq += 1
+        self.detail_tokens[(coin, interval)] = self.detail_seq
+        self.detail_cache[(coin, interval)] = list(bars) if bars else None
+        self._render_detail_dock(self._detail_panel())
+
+    def _on_detail_tab_changed(self, *_a):
+        """Timeframe tab switched: render cache or fetch live bars."""
+        coin = self.detail_coin
+        if not coin or self.detail_setup_id is None:
+            self._render_detail_dock(self._detail_panel())
+            return
+        interval = self._detail_current_interval()
+        if (coin, interval) not in self.detail_cache:
+            self._render_detail_dock(self._detail_panel())
+            self._fetch_detail_bars(coin, interval)
+        else:
+            self._render_detail_dock(self._detail_panel())
+
+    def _fetch_detail_bars(self, coin, interval):
+        """Fetch one tab's bars off the UI thread (live venue, app only).
+
+        Resolves the venue symbol from a fresh bulk snapshot, then
+        pulls closed-bar klines; the result re-enters through the
+        queue->poll path as a detail_bars message. Tests never call
+        this (fixtures ride show_detail_bars instead).
+        """
+        key = (coin, interval)
+        if key in self.detail_tokens and key in self.detail_pending_tokens():
+            return
+        self.detail_seq += 1
+        token = self.detail_seq
+        self.detail_tokens[key] = token
+
+        def _job():
+            try:
+                from proto import mexc as mexc_mod
+                from proto import scan as scan_mod
+                tk = mexc_mod.tickers()
+                det = mexc_mod.details()
+                sym = scan_mod.find_symbol(coin, tk, det)
+                if sym is None:
+                    self._results.put({"kind": "detail_bars", "ok": False,
+                                       "coin": coin, "interval": interval,
+                                       "token": token,
+                                       "error": "unknown symbol"})
+                    return
+                bars = fetch_detail_bars(sym, interval)
+                self._results.put({"kind": "detail_bars", "ok": True,
+                                   "coin": coin, "interval": interval,
+                                   "token": token, "bars": bars or []})
+            except Exception as e:
+                try:
+                    self._results.put({"kind": "detail_bars", "ok": False,
+                                       "coin": coin, "interval": interval,
+                                       "token": token,
+                                       "error": f"{type(e).__name__}: {e}"})
+                except Exception:
+                    pass
+
+        thread = threading.Thread(target=_job, daemon=True,
+                                  name=f"detail-bars-{coin}-{interval}")
+        thread.start()
+
+    def detail_pending_tokens(self):
+        """(coin, interval) keys with an answer still outstanding."""
+        return {k for k, t in self.detail_tokens.items()
+                if (k not in self.detail_cache
+                    or self.detail_cache[k] == "pending")}
+
+    def _on_detail_bars(self, msg):
+        """Render a background chart fetch; stale arrivals are dropped."""
+        coin, interval = msg.get("coin"), msg.get("interval")
+        key = (coin, interval)
+        if self.detail_tokens.get(key) != msg.get("token"):
+            return  # a newer request (or fixture bars) won this tab
+        if msg.get("ok") and msg.get("bars"):
+            self.detail_cache[key] = list(msg["bars"])
+        else:
+            self.detail_cache[key] = None  # per-tab "bars unavailable"
+        if coin == self.detail_coin:
+            try:
+                self._render_detail_dock(self._detail_panel())
+            except Exception:
+                pass
+
+    def _on_dash_select(self, *_a):
+        """Dashboard row selected: mirror the coin into the detail dock."""
+        if getattr(self, "_refilling", False):
+            return
+        try:
+            sel = (self.dash_table.selectionModel().selectedRows()
+                   if self.dash_table.selectionModel() else [])
+            if not sel:
+                return
+            item = self.dash_table.item(sel[0].row(), 0)
+            coin = item.text().split("\n")[0] if item else None
+            if coin:
+                self.show_coin_detail(coin)
+        except Exception:
+            pass
+
+    def _render_detail_dock(self, panel=None):
+        """Render the detail dock from cached state (no I/O, never raises)."""
+        try:
+            coin = self.detail_coin
+            if panel is None and coin is not None:
+                panel = self._detail_panel()
+            if not coin:
+                self.detail_head.setText("—")
+                self.detail_sub.setText(
+                    "select a coin for the full breakdown")
+                self.detail_analysis.setPlainText("")
+                self.detail_plan.setPlainText("")
+                self.detail_metrics_view.setPlainText("")
+                self.detail_validity.setText("")
+                self.detail_next.setText("")
+                self.detail_asof.setText("")
+                for chart in self.detail_charts.values():
+                    chart.set_bars(None)
+                self.detail_text_cache = "select a coin"
+                return
+            sid, detail = detail_setup_for_coin(panel, coin)
+            self.detail_setup_id = sid
+            interval = self._detail_current_interval()
+            cached = self.detail_cache.get((coin, interval), "pending")
+            bars = cached if isinstance(cached, list) else None
+            for tf, chart in self.detail_charts.items():
+                entry = self.detail_cache.get((coin, tf), "pending")
+                chart.set_bars(entry if isinstance(entry, list) else None)
+            if detail is None:
+                self.detail_head.setText(coin)
+                reason = blocking_reason(
+                    coin, detail_blocking_ctx(panel, coin))
+                assert_clean(reason)
+                self.detail_sub.setText(reason)
+                self.detail_analysis.setPlainText(reason)
+                self.detail_plan.setPlainText(
+                    "reference plan unavailable — no active setup")
+                metrics_lines = [DETAIL_NO_BARS]
+                self.detail_metrics_view.setPlainText(
+                    "\n".join(metrics_lines))
+                self.detail_validity.setText(
+                    "validity unavailable — no active setup")
+                self.detail_next.setText(
+                    "next update on the next completed sweep "
+                    "(no active setup)")
+                self.detail_asof.setText(
+                    f"data as of {getattr(panel, 'asof_ts', 0) or 'unavailable'}")
+            else:
+                direction = str(detail.get("direction", "?")).upper()
+                arrow = {"LONG": "▲", "SHORT": "▼"}.get(direction, "•")
+                self.detail_head.setText(f"{coin} {arrow} {direction}")
+                setup = {"rule_id": detail.get("rule", "?"),
+                         "direction": direction,
+                         "criteria": detail.get("criteria", []),
+                         "confirmations": detail.get("confirmations", [])}
+                inputs = {}
+                if detail.get("monitoring") is not None:
+                    inputs["monitoring"] = detail["monitoring"]
+                for missing in detail.get("missing") or []:
+                    inputs[str(missing)] = None
+                stamp = detail.get("last_bar_ts",
+                                   detail.get("src_bar_ts"))
+                if stamp is not None:
+                    inputs["data_as_of"] = stamp
+                line1, line2 = summarize_setup(setup, inputs)
+                self.detail_sub.setText(line1)
+                self.detail_analysis.setPlainText(f"{line1}\n{line2}")
+                self.detail_plan.setPlainText(
+                    detail_reference_plan_text(detail))
+                metrics = detail_metrics(bars) if bars else detail_metrics([])
+                self.detail_metrics_view.setPlainText(
+                    "\n".join(format_detail_metrics(metrics)))
+                meta = dashboard_setup_meta(self.db)
+                hint = meta.get(sid) or {}
+                n_bars = hint.get("N_bars")
+                src_ts = hint.get("src_bar_ts")
+                expiry_ts = setup_expiry_ts({"src_bar_ts": src_ts,
+                                             "N_bars": n_bars})
+                if expiry_ts is None:
+                    self.detail_validity.setText(
+                        "validity unavailable — expiry inputs missing")
+                else:
+                    self.detail_validity.setText(
+                        f"valid until {expiry_ts} "
+                        f"({format_expiry(expiry_ts)})")
+                asof = getattr(panel, "asof_ts", 0) or "unavailable"
+                self.detail_next.setText(
+                    "next update on the next completed sweep "
+                    f"(data as of {asof})")
+                self.detail_asof.setText(f"data as of {asof}")
+            self.detail_text_cache = self._compose_coin_detail_text()
+        except Exception:
+            try:
+                self.detail_asof.setText(
+                    "detail unavailable — scanner intact")
+                self.detail_text_cache = "detail unavailable"
+            except Exception:
+                pass
+
+    def _compose_coin_detail_text(self):
+        """Current detail dock as text (test seam, all assert_clean)."""
+        bits = [self.detail_head.text(), self.detail_sub.text(),
+                self.detail_validity.text(), self.detail_next.text()]
+        interval = self._detail_current_interval()
+        cached = self.detail_cache.get((self.detail_coin, interval),
+                                       "pending")
+        if isinstance(cached, list) and cached:
+            bits.append(f"{interval} chart: {len(cached)} closed bars")
+        else:
+            bits.append(f"{interval} chart: {DETAIL_NO_BARS}")
+        bits += [self.detail_analysis.toPlainText(),
+                 self.detail_plan.toPlainText(),
+                 self.detail_metrics_view.toPlainText(),
+                 self.detail_asof.text()]
+        text = "\n".join(bits)
+        assert_clean(text)  # fail-closed: banned wording never renders
+        return text
+
+    def detail_text(self, coin=None):
+        """Detail pane text; with *coin*, select it first (test seam)."""
+        if coin is not None:
+            self.show_coin_detail(coin)
+        APP = QApplication.instance()
+        if APP is not None:
+            APP.processEvents()
+        return self._compose_coin_detail_text()
 
     def _fmt_ts(self, ts):
         try:
@@ -2119,6 +2755,8 @@ class RadarWindow(QMainWindow):
                 str(n).startswith("paused") for n in (panel.notices or []))
         self._render_watcher()
         self.refresh_dashboard()
+        if self.detail_coin is not None:
+            self._render_detail_dock(panel)
 
     def _render_watcher(self):
         table = self.watcher_table
@@ -2316,6 +2954,7 @@ class RadarWindow(QMainWindow):
                    "watcher": self._on_watcher,
                    "watcher_pause": self._on_watcher,
                    "watcher_disable": self._on_watcher,
+                   "detail_bars": self._on_detail_bars,
                    "plan": self._on_plan, "ready": self._on_ready}.get(kind)
         if handler is not None:
             handler(msg)
@@ -2383,6 +3022,15 @@ class RadarWindow(QMainWindow):
 
         self.error_text = ""
         self.cards = cards
+        # Sweep-loop ticker snapshot -> dash_market_data (Task 6 carry):
+        # the cards already carry the sweep's real venue numbers, so the
+        # dashboard price/24h%/Market-filter/sort-24h% go live with swept
+        # quotes. Merge only (a failed sweep never wipes older quotes).
+        try:
+            for coin, quote in cards_to_market(cards).items():
+                self.dash_market_data[coin] = quote
+        except Exception:
+            pass
         # Keep GOOD cached plans for coins still present; drop departed
         # coins AND failed lookups, so a pre-scan error refetches.
         coins = {c.coin for c in cards}
@@ -2509,6 +3157,7 @@ class RadarWindow(QMainWindow):
         self._render_watchlist()
         self._render_outcomes()
         self._render_dashboard()
+        self._render_detail_dock()
         self._render_status()
 
     def _venue_text(self):
