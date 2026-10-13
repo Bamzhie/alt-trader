@@ -1,12 +1,56 @@
+// App — the shell: sidebar, top bar, connection banner, and state routing.
+//
+// House rules:
+//   * Routing is a tiny `usePage` hook holding the current page key — no
+//     router dependency, no URL.
+//   * Connection state is read from the Zustand store (never fetched here);
+//     the shell issues no requests of its own on mount.
+//   * Colors come from theme tokens only — never raw hexes.
+import { useState } from "react";
+import { ConnectionBanner } from "./components/ConnectionBanner";
+import { Sidebar } from "./components/Sidebar";
+import type { Page as PageKey } from "./components/Sidebar";
+import { TopBar } from "./components/TopBar";
+import { Dashboard } from "./pages/Dashboard";
+import { StubPage } from "./pages/StubPage";
+import { useDashboardStore } from "./store/dashboard";
+
+export type Page = PageKey;
+
+/** Current shell page plus its setter — the whole "router". */
+function usePage(initial: Page): { page: Page; setPage(p: Page): void } {
+  const [page, setPage] = useState<Page>(initial);
+  return { page, setPage };
+}
+
 export default function App() {
+  const { page, setPage } = usePage("dashboard");
+  const connection = useDashboardStore((s) => s.connection);
+
   return (
-    <div className="min-h-screen bg-bg text-fg">
-      <header className="border-b border-border px-6 py-4">
-        <h1 className="text-xl font-semibold tracking-wide">ALT RADAR</h1>
-      </header>
-      <main className="px-6 py-6 text-sm text-muted">
-        Dashboard shell — page regions arrive in later tasks.
-      </main>
+    <div className="flex min-h-screen bg-bg text-fg">
+      <Sidebar page={page} onNavigate={setPage} connection={connection} />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <TopBar />
+        <ConnectionBanner connection={connection} />
+        <main className="min-w-0 flex-1">
+          {page === "dashboard" ? (
+            <Dashboard />
+          ) : (
+            <StubPage
+              name={
+                {
+                  watchlist: "Watchlist",
+                  signals: "Signals",
+                  analysis: "Analysis",
+                  trades: "Trades",
+                  settings: "Settings",
+                }[page]
+              }
+            />
+          )}
+        </main>
+      </div>
     </div>
   );
 }
