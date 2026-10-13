@@ -684,3 +684,31 @@ Coins with no active setup show "no setup yet" plus the blocking reason
 (veto / cooldown / missing data / recently invalidated). Zero setups is a
 valid silence, every stamp is a closed-bar `data as of`, and feed/DB
 failures degrade to contained fallback copy with the scanner intact.
+
+## 16b. Qt terminal visual verification (1536×1024 offscreen renders)
+
+Dev-only renderer: `python3 scripts/render_dashboard.py [--outdir DIR]`.
+Builds the window offscreen (`QT_QPA_PLATFORM=offscreen`) at exactly
+1536×1024 against a temp SQLite fixture (two active setups via
+`emit_setup`, one invalidation + one expiry via `log_event`, one
+completed sweep via the real `record_sweep` writer, a two-snapshot
+pair for card deltas; offline quote/history fixtures ride the
+test-only `dash_market_data` / history seams; detail bars ride the
+`show_detail_bars` seam). A socket tripwire raises on any network
+attempt. Saves `region_*.png` per region plus `full_1536x1024.png`.
+The PNGs are throwaway artifacts (kept outside the repo); the
+pass/fail record below is the durable checklist.
+
+Latest pass: 2026-10-13, fixture as above, renderer exit 0, no
+network touched.
+
+| Region | File | Result | Notes vs the mockup |
+|---|---|---|---|
+| topbar | `region_topbar.png` (1520×50) | PASS | Logo, title, subtitle, READ-ONLY + TIER-2 badges, scan UTC, IDLE dot + "no scan yet", "Next scan: paused", MEXC pill, UTC clock, gear. 50px = spec 48–52. No clipping. |
+| rail | `region_rail.png` (145×934) | PASS | Scanner/Watchlist/Outcomes/Logs/Settings + selected highlight, API/venue/account blocks from real state, wrapped without clipping. 145px = spec 140–150. |
+| cards | `region_cards.png` (869×167) | PASS | 4 binding cards (Active Setups, Eligible Perps as eligible/evaluated counts, Monitoring Coverage + gauge, New Setups 24h) with datatype deltas, sparklines + gauge arcs, no overflow ("eligible 120 · evaluated 118" fits). No confidence/tier copy. |
+| table | `region_table.png` (845×120) | PASS w/ observation | Headers in order, AAA row with LONG pill + sparkline + countdown; BBB correctly hidden under the default 4h filter (288-bar setup). Columns total wider than the 845px pane so SIGNAL/EXPIRES/chevron need the horizontal scrollbar; long cells elide with "…". Content reachable, nothing painted outside cells — recorded for a Task-5 follow-up, not changed here. |
+| overview | `region_overview.png` (467×92) | PASS | BTC + ETH rows: badge, name, price, signed 24h% in gain/loss color, sparklines. No TOTAL row. |
+| detail | `region_detail.png` (467×537) | PASS w/ observation | AAA LONG header, pill, sparkline, 5m/15m/1H/4H/1D tabs (no 1m), candle + volume + EMA chart, validity + next-update lines, Analysis/Trade Plan/Metrics tabs, data-as-of stamp. "expired 11635h ago" is a fixture artifact (fake-old fixture ts vs the wall clock), not a formatter defect. |
+| bottom | `region_bottom.png` | PASS | Market Movers (Gainers/Losers/High Volume from offline quotes), Recent Analysis (last-5 emissions/transitions, sweep-complete excluded), Activity Log (real journal rows verbatim, newest first, sweep-complete included). Empty DB renders "no activity yet". Long setup-id tokens wrap mid-token (standard label wrapping, no data loss). |
+| full | `full_1536x1024.png` | PASS | No horizontal page overflow; status bar visible; right column scrolls (Coin detail dock below the fold, reachable). Contrast: light ink on dark navy throughout, gain/loss colors legible. |
