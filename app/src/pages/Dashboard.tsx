@@ -75,6 +75,14 @@ function useSnapshot(client: ApiClient): {
  * carries no bars, so the trend sparkline is drawn only from real closed
  * bars; a coin whose bars never arrive keeps the empty frame (never
  * fabricated), and a null volume reading never counts as 0.
+ *
+ * Dedup happens in the resolution, never before the await: a coin is marked
+ * fetched only once its bars have actually landed. An earlier run whose
+ * cleanup fires first (React StrictMode's double-invoke in dev, or a
+ * filter/sort change producing a fresh `coins` array mid-flight) simply
+ * loses its promise — the next run sees the coin as unfetched and retries
+ * it, so no coin is ever stranded with an empty sparkline. Duplicate GETs
+ * for the same coin are idempotent and bounded (one extra read per re-run).
  */
 function useClosedCloses(client: ApiClient, coins: string[]): Record<string, number[]> {
   const [closes, setCloses] = useState<Record<string, number[]>>({});
@@ -85,8 +93,9 @@ function useClosedCloses(client: ApiClient, coins: string[]): Record<string, num
   useEffect(() => {
     let cancelled = false;
     const pending = coins.filter((coin) => !fetched.has(coin));
+    // Safe to skip: this run started no fetch, so there is nothing for a
+    // cleanup to cancel. Coins already marked fetched have landed data.
     if (pending.length === 0) return;
-    for (const coin of pending) fetched.add(coin);
 
     Promise.all(
       pending.map(async (coin) => {
@@ -102,6 +111,7 @@ function useClosedCloses(client: ApiClient, coins: string[]): Record<string, num
       }),
     ).then((entries) => {
       if (cancelled) return;
+      for (const [coin] of entries) fetched.add(coin);
       setCloses((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
     });
 

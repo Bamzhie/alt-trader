@@ -12,6 +12,7 @@
 //     write attempt fails the test loudly.
 //   * Banned words are asserted absent from rendered output.
 //   * Timestamps are UTC-seconds ints; "data as of <ts>" is rendered.
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "../src/App";
@@ -234,6 +235,127 @@ async function renderDashboard(snapshot = makeSnapshot()) {
   render(<App />);
   await screen.findByText("Active Setups");
 }
+
+/**
+ * Fetch stub with DEFERRED /bars responses (snapshot answers at once).
+ * Each coin's bars promise is parked; `resolveBars()` settles them all.
+ * GET-only: any POST throws, same read-only rule as stubFetch.
+ */
+function stubDeferredBars(snapshot: Snapshot) {
+  const { fetchMock, postCalls } = stubFetch(snapshot);
+  const barsCalls: string[] = [];
+  const resolvers: Array<() => void> = [];
+  fetchMock.mockImplementation(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if ((init?.method ?? "GET").toUpperCase() === "POST") {
+        postCalls.push({ url, init });
+        throw new Error(`POST attempted against read-only dashboard: ${url}`);
+      }
+      if (url.includes("/bars")) {
+        barsCalls.push(url);
+        const coin = new URL(url, "http://localhost").searchParams.get("coin") ?? "";
+        // 48 closed 5m bars with a deterministic rising series.
+        const bars = Array.from({ length: 48 }, (_, i) => ({
+          ts: DATA_AS_OF - (48 - i) * 300,
+          open: 100 + i,
+          high: 101 + i,
+          low: 99 + i,
+          close: 100 + i,
+          volume: 1000 + i,
+          closed: true,
+        }));
+        await new Promise<void>((resolve) => resolvers.push(resolve));
+        return jsonResponse(200, {
+          ok: true,
+          data: { coin, tf: "5m", bars, closed_only: true, count: bars.length,
+                  data_as_of: DATA_AS_OF, unavailable: null },
+          error: null,
+        });
+      }
+      return jsonResponse(200, snapshotEnvelope(snapshot));
+    },
+  );
+  const resolveBars = () => {
+    for (const r of resolvers.splice(0)) r();
+  };
+  return { fetchMock, postCalls, barsCalls, resolveBars };
+}
+
+// --- sparklines (StrictMode + in-flight regression) -------------------------
+
+describe("sparklines", () => {
+  test("closed-bar sparklines survive the StrictMode effect race", async () => {
+    // Regression (Important, reviewer finding #1): useClosedCloses marked
+    // coins fetched BEFORE the await and early-returned without registering
+    // a cleanup when nothing was pending. In dev (StrictMode) the effect is
+    // double-invoked, so a run's cleanup can fire while its bars fetch is
+    // still in flight; the re-run sees the coins as fetched, returns early
+    // with NO cleanup registered, and the first run's resolution is dropped
+    // (cancelled=true). Net: closes stays {} and every Sparkline renders
+    // the empty frame. This test renders under StrictMode with the bars
+    // fetch held in flight, settles it after a re-render re-runs the effect,
+    // and asserts a real polyline renders.
+    const { resolveBars } = stubDeferredBars(makeSnapshot());
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    await screen.findByText("Active Setups");
+    // Bars requests issued; the fetch is parked (in flight).
+    await waitFor(() => expect(document.querySelector("svg")).not.toBeNull());
+    // A store-driven re-render re-runs the effect (fresh coins array) while
+    // the fetch is still in flight — exactly the StrictMode cleanup race.
+    await act(async () => {
+      useDashboardStore.getState().setSort("change24h");
+    });
+    // Now settle the in-flight fetch: on the buggy code this resolution was
+    // already dropped by the cleanup race; on the fixed code it lands.
+    await act(async () => {
+      resolveBars();
+    });
+    await waitFor(() =>
+      expect(document.querySelectorAll("svg[aria-label='trend up'] polyline").length)
+        .toBeGreaterThan(0),
+    );
+    // No row is left on the empty frame ("no trend data").
+    expect(screen.queryByLabelText("no trend data")).toBeNull();
+  });
+
+  test("sparklines survive a filter change while bars are in flight", async () => {
+    // Regression (Important, reviewer finding #2): `fetched` was mutated
+    // before the await, so a coins-array change mid-flight (filter/sort
+    // re-run) made the new effect run see the coins as done, return early,
+    // and the old run's resolution was dropped by its cleanup — those coins
+    // never retried and kept empty sparklines for the session.
+    const { barsCalls, resolveBars } = stubDeferredBars(makeSnapshot());
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    await screen.findByText("Active Setups");
+    await waitFor(() => expect(document.querySelector("svg")).not.toBeNull());
+    // Change the sort (fresh coins array) while the bars are in flight.
+    await act(async () => {
+      useDashboardStore.getState().setSort("change24h");
+    });
+    await act(async () => {
+      resolveBars();
+    });
+    await waitFor(() =>
+      expect(document.querySelectorAll("svg[aria-label='trend up'] polyline").length)
+        .toBeGreaterThan(0),
+    );
+    expect(screen.queryByLabelText("no trend data")).toBeNull();
+    // Both 4h coins were requested (a retry after the re-run is fine; what
+    // matters is no coin is left unfetched with an empty sparkline).
+    for (const coin of ["BTC", "ETH"]) {
+      expect(barsCalls.some((u) => u.includes(`coin=${coin}`))).toBe(true);
+    }
+  });
+});
 
 // --- brief Step 1 (verbatim) ----------------------------------------------
 
