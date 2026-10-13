@@ -1,6 +1,6 @@
 // Dashboard — the functional page: stat cards, filter bar, Top Signals
-// table, and the placeholder regions Tasks 9–11 fill (Market Overview,
-// coin detail, bottom row).
+// table, Market Overview + coin detail (right column), and the bottom
+// row (Market Movers / Recent Analysis / Activity Log).
 //
 // House rules:
 //   * One read on mount: client.snapshot(). Filtering and sorting happen
@@ -15,9 +15,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "../api/client";
 import type { ApiClient } from "../api/client";
 import type { Snapshot, Setup } from "../api/types";
+import { ActivityLog } from "../components/ActivityLog";
 import { FilterBar } from "../components/FilterBar";
+import { MarketMovers } from "../components/MarketMovers";
 import { MarketOverview } from "../components/MarketOverview";
 import { CoinDetail } from "../components/CoinDetail";
+import { RecentAnalysis } from "../components/RecentAnalysis";
 import { StatCards } from "../components/StatCards";
 import { TopSignalsTable } from "../components/TopSignalsTable";
 import { useDashboardStore } from "../store/dashboard";
@@ -162,16 +165,6 @@ function sortSetups(setups: Setup[], sort: SortKey): Setup[] {
   }
 }
 
-/** Structural placeholder for a region a later task fills. */
-function RegionPlaceholder({ title, note }: { title: string; note: string }) {
-  return (
-    <section className="rounded-xl border border-border bg-card p-4">
-      <h2 className="text-sm font-semibold text-fg">{title}</h2>
-      <p className="mt-2 text-xs text-muted">{note}</p>
-    </section>
-  );
-}
-
 export function Dashboard() {
   const client = useMemo(() => createClient({ baseUrl: "/api", token: DEV_TOKEN }), []);
 
@@ -179,6 +172,7 @@ export function Dashboard() {
   const horizonFilter = useDashboardStore((s) => s.horizonFilter);
   const directionFilter = useDashboardStore((s) => s.directionFilter);
   const sort = useDashboardStore((s) => s.sort);
+  const moversTab = useDashboardStore((s) => s.moversTab);
   const selectedCoin = useDashboardStore((s) => s.selectedCoin);
 
   const { snapshot, error } = useSnapshot(client);
@@ -268,18 +262,9 @@ export function Dashboard() {
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">
-            <RegionPlaceholder
-              title="Market Movers"
-              note="Gainers, losers, and volume tabs build here in a later task."
-            />
-            <RegionPlaceholder
-              title="Recent Analysis"
-              note="The last five transitions build here in a later task."
-            />
-            <RegionPlaceholder
-              title="Activity Log"
-              note="The structured journal builds here in a later task."
-            />
+            <MarketMovers movers={snapshot.movers} tab={moversTab} />
+            <RecentAnalysis entries={snapshot.recent_analysis} />
+            <ActivityLog entries={snapshot.activity} />
           </div>
         </>
       ) : error ? (

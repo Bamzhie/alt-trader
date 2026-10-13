@@ -528,8 +528,15 @@ describe("Top Signals table", () => {
 
   test("horizon filter defaults to 4h and narrows the rows", async () => {
     await renderDashboard();
-    // SOL is horizon 24h — hidden under the default 4h filter.
-    expect(screen.queryByText("SOL")).toBeNull();
+    // SOL is horizon 24h — hidden under the default 4h filter. Scoped to
+    // the Top Signals table: the Market Movers panel (Task 10) lists SOL
+    // as a mover, and a mover is not subject to the horizon filter, so a
+    // page-wide absence assertion no longer describes the table's rows.
+    expect(
+      Array.from(document.querySelectorAll("tbody tr")).some((r) =>
+        (r.textContent ?? "").includes("SOL"),
+      ),
+    ).toBe(false);
     expect(screen.getAllByText("BTC").length).toBeGreaterThan(0);
     // BTC is in a table row under the default filter (so the assertion
     // below has teeth in both directions, not just "a table exists").
@@ -542,7 +549,13 @@ describe("Top Signals table", () => {
     await act(async () => {
       useDashboardStore.getState().setHorizonFilter("24h");
     });
-    await waitFor(() => expect(screen.getByText("SOL")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(
+        Array.from(document.querySelectorAll("tbody tr")).some((r) =>
+          (r.textContent ?? "").includes("SOL"),
+        ),
+      ).toBe(true),
+    );
     // BTC leaves the 4h table entirely once the horizon switches to 24h
     // — no tbody row may still mention it (the Market Overview panel
     // keeps its own BTC row outside the table, so the assertion is
