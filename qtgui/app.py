@@ -1594,7 +1594,13 @@ class RadarWindow(QMainWindow):
         self.tree_vetoed.setMaximumHeight(_theme.ROW_HEIGHT * 6 + 30)
         self.tree_vetoed.itemSelectionChanged.connect(self._on_select)
         vv.addWidget(self.tree_vetoed)
+        # The veto table is intentionally not operator-facing: rejected
+        # candidates are data, not a feed. The box stays in the layout so
+        # the widgets remain parented (an unparented hidden widget would be
+        # garbage-collected and crash the veto render paths), but hidden so
+        # it takes no space. Watcher setups are monitored, not orders.
         lv.addWidget(vet_box)
+        vet_box.hide()
 
         # ---- right: detail pane + outcomes dock ----
         right = QWidget()
@@ -2115,7 +2121,7 @@ class RadarWindow(QMainWindow):
         are local + read-only; every render path is contained so a
         missing DB degrades to honest fallback copy, never a raise.
         """
-        dock = QDockWidget("Dashboard — active setups (research)", self)
+        dock = QDockWidget("Active Setups — persistent signals", self)
         dock.setObjectName("dashboardDock")
         body = QWidget()
         lay = QVBoxLayout(body)
@@ -2384,7 +2390,7 @@ class RadarWindow(QMainWindow):
         All reads are local + read-only; writes are contained meta
         writes that degrade to an honest note, never a raise.
         """
-        dock = QDockWidget("Dashboard pages (research)", self)
+        dock = QDockWidget("Workspace — Dashboard / Watchlist / Analysis", self)
         dock.setObjectName("dashPagesDock")
         body = QWidget()
         lay = QVBoxLayout(body)

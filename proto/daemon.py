@@ -63,6 +63,9 @@ def main():
     ap.add_argument("--interval", type=int, default=60)
     ap.add_argument("--db", default="data/signals.db")
     ap.add_argument("--log-threshold", type=float, default=24.0)
+    ap.add_argument("--use-v3", action="store_true",
+                    help="use score_v3 for the flag threshold and ranking "
+                         "(instead of the v2 score). Recommend: --use-v3 --log-threshold 40")
     ap.add_argument("--collect-every", type=int, default=300)
     ap.add_argument("--resolve-every", type=int, default=3600)
     ap.add_argument("--measure-every", type=int, default=300,
@@ -85,7 +88,7 @@ def main():
     app_args = SimpleNamespace(
         stake=args.stake, coins=args.coins, interval=args.interval,
         universe_budget=args.coins, log_threshold=args.log_threshold,
-        db=args.db, write_logs=True)
+        db=args.db, write_logs=True, use_v3=args.use_v3)
     app = App(app_args)
     sym_map = {}
     last_collect = 0.0
@@ -132,8 +135,9 @@ def main():
 
     run_id = f"{os.getpid()}-{int(time.time())}"
     n = 0
-    print(f"daemon: stake ${args.stake:g} coins {args.coins} "
-          f"scan {args.interval}s collect {args.collect_every}s "
+    v3_tag = " (v3 mode)" if args.use_v3 else ""
+    print(f"daemon: stake ${args.stake:g} coins {args.coins}"
+          f"{v3_tag} scan {args.interval}s collect {args.collect_every}s "
           f"resolve {args.resolve_every}s", flush=True)
     try:
         while args.iterations is None or n < args.iterations:
