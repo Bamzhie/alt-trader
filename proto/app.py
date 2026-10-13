@@ -24,7 +24,7 @@ from . import indicators as ind
 from . import planner as pl
 from .scan import build_universe, score_universe, venue_health, UNIVERSE_BUDGET
 from .scorer import fits_stake
-from .store import Store
+from .store import Store, writes_signals
 from .watcher_feed import WatcherUnavailable, correlated_lines, load_panel
 from .watcher_view import RESEARCH_BANNER
 
@@ -141,15 +141,23 @@ class App:
                            and score_val >= threshold)
                 try:
                     fv = 3 if self.use_v3 else 2
-                    sid = self.store.log_signal(sc, flagged=flagged, tier=2,
-                                               flag_version=fv)
+                    # Epoch gate (Task 1, spec section 1): after the cut to
+                    # watcher-only the scan loop may still fetch for
+                    # universe/freshness display, but writes no signals.
+                    sid = None
+                    if writes_signals(self.store.conn):
+                        sid = self.store.log_signal(sc, flagged=flagged,
+                                                    tier=2, flag_version=fv)
                     plan = getattr(sc, "plan", None)
                     if flagged and plan is not None and getattr(
                             plan, "valid", False):
-                        self.store.log_plan(sid, plan)
+                        if writes_signals(self.store.conn):
+                            self.store.log_plan(sid, plan)
                     # Board upkeep: the coin's single current row follows
                     # every scan (journal above keeps the full history).
-                    self.store.upsert_current(sc, flagged, sid, tier=2)
+                    # Frozen too while a watcher-only epoch is active.
+                    if writes_signals(self.store.conn):
+                        self.store.upsert_current(sc, flagged, sid, tier=2)
                 except Exception:
                     log_errors += 1
 

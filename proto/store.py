@@ -10,6 +10,7 @@ scanner missed.
 import os
 import sqlite3
 import time
+import uuid
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS signal_log (
@@ -67,7 +68,11 @@ CREATE TABLE IF NOT EXISTS signal_log (
     opening_against INTEGER,          -- 0/1
     book_agree      INTEGER,          -- 0/1
     funding_crowd   TEXT,             -- with / against / neutral
-    score_rule      TEXT              -- constant 'score-v3-dis'
+    score_rule      TEXT,             -- constant 'score-v3-dis'
+    -- Dashboard epoch label (Task 1, spec section 1): stamped at insert
+    -- from the active epoch pointer, never updated afterwards, so pre-cut
+    -- rows keep their cohort and reports never pool across the cut.
+    epoch_id        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_signal_ts_coin ON signal_log(ts, coin);
 -- idx_signal_config is created in _migrate() once signal_log.config_hash
@@ -294,7 +299,79 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Dashboard epoch records (Task 1, spec section 1): append-only. The
+-- operator cuts an epoch, the active pointer (meta:active_epoch_id)
+-- follows the latest row, and rollback is a new row — earlier rows are
+-- never overwritten or removed.
+CREATE TABLE IF NOT EXISTS epoch_log (
+    epoch_id  TEXT PRIMARY KEY,
+    mode      TEXT NOT NULL,        -- 'scan' | 'watcher-only'
+    cut_ts    INTEGER NOT NULL
+);
 """
+
+
+# --------------------------------------------------------------------------
+# Dashboard epoch records (Task 1, spec section 1). Module-level helpers
+# taking a sqlite3 connection, following the Store/meta pattern: the
+# epoch_log table is append-only and meta:active_epoch_id is the pointer.
+# --------------------------------------------------------------------------
+
+EPOCH_MODES = ("scan", "watcher-only")
+ACTIVE_EPOCH_KEY = "active_epoch_id"
+
+
+def append_epoch(conn, mode: str) -> str:
+    """Cut a new epoch: immutable (epoch_id, mode, cut_ts) row + pointer.
+
+    Rollback is a new row with a new epoch_id and cut_ts; earlier rows are
+    never overwritten or removed. Returns the new epoch_id.
+    """
+    if mode not in EPOCH_MODES:
+        raise ValueError(
+            f"unknown epoch mode {mode!r}: expected one of {EPOCH_MODES}")
+    eid = uuid.uuid4().hex
+    conn.execute(
+        "INSERT INTO epoch_log (epoch_id, mode, cut_ts) VALUES (?,?,?)",
+        (eid, mode, int(time.time())))
+    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
+                 (ACTIVE_EPOCH_KEY, eid))
+    conn.commit()
+    return eid
+
+
+def active_epoch(conn) -> dict:
+    """The active epoch as {epoch_id, mode, cut_ts}, or None before any cut."""
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key=?",
+                           (ACTIVE_EPOCH_KEY,)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None:
+        return None
+    rec = conn.execute(
+        "SELECT epoch_id, mode, cut_ts FROM epoch_log WHERE epoch_id=?",
+        (row[0],)).fetchone()
+    if rec is None:
+        return None
+    return {"epoch_id": rec[0], "mode": rec[1], "cut_ts": rec[2]}
+
+
+def writes_signals(conn) -> bool:
+    """False while a watcher-only epoch is active (scan writes frozen)."""
+    ep = active_epoch(conn)
+    if ep is None:
+        return True
+    return ep.get("mode") != "watcher-only"
+
+
+def signals_in_epoch(conn, epoch_id):
+    """signal_log rows stamped with one epoch, oldest first (no pooling)."""
+    cur = conn.execute("SELECT * FROM signal_log WHERE epoch_id=? ORDER BY id",
+                       (epoch_id,))
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
 class Store:
@@ -363,7 +440,8 @@ class Store:
                          ("opening_for", "INTEGER"),
                          ("opening_against", "INTEGER"),
                          ("book_agree", "INTEGER"),
-                         ("funding_crowd", "TEXT"), ("score_rule", "TEXT")):
+                         ("funding_crowd", "TEXT"), ("score_rule", "TEXT"),
+                         ("epoch_id", "TEXT")):
             if col not in cols:
                 self.conn.execute(
                     f"ALTER TABLE signal_log ADD COLUMN {col} {typ}")
@@ -494,7 +572,16 @@ class Store:
         flag_version=2 = v2 score threshold; flag_version=3 = v3 score
         threshold (docs/grok-review.md). Historical rows stay comparable by
         filtering on flag_version (spec SS6.1).
+
+        The watcher-only epoch gate (Task 1): while a watcher-only epoch is
+        active this writes nothing and returns None. Otherwise the row is
+        stamped with the active epoch id (None for pre-epoch legacy
+        writes), which is never updated afterwards.
         """
+        if not writes_signals(self.conn):
+            return None
+        ep = active_epoch(self.conn)
+        epoch_id = ep["epoch_id"] if ep else None
         cur = self.conn.execute(
             """INSERT INTO signal_log
                (ts, coin, venue, flagged, score, lean, direction, earlyness,
@@ -504,8 +591,8 @@ class Store:
                 flag_version, oi_notional, oi_change_pct,
                 score_v3, direction_v3, initiation, flow_state,
                 oi_change_1h_pct, opening_for, opening_against, book_agree,
-                funding_crowd, score_rule)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                funding_crowd, score_rule, epoch_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (int(time.time()), sc.coin, sc.venue, 1 if flagged else 0,
              sc.score, sc.lean, sc.direction, sc.earlyness,
              sc.magnitude_parts.get("VOL"), sc.magnitude_parts.get("BOOK"),
@@ -523,12 +610,18 @@ class Store:
              getattr(sc, "opening_for", None), getattr(sc, "opening_against", None),
              getattr(sc, "book_agree", None),
              getattr(sc, "funding_crowd", None),
-             getattr(sc, "score_rule", None)))
+             getattr(sc, "score_rule", None), epoch_id))
         self.conn.commit()
         return cur.lastrowid
 
     def log_plan(self, signal_id, plan):
-        """Freeze a flagged signal's trade plan for stop/TP measurement."""
+        """Freeze a flagged signal's trade plan for stop/TP measurement.
+
+        Gated like log_signal: writes nothing while a watcher-only epoch
+        is active.
+        """
+        if not writes_signals(self.conn):
+            return None
         import time as _t
         self.conn.execute(
             """INSERT OR REPLACE INTO plan_log
@@ -639,7 +732,12 @@ class Store:
         journal keeps every observation; coin_state keeps exactly one row
         per coin: latest fields win, first_seen is sticky, scans_seen counts
         observations. Returns the coin.
+
+        Gated like log_signal: writes nothing (returns None) while a
+        watcher-only epoch is active.
         """
+        if not writes_signals(self.conn):
+            return None
         import time as _t
         now = int(_t.time())
         self.conn.execute(

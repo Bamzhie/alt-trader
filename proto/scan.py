@@ -387,7 +387,7 @@ def build_universe(stake, budget=UNIVERSE_BUDGET, store=None):
 # eligibility filters, independent of the interactive top-N budget and the
 # rotation window. Any change to these filters is a new policy version, which
 # changes the config hash and therefore the episode cohort.
-MEASUREMENT_UNIVERSE_POLICY = "mexc_full_v1"
+MEASUREMENT_UNIVERSE_POLICY = "mexc_full_stakeless_v2"
 
 
 def eligible_pool(tickers, details):
