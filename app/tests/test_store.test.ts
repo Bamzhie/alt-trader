@@ -52,6 +52,33 @@ test("barTimeframe default is never 1m", () => {
   );
 });
 
+// --- real guard on the store's INITIAL defaults ----------------------------
+// The tests above run after the beforeEach reset fixture, so they only prove
+// the fixture's values round-trip — a regression of the defaults in
+// src/store/dashboard.ts would slip through. This block re-imports the module
+// fresh (no beforeEach reset ran against it) and asserts the state as the
+// store creates it, before any setState call.
+
+describe("initial defaults (fresh module, no reset fixture)", () => {
+  test("getState() before any setState matches the store's initial defaults", async () => {
+    vi.resetModules();
+    const { useDashboardStore: freshStore } = await import(
+      "../src/store/dashboard"
+    );
+    const s = freshStore.getState();
+    expect(s.horizonFilter).toBe("4h");
+    expect(s.sort).toBe("newest");
+    expect(s.directionFilter).toBe("all");
+    expect(s.marketFilter).toBe("all");
+    expect(s.tab).toBe("analysis");
+    expect(s.barTimeframe).toBe("15m");
+    expect(s.moversTab).toBe("gainers");
+    expect(s.connection).toBe("starting");
+    expect(s.dataAsOf).toBe(null);
+    expect(s.selectedCoin).toBe(null);
+  });
+});
+
 // --- setters ---------------------------------------------------------------
 
 test("selectCoin(null) clears the selection", () => {
