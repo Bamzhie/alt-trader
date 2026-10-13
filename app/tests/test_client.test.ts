@@ -361,10 +361,11 @@ describe("createClient — request construction", () => {
   });
 
   test("setup(id) hits /setup/:id", async () => {
+    // Wire fidelity: _setup_route() in mock_service.py attaches only
+    // tradeplan_id — no `name`. The fixture deliberately omits it.
     const setup: Setup = {
       id: "setup-eth-1",
       coin: "ETH",
-      name: "Ethereum",
       direction: "SHORT",
       horizon: "4h",
       state: "active",
@@ -392,8 +393,12 @@ describe("createClient — request construction", () => {
 
     const got = await client.setup("setup-eth-1");
 
+    // Wire fidelity: /setup/:id never attaches `name` (only /snapshot does) —
+    // see mock_service.py _setup_route(). The type must reflect that.
     expect(got.coin).toBe("ETH");
     expect(got.direction).toBe("SHORT");
+    expect("name" in got).toBe(false);
+    expect(got.name).toBeUndefined();
     expect(calls[0].url).toBe(`${BASE_URL}/setup/setup-eth-1`);
   });
 

@@ -48,12 +48,16 @@ export interface SetupCriterion {
   passed: boolean;
 }
 
-/** One setup as returned by /snapshot, /setups and /setup/:id. */
+/** One setup as returned by /setups and /setup/:id. */
 export interface Setup {
   id: string;
   coin: string;
-  /** Coin display name, attached by the snapshot/setup routes. */
-  name: string;
+  /**
+   * Coin display name. Present ONLY on the /snapshot route (mock_service.py
+   * _snapshot() enriches it); /setups and /setup/:id attach just
+   * tradeplan_id, so treat it as possibly absent everywhere else.
+   */
+  name?: string;
   direction: Direction;
   horizon: string;
   state: SetupState;
