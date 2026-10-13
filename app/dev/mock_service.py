@@ -155,24 +155,28 @@ class MockService:
         return event
 
     def _prune_ring(self):
-        """Cap at 500 events and 30 minutes, measured from the newest entry."""
+        """Cap at 500 events and a true 30-minute window, filtered by ts
+        (not insertion order)."""
         while len(self.events) > RING_MAX_EVENTS:
             self.events.popleft()
         if not self.events:
             return
-        newest = self.events[-1]["ts"]
+        newest = max(e["ts"] for e in self.events)
         floor = newest - RING_WINDOW_SECONDS
-        while self.events and self.events[0]["ts"] < floor:
-            self.events.popleft()
+        kept = collections.deque(e for e in self.events if e["ts"] >= floor)
+        self.events = kept
 
     def inject_event(self, kind, coin=None):
         if kind not in EVENT_KINDS:
             return None
         with self.lock:
             # The mock clock is frozen at the fixture's data_as_of; injected
-            # events advance from there so the ring-buffer window stays sane.
+            # events advance from the fixture clock only. Using the host
+            # time.time() would jump ahead of data_as_of once the fixture date
+            # is in the past, and the 30-minute prune would then evict the
+            # entire seeded buffer.
             base = self.events[-1]["ts"] if self.events else self.data_as_of
-            ts = max(base + 1, int(time.time()))
+            ts = base + 1
             return self._append_event(kind, ts, coin)
 
     def ring_floor(self):
@@ -299,7 +303,13 @@ class MockHandler(BaseHTTPRequestHandler):
         expected = "Bearer " + self.svc.token
         # compare_digest on the whole "Bearer <token>" string so a missing or
         # malformed scheme fails the same way as a wrong token (no oracle).
-        if not hmac.compare_digest(header.strip(), expected):
+        # compare_digest raises TypeError on non-ASCII input — a bad header
+        # must be a 401, never an unhandled exception that drops the socket.
+        try:
+            digest_ok = hmac.compare_digest(header.strip(), expected)
+        except TypeError:
+            return False
+        if not digest_ok:
             return False
         if scheme.strip().lower() != "bearer":
             return False
@@ -668,40 +678,46 @@ class MockHandler(BaseHTTPRequestHandler):
         if cursor is not None:
             cursor = cursor.strip()
         replay_from = 0
-        with svc.lock:
-            snapshot = list(svc.events)
-            floor = svc.events[0]["id"] if svc.events else None
-        if cursor:
-            if not cursor.isdigit():
-                replay_from = 0
-                floor = None  # unparseable cursor behaves like a stale one
-            else:
-                replay_from = int(cursor)
-                if floor is not None and cursor < floor:
-                    # Below the ring-buffer floor: the client cannot reconcile
-                    # from replay, so it must re-snapshot.
-                    try:
-                        self._sse_write(
-                            "id: " + floor + "\nevent: resync\ndata: "
-                            + json.dumps(
-                                {
-                                    "id": floor,
-                                    "kind": "resync",
-                                    "ts": svc.data_as_of,
-                                    "coin": None,
-                                    "reason": "cursor below ring-buffer floor — re-snapshot",
-                                }
-                            )
-                            + "\n\n"
-                        )
-                    except (BrokenPipeError, ConnectionResetError):
-                        return
-
+        # Subscribe BEFORE copying the ring. Copying first and subscribing
+        # afterwards opens a window where an event appended in between lands
+        # in neither the replay nor the subscriber queue. Any event the queue
+        # delivers that was already replayed from the snapshot is skipped
+        # below by id.
         q = svc.subscribe()
         try:
+            with svc.lock:
+                snapshot = list(svc.events)
+                floor = svc.events[0]["id"] if svc.events else None
+            if cursor:
+                if not cursor.isdigit():
+                    replay_from = 0
+                    floor = None  # unparseable cursor behaves like a stale one
+                else:
+                    replay_from = int(cursor)
+                    if floor is not None and cursor < floor:
+                        # Below the ring-buffer floor: the client cannot
+                        # reconcile from replay, so it must re-snapshot.
+                        try:
+                            self._sse_write(
+                                "id: " + floor + "\nevent: resync\ndata: "
+                                + json.dumps(
+                                    {
+                                        "id": floor,
+                                        "kind": "resync",
+                                        "ts": svc.data_as_of,
+                                        "coin": None,
+                                        "reason": "cursor below ring-buffer floor — re-snapshot",
+                                    }
+                                )
+                                + "\n\n"
+                            )
+                        except (BrokenPipeError, ConnectionResetError):
+                            return
+            last_replayed = -1
             for event in snapshot:
                 if int(event["id"]) > replay_from:
                     self._sse_write(self._frame(event))
+                    last_replayed = max(last_replayed, int(event["id"]))
             while True:
                 try:
                     event = q.get(timeout=HEARTBEAT_SECONDS)
@@ -710,6 +726,9 @@ class MockHandler(BaseHTTPRequestHandler):
                         self._sse_write(f": keepalive {svc.data_as_of}\n\n")
                     except (BrokenPipeError, ConnectionResetError):
                         return
+                    continue
+                # Skip anything the snapshot already covered.
+                if int(event["id"]) <= last_replayed:
                     continue
                 self._sse_write(self._frame(event))
         except (BrokenPipeError, ConnectionResetError, OSError):

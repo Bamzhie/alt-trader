@@ -476,57 +476,57 @@
  "seed_events": [
   {
    "kind": "setup.emitted",
-   "ts": 1791918060,
+   "ts": 1791934260,
    "coin": "BTC"
   },
   {
    "kind": "setup.emitted",
-   "ts": 1791921600,
+   "ts": 1791934320,
    "coin": "DOGE"
   },
   {
    "kind": "setup.emitted",
-   "ts": 1791927000,
+   "ts": 1791934500,
    "coin": "SOL"
   },
   {
    "kind": "setup.emitted",
-   "ts": 1791928800,
+   "ts": 1791934680,
    "coin": "AVAX"
   },
   {
    "kind": "setup.emitted",
-   "ts": 1791930600,
+   "ts": 1791934860,
    "coin": "ETH"
   },
   {
    "kind": "setup.invalidated",
-   "ts": 1791933900,
+   "ts": 1791935100,
    "coin": "ARB"
   },
   {
    "kind": "setup.expired",
-   "ts": 1791929400,
+   "ts": 1791935160,
    "coin": "OP"
   },
   {
    "kind": "monitoring.unavailable",
-   "ts": 1791900000,
+   "ts": 1791935280,
    "coin": "ETH"
   },
   {
    "kind": "monitoring.ok",
-   "ts": 1791900600,
+   "ts": 1791935340,
    "coin": "ETH"
   },
   {
    "kind": "setup.emitted",
-   "ts": 1791934200,
+   "ts": 1791935400,
    "coin": "LINK"
   },
   {
    "kind": "sweep.completed",
-   "ts": 1791935400,
+   "ts": 1791935460,
    "coin": null
   }
  ],

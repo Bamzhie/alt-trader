@@ -360,17 +360,19 @@ ACTIVITY = [
 ]
 
 SEED_EVENTS = [
-    {"kind": "setup.emitted", "ts": NOW - 14400 - 3540, "coin": "BTC"},
-    {"kind": "setup.emitted", "ts": NOW - 14400, "coin": "DOGE"},
-    {"kind": "setup.emitted", "ts": NOW - 9000, "coin": "SOL"},
-    {"kind": "setup.emitted", "ts": NOW - 7200, "coin": "AVAX"},
-    {"kind": "setup.emitted", "ts": NOW - 5400, "coin": "ETH"},
-    {"kind": "setup.invalidated", "ts": NOW - 2100, "coin": "ARB"},
-    {"kind": "setup.expired", "ts": NOW - 6600, "coin": "OP"},
-    {"kind": "monitoring.unavailable", "ts": NOW - 36000, "coin": "ETH"},
-    {"kind": "monitoring.ok", "ts": NOW - 35400, "coin": "ETH"},
-    {"kind": "setup.emitted", "ts": NOW - 1800, "coin": "LINK"},
-    {"kind": "sweep.completed", "ts": NOW - 600, "coin": None},
+    # All seed transitions sit inside the 30-minute ring window so the demo
+    # stream survives startup (the prune is a true 30-minute window now).
+    {"kind": "setup.emitted", "ts": NOW - 1740, "coin": "BTC"},
+    {"kind": "setup.emitted", "ts": NOW - 1680, "coin": "DOGE"},
+    {"kind": "setup.emitted", "ts": NOW - 1500, "coin": "SOL"},
+    {"kind": "setup.emitted", "ts": NOW - 1320, "coin": "AVAX"},
+    {"kind": "setup.emitted", "ts": NOW - 1140, "coin": "ETH"},
+    {"kind": "setup.invalidated", "ts": NOW - 900, "coin": "ARB"},
+    {"kind": "setup.expired", "ts": NOW - 840, "coin": "OP"},
+    {"kind": "monitoring.unavailable", "ts": NOW - 720, "coin": "ETH"},
+    {"kind": "monitoring.ok", "ts": NOW - 660, "coin": "ETH"},
+    {"kind": "setup.emitted", "ts": NOW - 600, "coin": "LINK"},
+    {"kind": "sweep.completed", "ts": NOW - 540, "coin": None},
 ]
 
 EVENT_KINDS = [

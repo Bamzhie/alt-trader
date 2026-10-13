@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import socketserver
+import unittest.mock as mock
 import urllib.error
 import urllib.request
 import unittest
@@ -24,7 +25,6 @@ BASE = f"http://{BASE_HOST}:{BASE_PORT}"
 TOKEN = "dev-token"
 
 SERVER: Optional[Any] = None
-
 
 def _load_module():
     spec = importlib.util.spec_from_file_location(
@@ -487,6 +487,87 @@ class TestSSE(unittest.TestCase):
         resp.read()
         conn.close()
         self.assertEqual(resp.status, 401)
+
+    # -- fix-round-1 regressions -------------------------------------------
+
+    def test_events_does_not_drop_transition_in_subscribe_window(self):
+        # Regression: the snapshot-then-subscribe ordering could lose an event
+        # appended between copying the ring and subscribing (in neither the
+        # replay nor the queue). Reproduce that exact window at the service
+        # level: inject after subscribe but "before" the ring copy.
+        mock_service = _load_module()
+        svc = SERVER.service
+        with svc.lock:
+            q = svc.subscribe()
+            # Event appended while a subscriber is attached but before the
+            # handler would have copied the ring — the lost-transition window.
+            injected = svc.inject_event("setup.emitted", "BTC")
+        try:
+            delivered = q.get(timeout=5)
+        except Exception:
+            delivered = None
+        svc.unsubscribe(q)
+        self.assertIsNotNone(
+            delivered, "event appended in the subscribe window was lost"
+        )
+        self.assertEqual(delivered["id"], injected["id"])
+
+    def test_injected_event_does_not_wipe_ring(self):
+        # Regression: a host clock ahead of the fixture date made ts jump to
+        # time.time(), evicting the whole seeded buffer. With a clock a day
+        # ahead, one injection must not drop the seeded events.
+        mock_service = _load_module()
+        svc = SERVER.service
+        seeded_ids = [e["id"] for e in list(svc.events)]
+        base_ts = svc.events[-1]["ts"]
+        now = svc.data_as_of + 86400
+        with mock.patch.object(mock_service.time, "time", lambda: now):
+            _, body = get("/dev/inject-event?kind=sweep.completed")
+        # ts advances from the fixture clock, never the host time.time().
+        self.assertEqual(body["data"]["ts"], base_ts + 1)
+        remaining = [e["id"] for e in list(svc.events)]
+        for eid in seeded_ids:
+            self.assertIn(eid, remaining)
+        self.assertGreater(len(remaining), len(seeded_ids) - 1)
+
+    def test_all_seeded_transitions_survive_startup(self):
+        # Regression: prune was insertion-order dependent, so seed events older
+        # than 30min could silently survive while newer ones were dropped. On a
+        # fresh service, every seeded event inside the 30min window must remain.
+        mock_service = _load_module()
+        with open(os.path.join(HERE, "fixtures.json")) as f:
+            fixtures = json.load(f)
+        svc = mock_service.MockService(fixtures, "unused-token")
+        seeds = fixtures["seed_events"]
+        newest = max(int(s["ts"]) for s in seeds)
+        inside = [s for s in seeds if newest - int(s["ts"]) <= mock_service.RING_WINDOW_SECONDS]
+        self.assertEqual(len(inside), len(seeds))  # every seed inside the window
+        self.assertEqual(len(svc.events), len(seeds))
+        window = mock_service.RING_WINDOW_SECONDS
+        for e in svc.events:
+            self.assertGreaterEqual(e["ts"], newest - window)
+
+    def test_non_ascii_authorization_401_connection_alive(self):
+        # Regression: hmac.compare_digest raises TypeError on non-ASCII input,
+        # which escaped the handler and dropped the connection with no response.
+        conn = http.client.HTTPConnection(BASE_HOST, BASE_PORT, timeout=5)
+        conn.request(
+            "GET",
+            "/snapshot",
+            headers={"Authorization": "Bearer \u00fcn\u00efcode"},
+        )
+        resp = conn.getresponse()
+        resp.read()
+        self.assertEqual(resp.status, 401)
+        # The connection must stay usable: a well-formed follow-up still works.
+        conn.request(
+            "GET", "/healthz", headers={"Authorization": f"Bearer {TOKEN}"}
+        )
+        resp2 = conn.getresponse()
+        body2 = json.loads(resp2.read())
+        conn.close()
+        self.assertEqual(resp2.status, 200)
+        self.assertTrue(body2["alive"])
 
 
 class TestGlobalConstraints(unittest.TestCase):
