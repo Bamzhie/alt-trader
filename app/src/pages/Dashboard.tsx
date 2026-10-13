@@ -11,9 +11,10 @@
 //   * Row click = selection only (selectCoin) — never backend state.
 //   * "data as of <ts>" header line; timestamps are UTC-seconds ints.
 //   * Colors come from theme tokens only — never raw hexes.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "../api/client";
 import type { ApiClient } from "../api/client";
+import { useEvents } from "../api/sse";
 import type { Snapshot, Setup } from "../api/types";
 import { ActivityLog } from "../components/ActivityLog";
 import { FilterBar } from "../components/FilterBar";
@@ -24,7 +25,7 @@ import { RecentAnalysis } from "../components/RecentAnalysis";
 import { StatCards } from "../components/StatCards";
 import { TopSignalsTable } from "../components/TopSignalsTable";
 import { useDashboardStore } from "../store/dashboard";
-import type { MarketFilter, SortKey } from "../store/dashboard";
+import type { ConnectionState, MarketFilter, SortKey } from "../store/dashboard";
 
 // Dev bearer for the stdlib mock service (its default token, printed once
 // to stdout by dev/mock_service.py). The production service injects a
@@ -43,36 +44,145 @@ function formatUtc(ts: number): string {
 }
 
 /**
- * Fetches the dashboard snapshot once on mount. A failure surfaces the
- * ApiError message — the page then renders a contained unavailable region
- * instead of stale or invented numbers.
+ * Reads the dashboard snapshot. `load()` is the single fetch path: the
+ * mount effect calls it once, and live SSE transitions call `refetch`.
+ *
+ * Coalescing: while a read is in flight a further call does not start a
+ * second request — it arms `pending`, and exactly one extra read runs when
+ * the current one lands. A burst of transition events therefore costs one
+ * extra GET, not one per event, and the mount read is never duplicated.
  */
 function useSnapshot(client: ApiClient): {
   snapshot: Snapshot | null;
   error: string | null;
+  refetch: () => void;
 } {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const inFlightRef = useRef(false);
+  const pendingRef = useRef(false);
+  const mountedRef = useRef(true);
 
-  useEffect(() => {
-    let cancelled = false;
+  const load = useCallback((): void => {
+    if (inFlightRef.current) {
+      pendingRef.current = true;
+      return;
+    }
+    inFlightRef.current = true;
     client
       .snapshot()
       .then((data) => {
-        if (cancelled) return;
+        if (!mountedRef.current) return;
         setSnapshot(data);
+        setError(null);
         useDashboardStore.getState().setDataAsOf(data.data_as_of);
       })
       .catch((err: unknown) => {
-        if (cancelled) return;
+        if (!mountedRef.current) return;
         setError(err instanceof Error ? err.message : "snapshot read failed");
+      })
+      .finally(() => {
+        inFlightRef.current = false;
+        if (pendingRef.current) {
+          pendingRef.current = false;
+          load();
+        }
       });
-    return () => {
-      cancelled = true;
-    };
   }, [client]);
 
-  return { snapshot, error };
+  useEffect(() => {
+    mountedRef.current = true;
+    load();
+    return () => {
+      mountedRef.current = false;
+    };
+  }, [load]);
+
+  return { snapshot, error, refetch: load };
+}
+
+/** How often the readiness probe re-checks /healthz + /readyz (ms). */
+const CONNECTION_PROBE_INTERVAL_MS = 5_000;
+
+/**
+ * Drives the store's `connection` from the two probes — never from the SSE
+ * hook's stream-open flag.
+ *
+ * Why: the service's /events route authenticates but does NOT gate on
+ * readiness, so a stream can be open and delivering while the first sweep
+ * is still running. Treating stream-open as "connected" would claim
+ * readiness before the data exists. §2 instead requires /healthz (alive)
+ * + /readyz (ready):
+ *
+ *   * not alive                → "error"     (contained fallback, retrying)
+ *   * alive, not ready         → "starting"  (first sweep in progress)
+ *   * alive, ready, stream up  → "connected"
+ *   * alive, ready, stream down→ state unchanged (sticky). A reconnect
+ *     blip is not a first sweep, so it must not print "starting"; the
+ *     next successful probe re-confirms "connected".
+ *
+ * Probed on mount, on every stream open/close transition, and on a slow
+ * interval so a mid-session readiness flip (the mock's /dev/toggle-ready)
+ * is picked up without waiting for a stream event.
+ */
+function useConnectionStatus(
+  client: ApiClient,
+  streamOpen: boolean,
+): void {
+  const streamOpenRef = useRef(streamOpen);
+  streamOpenRef.current = streamOpen;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function probe(): Promise<void> {
+      const alive = await client.healthz();
+      if (cancelled) return;
+      if (!alive) {
+        useDashboardStore.getState().setConnection("error");
+        return;
+      }
+      // readyz() rethrows non-UNAVAILABLE failures (e.g. NETWORK); a probe
+      // that cannot answer readiness is treated as not-ready, never as a
+      // crash.
+      let ready = false;
+      try {
+        ready = await client.readyz();
+      } catch {
+        ready = false;
+      }
+      if (cancelled) return;
+      // Write only on a real transition: zustand notifies subscribers on
+      // every set(), so re-setting the same value would re-render the
+      // shell for nothing (and, in tests, for an act() warning per
+      // probe).
+      const current = useDashboardStore.getState().connection;
+      let next: ConnectionState;
+      if (ready && streamOpenRef.current) {
+        next = "connected";
+      } else if (!ready) {
+        next = "starting";
+      } else {
+        // Ready but the stream is down: a reconnect blip is not a first
+        // sweep, so it must not print "starting" — hold the current state
+        // and let the next successful probe re-confirm.
+        next = current === "connected" ? "connected" : "starting";
+      }
+      if (next !== current) {
+        useDashboardStore.getState().setConnection(next);
+      }
+    }
+
+    void probe();
+    const timer = setInterval(() => {
+      void probe();
+    }, CONNECTION_PROBE_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [client, streamOpen]);
 }
 
 /**
@@ -175,7 +285,30 @@ export function Dashboard() {
   const moversTab = useDashboardStore((s) => s.moversTab);
   const selectedCoin = useDashboardStore((s) => s.selectedCoin);
 
-  const { snapshot, error } = useSnapshot(client);
+  const { snapshot, error, refetch } = useSnapshot(client);
+
+  // Live SSE stream: subscribe FIRST, then the snapshot lands. The hook's
+  // reconcile gate drops events already covered by snapshot_event_id and
+  // applies newer ones; a transition that lands in the subscribe-before-
+  // copy window is applied exactly once. Every applied transition (and
+  // every server resync) re-snapshots, so the board reflects the
+  // transition instead of waiting for the next full reload. The snapshot
+  // read coalesces, so a burst costs one extra GET.
+  const { connected: streamOpen } = useEvents({
+    url: "/api/events",
+    token: DEV_TOKEN,
+    snapshotEventId: snapshot?.snapshot_event_id ?? null,
+    onEvent: () => {
+      refetch();
+    },
+    onResync: () => {
+      refetch();
+    },
+  });
+
+  // Connection banner state: driven by /healthz + /readyz, gated on the
+  // stream being open — see useConnectionStatus.
+  useConnectionStatus(client, streamOpen);
 
   const activeSetups = useMemo(
     () => (snapshot ? snapshot.setups.filter((s) => s.state === "active") : []),

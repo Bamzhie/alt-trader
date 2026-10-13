@@ -18,6 +18,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import App from "../src/App";
 import { useDashboardStore } from "../src/store/dashboard";
 import type { Envelope, Snapshot } from "../src/api/types";
+import { healthzOk, readyzOk, sseStreamResponse } from "./sse_stub";
 
 const DATA_AS_OF = 1791936000;
 
@@ -232,6 +233,16 @@ function stubFetch(snapshot: Snapshot) {
           error: { code: "NOT_FOUND", message: "no setup for coin" },
         });
       }
+      // The wired Dashboard (Task 11 fix round 1) also opens /api/events
+      // and probes /healthz + /readyz. Answer the contract shapes: a
+      // stream that stays open (a JSON body here would end the stream at
+      // once and spin the hook's reconnect loop all test), and the two
+      // probes. See tests/sse_stub.ts.
+      if (url.endsWith("/healthz")) return healthzOk();
+      if (url.endsWith("/readyz")) return readyzOk();
+      if (url.endsWith("/events")) {
+        return sseStreamResponse(init?.signal ?? null).response;
+      }
       return jsonResponse(200, snapshotEnvelope(snapshot));
     },
   );
@@ -325,6 +336,13 @@ function stubDeferredBars(snapshot: Snapshot) {
                   data_as_of: DATA_AS_OF, unavailable: null },
           error: null,
         });
+      }
+      // Same contract answers as stubFetch for the routes the wired
+      // Dashboard now opens (see tests/sse_stub.ts).
+      if (url.endsWith("/healthz")) return healthzOk();
+      if (url.endsWith("/readyz")) return readyzOk();
+      if (url.endsWith("/events")) {
+        return sseStreamResponse(init?.signal ?? null).response;
       }
       return jsonResponse(200, snapshotEnvelope(snapshot));
     },

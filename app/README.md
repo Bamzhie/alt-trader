@@ -120,10 +120,12 @@ the built `dist/` via `vite preview`). Fixtures:
       dashboard.
 - [x] **Top bar** — product name, `SCANNING` badge, live UTC clock, bell +
       gear; footer shows `API status`, `Exchange: MEXC`, `Account: Futures`.
-- [x] **Connection banner** — "starting — first sweep in progress" while
-      `/readyz` is false; verified by `GET /dev/toggle-ready` (readyz then
-      answers `503 UNAVAILABLE`, banner shows, snapshot still renders from
-      the already-loaded data), then toggled back.
+- [x] **Connection banner** — hidden once `/readyz` is true and the SSE
+      stream is open; "starting — first sweep in progress" while `/readyz`
+      is false (verified by `GET /dev/toggle-ready`, readyz then answers
+      `503 UNAVAILABLE` while the snapshot still renders from the
+      already-loaded data), then toggled back. Driven by `/healthz` +
+      `/readyz`, not by stream-open.
 - [x] **Stat cards** — ACTIVE SETUPS `6`; ELIGIBLE PERPS `132 of 150`
       ("evaluated of eligible"); MONITORING COVERAGE `98.4%` ("of the last
       sweep"); NEW SETUPS 24H `6` with the delta line reading **unavailable**
@@ -183,10 +185,17 @@ the built `dist/` via `vite preview`). Fixtures:
 - [x] **Production build** — `npm run build` + `vite preview` re-verified the
       same regions (stat cards, table, overview, coin detail with a painted
       chart, bottom row) with no blank or broken panels.
-- [x] **SSE contract** — stream opens through the dev proxy; `Last-Event-ID`
-      resumes from the next id; a below-floor cursor emits a `resync` event;
-      `/dev/inject-event?kind=setup.emitted&coin=XRP` appends id `000012`
-      mid-stream; 15s keepalive comments.
+- [x] **SSE contract (hook level)** — stream opens through the dev proxy;
+      `Last-Event-ID` resumes from the next id; a below-floor cursor emits
+      a `resync` event; `/dev/inject-event?kind=setup.emitted&coin=XRP`
+      appends id `000012` mid-stream; 15s keepalive comments. The hook is
+      unit-tested in `tests/test_sse.test.ts`.
+- [x] **SSE wiring (app level)** — the Dashboard opens `/api/events`,
+      gates events on the snapshot watermark, and re-snapshots on an
+      applied transition or a `resync`; the connection banner is driven by
+      `/healthz` + `/readyz`, not by stream-open. Covered end to end by
+      `tests/test_sse_wiring.test.tsx` (mocked fetch, no network) and
+      verified live below.
 - [x] **Banned-word scan** — the rendered page text contains no
       confidence / probability / tier / TOTAL / 1m / leverage / liquidation /
       "scanned".
@@ -205,18 +214,30 @@ binding and were applied deliberately:
 - **No leverage or liquidation** — the trade plan shows the 100 USDT
   reference notional as a reference size, never a position, and carries no
   leverage key.
+- **No EMA overlay on the chart** — a §4 deviation. The spec's §4 asks for
+  EMA50/EMA200 lines over the candles, but §5 forbids frontend math and
+  `/metrics` returns scalar EMA values (per-coin, per-snapshot), not a
+  series, so drawing them would mean computing indicators client-side. The
+  chart draws candles + volume only; the scalar EMAs are read verbatim in
+  the Metrics tab.
 - "eligible" / "evaluated" wording replaces any "scanned" phrasing.
 
-## Known gap (see the Task 11 report)
+## Connection banner + live SSE (Task 11 fix round 1)
 
-`src/api/sse.ts` (`useEvents`) and the store's `setConnection` are fully
-implemented and unit-tested, but nothing in `src/` imports `useEvents` or
-calls `setConnection` — so the connection banner is permanently stuck on
-"starting — first sweep in progress" in the running app, and live SSE
-transitions never reach the dashboard (the snapshot data itself is correct
-and complete). Wiring the hook into `Dashboard.tsx` (open
-`/api/events`, drive `connection` off `connected`, re-snapshot on `resync`)
-is the one remaining step; it is tracked as a concern in
-`.superpowers/sdd/2026-10-14-frontend-dashboard/task-11-report.md` rather
-than silently patched, because it changes runtime behavior beyond this
-task's verification scope.
+The hook (`src/api/sse.ts`) and the store's `setConnection` are wired into
+the running app in `src/pages/Dashboard.tsx`:
+
+- The banner is driven by `/healthz` (alive) + `/readyz` (ready) — never
+  by the hook's stream-open flag. The service's `/events` route
+  authenticates but does not gate on readiness, so a stream can be open
+  while the first sweep is still running; treating stream-open as
+  "connected" would claim readiness before any data exists.
+- An applied transition (id above `snapshot_event_id`) and a `resync`
+  frame both re-snapshot, so the board reflects live transitions. The
+  snapshot read coalesces, so a burst of events costs one extra GET.
+- `tests/test_sse_wiring.test.tsx` pins this end to end with mocked fetch
+  (no network): the banner reaches "connected" only when `/readyz` is
+  true, stays "starting" while `/readyz` is false even with the stream
+  delivering events, flips to "error" on a `/healthz` failure, and an
+  applied `sweep.completed` / `resync` re-snapshots while a below-watermark
+  event does not.

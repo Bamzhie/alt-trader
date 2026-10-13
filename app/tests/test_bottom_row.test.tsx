@@ -21,6 +21,7 @@ import { ActivityLog } from "../src/components/ActivityLog";
 import { MarketMovers } from "../src/components/MarketMovers";
 import { RecentAnalysis } from "../src/components/RecentAnalysis";
 import { useDashboardStore } from "../src/store/dashboard";
+import { healthzOk, readyzOk, sseStreamResponse } from "./sse_stub";
 import type {
   ActivityEntry,
   Envelope,
@@ -215,6 +216,14 @@ function stubFetch(snapshot: Snapshot) {
         data: null,
         error: { code: "NOT_FOUND", message: "no setup for coin" },
       });
+    }
+    // Contract answers for the routes the wired Dashboard now opens —
+    // see tests/sse_stub.ts (a JSON body on /events would end the stream
+    // at once and spin the hook's reconnect loop for the whole test).
+    if (url.endsWith("/healthz")) return healthzOk();
+    if (url.endsWith("/readyz")) return readyzOk();
+    if (url.endsWith("/events")) {
+      return sseStreamResponse(init?.signal ?? null).response;
     }
     return jsonResponse(200, snapshotEnvelope(snapshot));
   });

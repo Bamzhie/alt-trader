@@ -14,15 +14,24 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import App from "../src/App";
 import { useDashboardStore } from "../src/store/dashboard";
+import { healthzOk, readyzOk, sseStreamResponse, stubReadOnlyFetch } from "./sse_stub";
 
 beforeEach(() => {
   useDashboardStore.setState({ connection: "starting" });
+  // The wired Dashboard opens /events and probes /healthz + /readyz on
+  // mount (Task 11 fix round 1). Chrome-level tests here don't exercise
+  // the data path, but an unstubbed fetch would leave those probes
+  // resolving after the test body (state updates outside act) — so every
+  // render gets the minimal read-only stub. The one test that asserts the
+  // request shape installs its own stub.
+  stubReadOnlyFetch();
 });
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
   useDashboardStore.setState({ connection: "starting" });
+  vi.unstubAllGlobals();
 });
 
 // --- brief Step 1 (verbatim) ---------------------------------------------
@@ -176,6 +185,14 @@ test("shell mounts read-only: one snapshot GET, never a POST", async () => {
         throw new Error(`POST attempted against read-only app: ${url}`);
       }
       getCalls.push(url);
+      // Contract answers for the routes the wired Dashboard now opens —
+      // see tests/sse_stub.ts (a JSON body on /events would end the
+      // stream at once and spin the hook's reconnect loop all test).
+      if (url.endsWith("/healthz")) return healthzOk();
+      if (url.endsWith("/readyz")) return readyzOk();
+      if (url.endsWith("/events")) {
+        return sseStreamResponse(init?.signal ?? null).response;
+      }
       return new Response(
         JSON.stringify({
           ok: true,
