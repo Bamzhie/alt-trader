@@ -7,8 +7,11 @@
 //   * All network goes through the Task 3 client (createClient) — GETs
 //     only; a failure surfaces "bars unavailable" per tab or an error
 //     message, never fabricated data.
-//   * A coin without a setup renders "no setup yet" plus its blocking
-//     reason in the SAME panel (the panel stays mounted).
+//   * A coin without a setup (a 404 NOT_FOUND on /setup/:id) renders
+//     "no setup yet" plus its blocking reason in the SAME panel (the
+//     panel stays mounted). A FAILED setup read (NETWORK / UNAVAILABLE)
+//     renders "setup unavailable — <message>" — never the no-setup
+//     copy, which would invent a rule claim out of a transport failure.
 //   * `rsi: null` renders "unavailable", never 0 — every indicator is
 //     null-checked before it is formatted.
 //   * Trade Plan levels carry the literal line "100 USDT reference
@@ -60,6 +63,22 @@ export interface CoinDetailProps {
 interface Async<T> {
   data: T | null;
   error: string | null;
+  /**
+   * The ApiError code behind `error`, or null when the failure was not
+   * an ApiError. NOT_FOUND means "this coin has no setup"; any other
+   * code (NETWORK / UNAVAILABLE / …) means the READ failed — the two
+   * must never render the same copy (spec §5: a feed failure is a
+   * contained fallback, never a "no setup" claim).
+   */
+  code: string | null;
+}
+
+/** Splits a caught error into the message plus its ApiError code. */
+function failure(err: unknown): { error: string; code: string | null } {
+  return {
+    error: errorMessage(err),
+    code: err instanceof ApiError ? err.code : null,
+  };
 }
 
 /** Formats a UTC-seconds int as "YYYY-MM-DD HH:MM:SS UTC". */
@@ -135,24 +154,29 @@ export function CoinDetail({ client: clientProp, blockingReason }: CoinDetailPro
   const setTab = useDashboardStore((s) => s.setTab);
   const setBarTimeframe = useDashboardStore((s) => s.setBarTimeframe);
 
-  const [setup, setSetup] = useState<Async<Setup>>({ data: null, error: null });
-  const [plan, setPlan] = useState<Async<TradePlan>>({ data: null, error: null });
-  const [metrics, setMetrics] = useState<Async<Metrics>>({ data: null, error: null });
-  const [bars, setBars] = useState<Async<Bars>>({ data: null, error: null });
+  const [setup, setSetup] = useState<Async<Setup>>({ data: null, error: null, code: null });
+  const [plan, setPlan] = useState<Async<TradePlan>>({ data: null, error: null, code: null });
+  const [metrics, setMetrics] = useState<Async<Metrics>>({ data: null, error: null, code: null });
+  const [bars, setBars] = useState<Async<Bars>>({ data: null, error: null, code: null });
 
-  // Reset + fetch on every coin switch. A coin without a setup 404s —
-  // the panel then renders "no setup yet" with its blocking reason.
+  // Reset + fetch the coin-scoped reads (setup / tradeplan / metrics)
+  // on every coin switch. A coin without a setup 404s — the panel then
+  // renders "no setup yet" with its blocking reason.
   //
-  // The four states are cleared at the TOP of the effect (and for a null
-  // selection too): a coin switch BTC -> ETH must not keep the previous
-  // coin's setup/plan/metrics/bars on screen while ETH's reads are in
-  // flight — otherwise the header renders "ETH - Bitcoin" with BTC's
+  // These three states are cleared at the TOP of the effect (and for a
+  // null selection too): a coin switch BTC -> ETH must not keep the
+  // previous coin's setup/plan/metrics on screen while ETH's reads are
+  // in flight — otherwise the header renders "ETH - Bitcoin" with BTC's
   // price and the chart shows BTC candles until ETH's data lands.
+  //
+  // They are NOT keyed on barTimeframe: setup/plan/metrics are
+  // coin-scoped, so a timeframe click must not clear them (that
+  // blanked the header — "price unavailable", "24h unavailable", the
+  // RSI readout gone — and re-issued three GETs that were not stale).
   useEffect(() => {
-    setSetup({ data: null, error: null });
-    setPlan({ data: null, error: null });
-    setMetrics({ data: null, error: null });
-    setBars({ data: null, error: null });
+    setSetup({ data: null, error: null, code: null });
+    setPlan({ data: null, error: null, code: null });
+    setMetrics({ data: null, error: null, code: null });
     if (selectedCoin === null) return;
     let cancelled = false;
     const coin = selectedCoin;
@@ -160,34 +184,48 @@ export function CoinDetail({ client: clientProp, blockingReason }: CoinDetailPro
     client
       .setup(coin)
       .then((data) => {
-        if (!cancelled) setSetup({ data, error: null });
+        if (!cancelled) setSetup({ data, error: null, code: null });
       })
       .catch((err: unknown) => {
-        if (!cancelled) setSetup({ data: null, error: errorMessage(err) });
+        if (!cancelled) setSetup({ data: null, ...failure(err) });
       });
     client
       .tradeplan(coin)
       .then((data) => {
-        if (!cancelled) setPlan({ data, error: null });
+        if (!cancelled) setPlan({ data, error: null, code: null });
       })
       .catch((err: unknown) => {
-        if (!cancelled) setPlan({ data: null, error: errorMessage(err) });
+        if (!cancelled) setPlan({ data: null, ...failure(err) });
       });
     client
       .metrics(coin)
       .then((data) => {
-        if (!cancelled) setMetrics({ data, error: null });
+        if (!cancelled) setMetrics({ data, error: null, code: null });
       })
       .catch((err: unknown) => {
-        if (!cancelled) setMetrics({ data: null, error: errorMessage(err) });
+        if (!cancelled) setMetrics({ data: null, ...failure(err) });
       });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client, selectedCoin]);
+
+  // Bars are the ONE read keyed on (coin, timeframe): a timeframe click
+  // clears and re-fetches bars alone. The header (price / 24h / RSI)
+  // and the coin-scoped panes stay on screen — they are not stale, and
+  // re-issuing their GETs per click cost three redundant requests.
+  useEffect(() => {
+    setBars({ data: null, error: null, code: null });
+    if (selectedCoin === null) return;
+    let cancelled = false;
     client
-      .bars(coin, barTimeframe)
+      .bars(selectedCoin, barTimeframe)
       .then((data) => {
-        if (!cancelled) setBars({ data, error: null });
+        if (!cancelled) setBars({ data, error: null, code: null });
       })
       .catch((err: unknown) => {
-        if (!cancelled) setBars({ data: null, error: errorMessage(err) });
+        if (!cancelled) setBars({ data: null, ...failure(err) });
       });
 
     return () => {
@@ -198,7 +236,7 @@ export function CoinDetail({ client: clientProp, blockingReason }: CoinDetailPro
   // The empty-bars object is memoized on coin + timeframe: an inline
   // `emptyBars(...)` literal would be a NEW object identity every render,
   // and CandleChart's effect depends on `bars`, so each in-flight fetch
-  // would tear down and recreate the chart. Same key as the effect above.
+  // would tear down and recreate the chart. Same key as the bars effect.
   const placeholderBars = useMemo(
     () => emptyBars(selectedCoin ?? "", barTimeframe),
     [selectedCoin, barTimeframe],
@@ -217,7 +255,14 @@ export function CoinDetail({ client: clientProp, blockingReason }: CoinDetailPro
   const price = setup.data?.price ?? null;
   const change24h = setup.data?.change_24h_pct ?? null;
 
-  const noSetup = setup.data === null && setup.error !== null;
+  // A failed setup READ is not "no setup": only a 404 NOT_FOUND means
+  // the coin has no setup. A NETWORK / UNAVAILABLE / 500 read failure
+  // renders "setup unavailable — <message>" instead — rendering the
+  // no-setup copy there would fabricate a "no rule criteria met" claim
+  // out of a transport failure (spec §5: feed/DB failure -> contained
+  // fallback, never an invented fact).
+  const setupFailed = setup.data === null && setup.error !== null;
+  const noSetup = setupFailed && setup.code === "NOT_FOUND";
 
   return (
     <section className="rounded-xl border border-border bg-card p-4">
@@ -314,6 +359,13 @@ export function CoinDetail({ client: clientProp, blockingReason }: CoinDetailPro
             <p className="mt-1">
               {blockingReason ?? "no rule criteria met on the last sweep"}
             </p>
+          </div>
+        ) : setupFailed ? (
+          // A failed read, not a missing setup: the message is the
+          // failure, never a rule claim.
+          <div className="rounded-lg border border-border bg-bg-elevated px-3 py-2 text-xs text-muted">
+            <p className="font-medium text-fg">setup unavailable</p>
+            <p className="mt-1">{setup.error}</p>
           </div>
         ) : tab === "analysis" ? (
           <AnalysisPane setup={setup.data} error={setup.error} />

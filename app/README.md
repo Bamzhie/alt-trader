@@ -55,7 +55,7 @@ never written to the mock's request log.
 Other commands:
 
 ```bash
-npm run test        # vitest run — 166 tests, all mocked fetch
+npm run test        # vitest run — 176 tests, all mocked fetch
 npm run typecheck   # tsc --noEmit
 npm run lint        # eslint --max-warnings 0
 npm run build       # tsc --noEmit && vite build -> dist/
@@ -103,7 +103,7 @@ app/
     components/   shell + dashboard regions (all token-colored)
     pages/        Dashboard (functional) + StubPage (5 placeholder pages)
     theme.css     var(--*) design tokens
-  tests/          vitest (166) — mocked fetch, loopback tripwire
+  tests/          vitest (176) — mocked fetch, loopback tripwire
 ```
 
 ## Manual checklist — region by region

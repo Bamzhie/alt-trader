@@ -210,6 +210,8 @@ function jsonResponse(status: number, payload: unknown): Response {
 interface DetailStub {
   postCalls: Array<{ url: string; init: RequestInit | undefined }>;
   barsCalls: string[];
+  /** Every GET url the stub answered, in order. */
+  calls: string[];
   /** Releases every parked request for the deferred coin (no-op if none). */
   releaseCoin: () => void;
 }
@@ -221,15 +223,20 @@ interface DetailStub {
  * `barsFails` makes the /bars fetch reject; `metrics` overrides the
  * metrics payload; `deferCoin` parks every request for that coin so a
  * selection change can be asserted mid-flight (no stale data visible).
+ * `setupFails` makes /setup/<coin> answer with that error envelope
+ * instead of a setup — how a NETWORK/UNAVAILABLE read failure reaches
+ * the panel (a failed read must never render the no-setup copy).
  */
 function stubDetail(opts: {
   noSetup?: boolean;
   barsFails?: boolean;
   metrics?: () => Metrics;
   deferCoin?: string;
+  setupFails?: { code: string; message: string };
 } = {}): DetailStub {
   const postCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
   const barsCalls: string[] = [];
+  const calls: string[] = [];
   const deferred: Array<() => void> = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -237,6 +244,7 @@ function stubDetail(opts: {
       postCalls.push({ url, init });
       throw new Error(`POST attempted against read-only dashboard: ${url}`);
     }
+    calls.push(url);
     // The deferred coin's reads are parked in flight — the panel must
     // show nothing for it, not the previous coin's data.
     if (opts.deferCoin !== undefined && url.includes(opts.deferCoin)) {
@@ -259,17 +267,37 @@ function stubDetail(opts: {
         error: null,
       });
     }
-    if (url.includes("/tradeplan/") || url.includes("/setup/")) {
-      if (opts.noSetup) return jsonResponse(404, notFoundEnvelope());
+    if (url.includes("/tradeplan/")) {
       // The coin travels in the path (`/setup/<coin>`, `/tradeplan/<id>`);
       // answer with that coin's own fixture so a switch is observable.
       const coin = url.split("/").pop() ?? "BTC";
-      const overrides = coinFixture(coin);
+      if (opts.setupFails) {
+        return jsonResponse(500, {
+          ok: false,
+          data: null,
+          error: { code: opts.setupFails.code, message: opts.setupFails.message },
+        });
+      }
+      if (opts.noSetup) return jsonResponse(404, notFoundEnvelope());
       return jsonResponse(200, {
         ok: true,
-        data: url.includes("/tradeplan/")
-          ? makeTradePlan(overrides)
-          : makeSetup(overrides),
+        data: makeTradePlan(coinFixture(coin)),
+        error: null,
+      });
+    }
+    if (url.includes("/setup/")) {
+      const coin = url.split("/").pop() ?? "BTC";
+      if (opts.setupFails) {
+        return jsonResponse(500, {
+          ok: false,
+          data: null,
+          error: { code: opts.setupFails.code, message: opts.setupFails.message },
+        });
+      }
+      if (opts.noSetup) return jsonResponse(404, notFoundEnvelope());
+      return jsonResponse(200, {
+        ok: true,
+        data: makeSetup(coinFixture(coin)),
         error: null,
       });
     }
@@ -279,6 +307,7 @@ function stubDetail(opts: {
   return {
     postCalls,
     barsCalls,
+    calls,
     // Releases whatever is currently parked; safe to call with nothing
     // parked (a no-op) and repeatable.
     releaseCoin: () => {
@@ -493,6 +522,83 @@ describe("coin detail", () => {
       "aria-label",
       "price chart",
     );
+  });
+
+  test("a timeframe click re-fetches bars only — the header and coin-scoped panes stay put", async () => {
+    // Regression (Important, final review): the effect's dep on
+    // barTimeframe reset ALL four state groups, so a timeframe click
+    // blanked the header (price -> "price unavailable", 24h ->
+    // "24h unavailable", the RSI readout gone) and re-issued the
+    // setup/tradeplan/metrics GETs — coin-scoped reads that were never
+    // stale — on every click.
+    const { calls } = await renderDetail();
+    expect(await screen.findByText("BTC - Bitcoin")).toBeInTheDocument();
+    expect(screen.getByText("112,505")).toBeInTheDocument();
+    expect(screen.getByText("+2.41%")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/RSI 14/)).toBeInTheDocument());
+    const before = calls.filter((u) => u.includes("/setup/") || u.includes("/tradeplan/") || u.includes("/metrics")).length;
+
+    const { act } = await import("@testing-library/react");
+    await act(async () => {
+      useDashboardStore.getState().setBarTimeframe("4H");
+    });
+    // Bars are re-fetched for the new timeframe…
+    await waitFor(() =>
+      expect(calls.some((u) => u.includes("/bars") && u.includes("tf=4H"))).toBe(true),
+    );
+    // …and NOTHING else: the coin-scoped reads are not re-issued.
+    const after = calls.filter((u) => u.includes("/setup/") || u.includes("/tradeplan/") || u.includes("/metrics")).length;
+    expect(after).toBe(before);
+    // The header never blanked: price, 24h and the RSI readout are
+    // still the coin's own values.
+    expect(screen.getByText("BTC - Bitcoin")).toBeInTheDocument();
+    expect(screen.getByText("112,505")).toBeInTheDocument();
+    expect(screen.getByText("+2.41%")).toBeInTheDocument();
+    expect(screen.getByText(/RSI 14/)).toBeInTheDocument();
+    expect(screen.queryByText("price unavailable")).toBeNull();
+    expect(screen.queryByText("24h unavailable")).toBeNull();
+  });
+
+  test("a failed setup read renders unavailable, never the no-setup copy", async () => {
+    // Regression (Important, final review): noSetup was
+    // `setup.data === null && setup.error !== null`, so a NETWORK /
+    // UNAVAILABLE failure on /setup/:id took the no-setup branch and
+    // rendered "no setup yet — no rule criteria met on the last sweep"
+    // while discarding the error message — a fabricated claim out of a
+    // transport failure (spec §5: feed/DB failure -> contained
+    // fallback, never an invented fact).
+    await renderDetail({
+      setupFails: { code: "UNAVAILABLE", message: "scanner feed unreachable" },
+    });
+    expect(await screen.findByText(/setup unavailable/i)).toBeInTheDocument();
+    expect(screen.getByText(/scanner feed unreachable/i)).toBeInTheDocument();
+    // The no-setup copy must NOT appear: no claim about rule criteria.
+    expect(screen.queryByText(/no setup yet/i)).toBeNull();
+    expect(screen.queryByText(/no rule criteria met on the last sweep/i)).toBeNull();
+  });
+
+  test("a NETWORK failed setup read renders unavailable, not no setup yet", async () => {
+    // Same rule, the other failure shape: a transport failure (the
+    // client maps it to code NETWORK) is a failed read, not a coin
+    // without a setup.
+    await renderDetail({
+      setupFails: { code: "NETWORK", message: "network request failed" },
+    });
+    expect(await screen.findByText(/setup unavailable/i)).toBeInTheDocument();
+    expect(screen.getByText(/network request failed/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no setup yet/i)).toBeNull();
+  });
+
+  test("a 404 NOT_FOUND still renders the no-setup copy", async () => {
+    // The counterpart: only NOT_FOUND means "this coin has no setup".
+    await renderDetail({
+      setupFails: { code: "NOT_FOUND", message: "no setup for coin" },
+    });
+    expect(await screen.findByText(/no setup yet/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/no rule criteria met on the last sweep/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/setup unavailable/i)).toBeNull();
   });
 });
 
