@@ -161,11 +161,62 @@ test("dashboard route renders the Dashboard page, not a stub", () => {
 
 // --- read-only guards -----------------------------------------------------
 
-test("shell mounts without touching the network", () => {
-  const spy = vi.fn();
-  vi.stubGlobal("fetch", spy);
+// Task 8 replaced the placeholder Dashboard with a real page that reads the
+// snapshot on mount. The shell itself still issues nothing of its own — the
+// only request the app makes is the dashboard's single GET to /api/snapshot,
+// and never a POST.
+test("shell mounts read-only: one snapshot GET, never a POST", async () => {
+  const postCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+  const getCalls: string[] = [];
+  const fetchMock = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if ((init?.method ?? "GET").toUpperCase() === "POST") {
+        postCalls.push({ url, init });
+        throw new Error(`POST attempted against read-only app: ${url}`);
+      }
+      getCalls.push(url);
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          data: {
+            snapshot_event_id: "000012",
+            ts: 1791936000,
+            data_as_of: 1791936000,
+            eligible_count: 150,
+            evaluated_count: 132,
+            active_setups: 1,
+            monitoring_coverage: 0.984,
+            new_setups_24h: 1,
+            setups: [],
+            comparison_24h: {
+              available: false,
+              reason: null,
+              prior_ts: null,
+              delta_active_setups: null,
+              delta_new_setups_24h: null,
+            },
+            snapshot_history: [],
+            coins_without_setup: [],
+            market_overview: [],
+            movers: [],
+            recent_analysis: [],
+            activity: [],
+            supported_timeframes: ["5m", "15m", "1H", "4H", "1D"],
+            event_kinds: [],
+            unavailable: null,
+          },
+          error: null,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    },
+  );
+  vi.stubGlobal("fetch", fetchMock);
   render(<App />);
-  expect(spy).not.toHaveBeenCalled();
+  await screen.findByText("Active Setups");
+  expect(postCalls).toHaveLength(0);
+  expect(getCalls).toContain("/api/snapshot");
   vi.unstubAllGlobals();
 });
 
