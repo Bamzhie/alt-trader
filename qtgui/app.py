@@ -99,6 +99,11 @@ RAIL_PAGES = (("scanner", "Scanner", "◉"), ("watchlist", "Watchlist", "★"),
 # In-app event ring buffer size (recent-logs lists, Q4 brief: max 50).
 EVENTS_MAX = 50
 
+# 3-region grid breakpoint: below this window width the right detail
+# dock collapses (the scanner page's in-page Detail group stays
+# reachable as the drawer fallback); at/above it the dock is shown.
+LAYOUT_NARROW_PX = 1100
+
 # Watcher setup dock columns (watcher UI Task 5): setup id + rule/coin/dir +
 # the STATE_WORDS verb verbatim + the entry/stop/tgt trio. Header text
 # matches the TUI watcher screen columns one-for-one (parity test pins
@@ -1281,6 +1286,7 @@ class RadarWindow(QMainWindow):
         self._refilling = False         # blocks selection signals during fill
         self._hdr_section = None        # header-sort state (fresh-click order)
         self.events = []                # (ts, level, text) ring buffer, max 50
+        self._narrow_mode = False     # 3-region grid: right dock collapsed
 
         self._jobs = queue.Queue()      # UI -> worker
         self._results = queue.Queue()   # worker -> UI
@@ -1364,6 +1370,8 @@ class RadarWindow(QMainWindow):
         self._central_layout.setSpacing(4)
 
         bar = QWidget()
+        bar.setObjectName("header")
+        bar.setFixedHeight(50)
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
@@ -1403,6 +1411,8 @@ class RadarWindow(QMainWindow):
         self.btn_gear.clicked.connect(lambda: self._switch_page("settings"))
         lay.addWidget(self.btn_gear)
         self._central_layout.addWidget(bar)
+        # 3-region grid anchor: the fixed-height top strip (50px).
+        self.header = bar
 
     # --------------------------------------------------------------- rail
     def _build_pages(self):
@@ -1416,7 +1426,8 @@ class RadarWindow(QMainWindow):
         # ---- narrow icon rail: glyph + tiny label, exclusive selection ----
         rail = QWidget()
         rail.setObjectName("rail")
-        rail.setFixedWidth(88)
+        rail.setFixedWidth(145)
+        self.rail = rail
         rail_lay = QVBoxLayout(rail)
         rail_lay.setContentsMargins(3, 3, 3, 3)
         rail_lay.setSpacing(2)
@@ -1483,6 +1494,36 @@ class RadarWindow(QMainWindow):
             if i == idx:
                 return key
         return "scanner"
+
+    # --------------------------------------------- 3-region responsive grid
+    def resizeEvent(self, event):
+        """Collapse/restore the right detail dock across the breakpoint."""
+        super().resizeEvent(event)
+        try:
+            self._update_narrow_mode()
+        except Exception:
+            pass
+
+    def _update_narrow_mode(self):
+        """Hide the right dock below LAYOUT_NARROW_PX, show it above."""
+        dock = getattr(self, "detail_dock", None)
+        if dock is None:
+            return
+        narrow = self.width() < LAYOUT_NARROW_PX
+        self._narrow_mode = narrow
+        if narrow:
+            dock.hide()
+        else:
+            dock.show()
+
+    def drawer_available(self):
+        """True while the right panel is collapsed to its drawer fallback.
+
+        The fallback is the scanner page's in-page Detail group, which
+        stays visible and reachable in narrow mode — collapsing the dock
+        never strands the detail content.
+        """
+        return bool(getattr(self, "_narrow_mode", False))
 
     # ----------------------------------------------------------- toolbar
     def _group(self, parent_lay, text, stretch=0):
@@ -1735,10 +1776,13 @@ class RadarWindow(QMainWindow):
 
         splitter.addWidget(left)
         splitter.addWidget(right)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        splitter.setSizes([780, 560])
+        # 3-region grid split: center ~65% / right ~35% of the flexible
+        # area (stretch only — no absolute positioning, user-adjustable).
+        splitter.setStretchFactor(0, 65)
+        splitter.setStretchFactor(1, 35)
+        splitter.setSizes([845, 455])
         parent_lay.addWidget(splitter, 1)
+        self.body_splitter = splitter
         self._reset_detail()
 
     def _tile(self, parent_lay, title):
