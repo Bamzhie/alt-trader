@@ -45,14 +45,14 @@ import time
 from types import SimpleNamespace
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QBrush, QKeySequence, QPainter, QPen, \
-    QPixmap, QShortcut, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QColor, QBrush, QIcon, QKeySequence, QPainter, \
+    QPen, QPixmap, QShortcut, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import QApplication, QButtonGroup, QCheckBox, \
     QComboBox, QDockWidget, QFileDialog, QFrame, QGridLayout, QGroupBox, \
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, \
     QMainWindow, QPlainTextEdit, QPushButton, QSpinBox, QSplitter, \
-    QStatusBar, QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget, \
-    QTextEdit, QVBoxLayout, QWidget
+    QStatusBar, QStackedWidget, QStyledItemDelegate, QStyle, QTableWidget, \
+    QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget
 
 # --- reuse: worker layer + shared display constants (tkinter-free classes) --
 from gui.app import ACTIVITY, DIR_CHOICES, POLL_MS, SIGNAL_ANCHORS, \
@@ -66,7 +66,8 @@ from proto import report as report_mod
 from proto import watcher_feed as watcher_feed_mod
 from proto import store as store_mod
 from proto.watcher import CUSUM_RULE_ID, KILL_HORIZONS, N_GRID, T1_RULE_ID
-from proto.setup_copy import assert_clean, blocking_reason, summarize_setup
+from proto.setup_copy import assert_clean, badge_letters, blocking_reason, \
+    summarize_setup
 from proto.watcher_view import RESEARCH_BANNER, SILENCE_VALID, STATE_WORDS
 from proto.planner import MAX_LEVERAGE, reference_plan
 
@@ -130,13 +131,16 @@ DASH_SORTS = ("Newest", "Expiry", "24h%")
 # Top Signals columns: one row per active setup. Deliberately NO tier or
 # score column (spec 2089540 removed them); direction rides a LONG/SHORT
 # pill, analysis is the 2-line rule-evidence copy, evidence names the
-# matched rule evidence, expiry is a countdown.
-DASH_TABLE_COLUMNS = ("coin", "price", "ch24", "analysis", "evidence",
-                      "dir", "expiry")
-DASH_TABLE_HEADINGS = ("COIN", "PRICE", "24H%", "ANALYSIS", "EVIDENCE",
-                       "DIR", "EXPIRY")
-DASH_TABLE_WIDTHS = {"coin": 90, "price": 90, "ch24": 70, "analysis": 320,
-                     "evidence": 220, "dir": 80, "expiry": 110}
+# matched rule evidence, trend is a sparkline over offline closes
+# (honest unavailable copy when short), expiry is a countdown, and the
+# trailing chevron column opens the detail dock.
+DASH_TABLE_COLUMNS = ("coin", "price", "ch24", "trend", "analysis",
+                      "evidence", "dir", "expiry", "chev")
+DASH_TABLE_HEADINGS = ("COIN", "PRICE", "24H", "TREND", "ANALYSIS",
+                       "EVIDENCE", "SIGNAL", "EXPIRES", "")
+DASH_TABLE_WIDTHS = {"coin": 90, "price": 90, "ch24": 70, "trend": 100,
+                     "analysis": 300, "evidence": 220, "dir": 90,
+                     "expiry": 110, "chev": 36}
 
 # The watcher geometry grid runs on 5-minute bars; a setup's expiry stamp
 # is src_bar_ts + N_bars * 300s (logged row values only, never inferred).
@@ -802,6 +806,96 @@ class _CellItem(QTableWidgetItem):
         return self.text().casefold() < str(other.text()).casefold()
 
 
+def _letter_badge_icon(letters):
+    """QIcon disc badge with 1-2 letters (proto/setup_copy.badge_letters).
+
+    Drawn at paint time from the coin symbol — no image assets, no
+    network. Letters come from badge_letters() so non-alpha symbols
+    still get an honest "?" badge, never a blank icon.
+    """
+    text = str(letters or "?")[:2] or "?"
+    size = 22
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    try:
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QBrush(QColor(_theme.BORDER)))
+        p.setPen(QPen(QColor(_theme.ACCENT), 1))
+        p.drawEllipse(1, 1, size - 2, size - 2)
+        p.setPen(QColor(_theme.TEXT))
+        font = p.font()
+        font.setPointSize(8)
+        font.setBold(True)
+        p.setFont(font)
+        p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, text)
+    finally:
+        p.end()
+    return QIcon(pm)
+
+
+class _TrendSparkDelegate(QStyledItemDelegate):
+    """Paints the TREND cell: sparkline from UserRole closes, else text.
+
+    Closes ride the item's UserRole (offline fixture/quote history set
+    at render time); None/short histories fall back to the item's own
+    honest "trend unavailable" text — points are never invented.
+    Selected rows keep the platform highlight behind the line.
+    """
+
+    def paint(self, painter, option, index):
+        try:
+            hist = index.data(Qt.ItemDataRole.UserRole)
+        except Exception:
+            hist = None
+        pts = sparkline_points(hist) if isinstance(hist, list) else []
+        if not pts:
+            super().paint(painter, option, index)
+            return
+        painter.save()
+        try:
+            if option.state & QStyle.State_Selected:
+                painter.fillRect(option.rect,
+                                 option.palette.highlight())
+                painter.setPen(QPen(QColor(
+                    option.palette.highlightedText().color()), 1.5))
+            else:
+                painter.fillRect(option.rect, QColor(_theme.SURFACE))
+                painter.setPen(QPen(QColor(_theme.ACCENT), 1.5))
+            pad = 4
+            w = max(1, option.rect.width() - 2 * pad)
+            h = max(1, option.rect.height() - 2 * pad)
+            x0, y0 = option.rect.x() + pad, option.rect.y() + pad
+            prev = None
+            for x, y in pts:
+                pt = (x0 + x * w, y0 + y * h)
+                if prev is not None:
+                    painter.drawLine(int(prev[0]), int(prev[1]),
+                                     int(pt[0]), int(pt[1]))
+                prev = pt
+        finally:
+            painter.restore()
+
+
+class _ChevronDelegate(QStyledItemDelegate):
+    """Paints the trailing chevron cell ("›", accent, centered)."""
+
+    def paint(self, painter, option, index):
+        painter.save()
+        try:
+            if option.state & QStyle.State_Selected:
+                painter.fillRect(option.rect,
+                                 option.palette.highlight())
+                painter.setPen(QColor(
+                    option.palette.highlightedText().color()))
+            else:
+                painter.setPen(QColor(_theme.TEXT_DIM))
+            painter.drawText(option.rect,
+                             Qt.AlignmentFlag.AlignCenter, "›")
+        finally:
+            painter.restore()
+
+
 class DetailChartWidget(QWidget):
     """Candlestick chart with EMA50/200 overlays + volume band (Task 6).
 
@@ -1421,6 +1515,13 @@ class RadarWindow(QMainWindow):
         # the card sparklines (test/fixture seam; the dock never fetches
         # the venue). Empty by default -> flat unavailable sparklines.
         self.dash_card_history = {}
+        # Top Signals table (rebuild Task 5): per-setup-id close histories
+        # feeding the TREND sparkline delegate (test/fixture seam; the
+        # dock never fetches the venue) + the selected setup id (selection
+        # is by setup id, never row index, so it survives refresh
+        # reorders — same rule as the shared watcher view-model).
+        self.dash_trend_data = {}
+        self.dash_selected_id = None
         self.dash_rows = []
         self.dash_asof = ""
         # Dashboard pages (Task 7): bottom-row + six-page caches. Pause
@@ -2443,6 +2544,12 @@ class RadarWindow(QMainWindow):
                                                     DASH_TABLE_HEADINGS)),
                                            DASH_TABLE_WIDTHS)
         self.dash_table.setMinimumHeight(120)
+        self.dash_table.setItemDelegateForColumn(
+            DASH_TABLE_COLUMNS.index("trend"),
+            _TrendSparkDelegate(self.dash_table))
+        self.dash_table.setItemDelegateForColumn(
+            DASH_TABLE_COLUMNS.index("chev"),
+            _ChevronDelegate(self.dash_table))
         self.dash_table.itemSelectionChanged.connect(self._on_dash_select)
         sv.addWidget(self.dash_table)
         lay.addWidget(sig_box, 1)
@@ -2521,6 +2628,22 @@ class RadarWindow(QMainWindow):
             self.dash_card_history = dict(mapping or {})
         except Exception:
             self.dash_card_history = {}
+        try:
+            self._render_dashboard()
+        except Exception:
+            pass
+
+    def set_trend_history(self, mapping):
+        """Per-setup-id close histories for the TREND sparkline delegate.
+
+        Pure seam (fixtures/tests only — no fetching): unknown ids are
+        ignored, and missing ids keep the honest unavailable trend cell.
+        Never raises.
+        """
+        try:
+            self.dash_trend_data = dict(mapping or {})
+        except Exception:
+            self.dash_trend_data = {}
         try:
             self._render_dashboard()
         except Exception:
@@ -2613,22 +2736,40 @@ class RadarWindow(QMainWindow):
                     analysis = row["analysis"]
                     if getattr(self, "dash_compact", False):
                         analysis = analysis.split("\n")[0]
+                    try:
+                        trend_hist = (self.dash_trend_data or {}).get(
+                            row["id"])
+                    except Exception:
+                        trend_hist = None
+                    trend_pts = (sparkline_points(trend_hist)
+                                 if isinstance(trend_hist, list) else [])
+                    if trend_pts:
+                        trend_text = f"{len(trend_pts)} closes"
+                    else:
+                        trend_text = "trend unavailable"
+                        trend_hist = None
                     cells = (
                         (f"{row['coin']}\n{row['name']}", None),
                         (price, row["price"]),
                         (chg, row["change_24h_pct"]),
+                        (trend_text, None),
                         (analysis, None),
                         (row["evidence"], None),
                         (pill, None),
                         (row["expiry"], row["expiry_ts"]),
+                        ("›", None),
                     )
                     dir_fg = _theme.direction_foreground(row["direction"])
                     for c, (text, number) in enumerate(cells):
+                        # Fail-closed: every rendered cell string passes
+                        # the banned-wording guard (binding: no tier,
+                        # score, or probability copy on this surface).
+                        assert_clean(text)
                         anchor = "w"
                         if DASH_TABLE_COLUMNS[c] in ("price", "ch24",
                                                      "expiry"):
                             anchor = "e"
-                        elif DASH_TABLE_COLUMNS[c] == "dir":
+                        elif DASH_TABLE_COLUMNS[c] in ("dir", "chev"):
                             anchor = "center"
                         bg = None
                         fg = None
@@ -2643,6 +2784,12 @@ class RadarWindow(QMainWindow):
                         if c == 0:
                             item.setData(Qt.ItemDataRole.UserRole,
                                          row["id"])
+                            item.setIcon(_letter_badge_icon(
+                                badge_letters(row["coin"])))
+                        if (DASH_TABLE_COLUMNS[c] == "trend"
+                                and trend_hist is not None):
+                            item.setData(Qt.ItemDataRole.UserRole,
+                                         list(trend_hist))
                         table.setItem(r, c, item)
             finally:
                 self._refilling = False
@@ -3602,7 +3749,12 @@ class RadarWindow(QMainWindow):
                 pass
 
     def _on_dash_select(self, *_a):
-        """Dashboard row selected: mirror the coin into the detail dock."""
+        """Dashboard row selected: mirror the setup into the detail dock.
+
+        Selection is by setup id (the coin cell's UserRole), never row
+        index, so it survives refresh reorders. The id resolves to its
+        coin through the cached rows before rendering the detail dock.
+        """
         if getattr(self, "_refilling", False):
             return
         try:
@@ -3611,9 +3763,14 @@ class RadarWindow(QMainWindow):
             if not sel:
                 return
             item = self.dash_table.item(sel[0].row(), 0)
-            coin = item.text().split("\n")[0] if item else None
-            if coin:
-                self.show_coin_detail(coin)
+            sid = (item.data(Qt.ItemDataRole.UserRole)
+                   if item is not None else None)
+            by_id = {r.get("id"): r for r in (self.dash_rows or [])}
+            picked = by_id.get(sid)
+            if picked is None:
+                return
+            self.dash_selected_id = sid
+            self.show_coin_detail(picked.get("coin"))
         except Exception:
             pass
 
