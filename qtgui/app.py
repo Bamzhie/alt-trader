@@ -50,7 +50,7 @@ from PySide6.QtGui import QColor, QBrush, QIcon, QKeySequence, QPainter, \
 from PySide6.QtWidgets import QApplication, QButtonGroup, QCheckBox, \
     QComboBox, QDockWidget, QFileDialog, QFrame, QGridLayout, QGroupBox, \
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, \
-    QMainWindow, QPlainTextEdit, QPushButton, QSpinBox, QSplitter, \
+    QMainWindow, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter, \
     QStatusBar, QStackedWidget, QStyledItemDelegate, QStyle, QTableWidget, \
     QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget
 
@@ -1524,6 +1524,16 @@ class RadarWindow(QMainWindow):
         self.dash_selected_id = None
         self.dash_rows = []
         self.dash_asof = ""
+        # Market Overview (rebuild Task 6): per-coin close histories
+        # feeding the BTC/ETH row sparklines (test/fixture seam; the
+        # grid never fetches the venue). Empty by default -> flat
+        # unavailable sparklines, never invented points.
+        self.overview_history = {}
+        self.overview_rows = {}
+        self.overview_box = None
+        self._right_scroll = None
+        self._grid_center = None
+        self._grid_right = None
         # Dashboard pages (Task 7): bottom-row + six-page caches. Pause
         # and disable write through the watcher_feed writers so the pages
         # read the same meta flags as the panels; display prefs persist
@@ -1568,6 +1578,9 @@ class RadarWindow(QMainWindow):
         self._build_dashboard_dock()
         self._build_detail_dock()
         self._build_dashboard_pages_dock()
+        # Task 6: docks live in the grid (center/right panes), never as
+        # floating right-area panels crowding the central width.
+        self._reparent_docks_to_grid()
         self._build_status()
         shortcut = QShortcut(QKeySequence("Ctrl+Q"), self)
         shortcut.activated.connect(self._on_close)
@@ -1827,6 +1840,45 @@ class RadarWindow(QMainWindow):
         """
         return bool(getattr(self, "_narrow_mode", False))
 
+    def _reparent_docks_to_grid(self):
+        """Task 6: the right-area docks live IN the grid, not around it.
+
+        The watcher/dashboard/pages shells join the grid's center pane
+        and the coin-detail shell joins the right pane (under the Market
+        Overview card). Floating right docks used to crowd the central
+        width and force the test-only dock-hiding isolation; embedded,
+        the 65:35 splitter split holds unisolated. Shells keep their
+        object names, children, and attributes (isinstance + child
+        searches keep working); floating/close features are off so a
+        panel can never strand itself. Never raises.
+        """
+        try:
+            center = getattr(self, "_grid_center", None)
+            right = getattr(self, "_grid_right", None)
+            if center is None or right is None:
+                return
+            for dock in (getattr(self, "dashboard_dock", None),
+                         getattr(self, "watcher_dock", None),
+                         getattr(self, "dash_pages_dock", None)):
+                if dock is None:
+                    continue
+                self.removeDockWidget(dock)
+                dock.setFloating(False)
+                dock.setFeatures(
+                    QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+                center.layout().addWidget(dock)
+                dock.show()
+            dock = getattr(self, "detail_dock", None)
+            if dock is not None:
+                self.removeDockWidget(dock)
+                dock.setFloating(False)
+                dock.setFeatures(
+                    QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+                right.layout().addWidget(dock)
+                dock.show()
+        except Exception:
+            pass
+
     # ----------------------------------------------------------- toolbar
     def _group(self, parent_lay, text, stretch=0):
         box = QGroupBox(text)
@@ -1945,11 +1997,55 @@ class RadarWindow(QMainWindow):
         lv.addWidget(vet_box)
         vet_box.hide()
 
-        # ---- right: detail pane + outcomes dock ----
+        # ---- right: market overview + detail pane + outcomes ----
+        # Task 6: the grid's right column. The Market Overview card (BTC
+        # + ETH rows with sparklines; NO TOTAL row — the venue feed has
+        # no total-market-cap source) heads the column; quotes ride the
+        # dash_market_data seam (offline fixtures in tests, swept live
+        # quotes in app paths), sparkline closes ride overview_history.
         right = QWidget()
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
-        rv.setSpacing(0)
+        rv.setSpacing(4)
+
+        ovw_box = QGroupBox("Market Overview")
+        self.overview_box = ovw_box
+        ov = QVBoxLayout(ovw_box)
+        ov.setContentsMargins(6, 6, 6, 6)
+        ov.setSpacing(2)
+        self.overview_rows = {}
+        for coin in ("BTC", "ETH"):
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            badge = QLabel(badge_letters(coin))
+            badge.setObjectName("badgeDirNeutral")
+            row.addWidget(badge)
+            sym = QLabel(coin)
+            sym.setObjectName("tileValue")
+            sym.setFont(_theme.mono_font(_theme.DETAIL_POINT_SIZE + 1,
+                                         bold=True))
+            row.addWidget(sym)
+            name = QLabel(coin)
+            name.setObjectName("headerStats")
+            row.addWidget(name)
+            row.addStretch(1)
+            price = QLabel("—")
+            price.setObjectName("tileValue")
+            price.setFont(_theme.mono_font(_theme.DETAIL_POINT_SIZE + 1,
+                                           bold=True))
+            row.addWidget(price)
+            chg = QLabel("")
+            chg.setFont(_theme.mono_font(_theme.DETAIL_POINT_SIZE))
+            row.addWidget(chg)
+            spark = SparklineWidget()
+            spark.setFixedWidth(120)
+            spark.setFixedHeight(28)
+            row.addWidget(spark)
+            ov.addLayout(row)
+            self.overview_rows[coin] = {"badge": badge, "sym": sym,
+                                        "name": name, "price": price,
+                                        "chg": chg, "spark": spark}
+        rv.addWidget(ovw_box)
 
         detail_outcomes = QSplitter(Qt.Orientation.Vertical)
         detail_outcomes.setChildrenCollapsible(False)
@@ -2076,8 +2172,25 @@ class RadarWindow(QMainWindow):
         detail_outcomes.setSizes([570, 190])
         rv.addWidget(detail_outcomes, 1)
 
-        splitter.addWidget(left)
-        splitter.addWidget(right)
+        # Task 6: the grid panes scroll instead of clipping — the
+        # reparented docks (below) make both columns taller than the
+        # viewport. QScrollArea keeps every region reachable with no
+        # horizontal page overflow; stretch stays 65:35 on the panes.
+        left_scroll = QScrollArea()
+        left_scroll.setObjectName("centerScroll")
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        left_scroll.setWidget(left)
+        right_scroll = QScrollArea()
+        right_scroll.setObjectName("rightScroll")
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        right_scroll.setWidget(right)
+        splitter.addWidget(left_scroll)
+        splitter.addWidget(right_scroll)
+        self._right_scroll = right_scroll
+        self._grid_center = left
+        self._grid_right = right
         # 3-region grid split: center ~65% / right ~35% of the flexible
         # area (stretch only — no absolute positioning, user-adjustable).
         splitter.setStretchFactor(0, 65)
@@ -2649,6 +2762,77 @@ class RadarWindow(QMainWindow):
         except Exception:
             pass
 
+    def set_overview_history(self, mapping):
+        """Per-coin close histories for the Market Overview sparklines.
+
+        Pure seam (fixtures/tests only — no fetching): unknown coins
+        are ignored, and missing coins keep the flat unavailable
+        sparkline. Never raises.
+        """
+        try:
+            self.overview_history = dict(mapping or {})
+        except Exception:
+            self.overview_history = {}
+        try:
+            self._render_overview()
+        except Exception:
+            pass
+
+    def _render_overview(self):
+        """Market Overview BTC/ETH rows from dash_market_data (no I/O).
+
+        Missing quotes render "—"/unavailable copy, never an invented
+        price. There is deliberately NO total row: the venue feed has
+        no total-market-cap source (binding spec 2089540). Never
+        raises.
+        """
+        try:
+            rows = getattr(self, "overview_rows", None) or {}
+            for coin in ("BTC", "ETH"):
+                w = rows.get(coin)
+                if not w:
+                    continue
+                quote = (self.dash_market_data or {}).get(coin) or {}
+                name = quote.get("name") or coin
+                price = quote.get("price")
+                chg = quote.get("change_24h_pct")
+                price_text = (f"{price:.8g}" if price is not None
+                              else "—")
+                chg_text = (f"{chg:+.1f}%" if chg is not None
+                            else "unavailable")
+                for text in (coin, str(name), price_text, chg_text):
+                    assert_clean(text)
+                w["name"].setText(str(name))
+                w["price"].setText(price_text)
+                w["chg"].setText(chg_text)
+                if chg is not None:
+                    color = (_theme.ACC_POS if chg >= 0
+                             else _theme.ACC_NEG)
+                    w["chg"].setStyleSheet(f"color: {color};")
+                hist = (self.overview_history or {}).get(coin)
+                w["spark"].set_history(
+                    hist if isinstance(hist, list) else None)
+        except Exception:
+            pass
+
+    def overview_text(self):
+        """Market Overview rows as text (test seam, all assert_clean)."""
+        bits = ["Market Overview"]
+        rows = getattr(self, "overview_rows", None) or {}
+        for coin in ("BTC", "ETH"):
+            w = rows.get(coin) or {}
+            for key in ("sym", "name", "price", "chg"):
+                lbl = w.get(key)
+                if lbl is not None:
+                    bits.append(lbl.text())
+            spark = w.get("spark")
+            bits.append("sparkline" if spark is not None
+                        and not spark.unavailable
+                        else "sparkline unavailable")
+        text = "\n".join(bits)
+        assert_clean(text)
+        return text
+
     def dashboard_text(self):
         """Full dashboard page text (banner + cards + table + stamp)."""
         bits = [self.dash_banner.text(), self.dashboard_cards_text()]
@@ -2804,6 +2988,12 @@ class RadarWindow(QMainWindow):
         try:
             self.refresh_dashboard_pages(now=getattr(self, "_dash_last_now",
                                                      None))
+        except Exception:
+            pass
+        # Market Overview (Task 6) rides the same swept-quote caches —
+        # no new fetching, honest unavailable states only.
+        try:
+            self._render_overview()
         except Exception:
             pass
 
@@ -3572,6 +3762,37 @@ class RadarWindow(QMainWindow):
         self.detail_sub.setWordWrap(True)
         lay.addWidget(self.detail_sub)
 
+        # Task 6 header: letter badge, symbol + name, live price, 24h%,
+        # direction pill, sparkline. Quotes come from dash_market_data
+        # (swept live values, fixtures in tests); missing quotes render
+        # "—", never an invented price.
+        hrow = QHBoxLayout()
+        hrow.setSpacing(6)
+        self.detail_badge = QLabel("—")
+        self.detail_badge.setObjectName("badgeDirNeutral")
+        hrow.addWidget(self.detail_badge)
+        self.detail_cname = QLabel("—")
+        self.detail_cname.setObjectName("detailTitle")
+        self.detail_cname.setFont(_theme.ui_font(_theme.BASE_POINT_SIZE + 1,
+                                                 bold=True))
+        hrow.addWidget(self.detail_cname)
+        hrow.addStretch(1)
+        self.detail_px = QLabel("—")
+        self.detail_px.setObjectName("tileValue")
+        self.detail_px.setFont(_theme.mono_font(_theme.DETAIL_POINT_SIZE + 1,
+                                                bold=True))
+        hrow.addWidget(self.detail_px)
+        self.detail_chg = QLabel("")
+        self.detail_chg.setFont(_theme.mono_font(_theme.DETAIL_POINT_SIZE))
+        hrow.addWidget(self.detail_chg)
+        self.detail_pill = QLabel("")
+        self.detail_pill.setObjectName("badgeDirNeutral")
+        hrow.addWidget(self.detail_pill)
+        lay.addLayout(hrow)
+        self.detail_spark = SparklineWidget()
+        self.detail_spark.setFixedHeight(28)
+        lay.addWidget(self.detail_spark)
+
         self.detail_tf_tabs = QTabWidget()
         self.detail_charts = {}
         for tf in DETAIL_TIMEFRAMES:
@@ -3603,6 +3824,12 @@ class RadarWindow(QMainWindow):
         self.detail_low_tabs.addTab(self.detail_plan, "Trade Plan")
         self.detail_low_tabs.addTab(self.detail_metrics_view, "Metrics")
         lay.addWidget(self.detail_low_tabs, 2)
+
+        self.btn_full_analysis = QPushButton("View Full Analysis")
+        self.btn_full_analysis.clicked.connect(
+            lambda: self._on_full_analysis())
+        lay.addWidget(self.btn_full_analysis, 0,
+                      Qt.AlignmentFlag.AlignLeft)
 
         self.detail_asof = QLabel("")
         self.detail_asof.setObjectName("headerStats")
@@ -3774,6 +4001,59 @@ class RadarWindow(QMainWindow):
         except Exception:
             pass
 
+    def _fill_detail_header(self, coin, direction=None, bars=None):
+        """Task 6 header row: badge, symbol + name, price, 24h%, pill,
+        sparkline — from swept quotes + bar closes (no I/O, never
+        raises). Missing quotes render "—", never an invented price.
+        """
+        try:
+            quote = (self.dash_market_data or {}).get(coin) or {}
+            name = quote.get("name") or coin
+            price = quote.get("price")
+            chg = quote.get("change_24h_pct")
+            cname = (f"{coin} / {name}" if name != coin else str(coin))
+            px_text = (f"{price:.8g}" if price is not None else "—")
+            chg_text = (f"{chg:+.1f}%" if chg is not None else "—")
+            arrow = {"LONG": "▲", "SHORT": "▼"}.get(
+                str(direction or "").upper(), "•")
+            pill = (f"{arrow} {str(direction).upper()}"
+                    if direction else "—")
+            for text in (cname, px_text, chg_text, pill):
+                assert_clean(text)
+            self.detail_badge.setText(badge_letters(coin))
+            self.detail_cname.setText(cname)
+            self.detail_px.setText(px_text)
+            self.detail_chg.setText(chg_text)
+            self.detail_pill.setText(pill)
+            if chg is not None:
+                color = (_theme.ACC_POS if chg >= 0 else _theme.ACC_NEG)
+                self.detail_chg.setStyleSheet(f"color: {color};")
+            closes = None
+            if bars:
+                try:
+                    closes = indicators_mod.closes(bars)
+                except Exception:
+                    closes = None
+            if not closes:
+                hist = (self.overview_history or {}).get(coin)
+                closes = hist if isinstance(hist, list) else None
+            self.detail_spark.set_history(closes)
+        except Exception:
+            pass
+
+    def _on_full_analysis(self):
+        """View Full Analysis: open the Analysis tab and scroll it into
+        view (the grid's right column scrolls). Never raises."""
+        try:
+            self.detail_low_tabs.setCurrentWidget(self.detail_analysis)
+            scroll = getattr(self, "_right_scroll", None)
+            if scroll is not None:
+                scroll.ensureWidgetVisible(self.detail_analysis)
+            else:
+                self.detail_analysis.ensureCursorVisible()
+        except Exception:
+            pass
+
     def _render_detail_dock(self, panel=None):
         """Render the detail dock from cached state (no I/O, never raises)."""
         try:
@@ -3784,6 +4064,12 @@ class RadarWindow(QMainWindow):
                 self.detail_head.setText("—")
                 self.detail_sub.setText(
                     "select a coin for the full breakdown")
+                self.detail_badge.setText("—")
+                self.detail_cname.setText("—")
+                self.detail_px.setText("—")
+                self.detail_chg.setText("")
+                self.detail_pill.setText("")
+                self.detail_spark.set_history(None)
                 self.detail_analysis.setPlainText("")
                 self.detail_plan.setPlainText("")
                 self.detail_metrics_view.setPlainText("")
@@ -3804,6 +4090,7 @@ class RadarWindow(QMainWindow):
                 chart.set_bars(entry if isinstance(entry, list) else None)
             if detail is None:
                 self.detail_head.setText(coin)
+                self._fill_detail_header(coin)
                 reason = blocking_reason(
                     coin, detail_blocking_ctx(panel, coin))
                 assert_clean(reason)
@@ -3825,6 +4112,7 @@ class RadarWindow(QMainWindow):
                 direction = str(detail.get("direction", "?")).upper()
                 arrow = {"LONG": "▲", "SHORT": "▼"}.get(direction, "•")
                 self.detail_head.setText(f"{coin} {arrow} {direction}")
+                self._fill_detail_header(coin, direction, bars)
                 setup = {"rule_id": detail.get("rule", "?"),
                          "direction": direction,
                          "criteria": detail.get("criteria", []),
@@ -3876,6 +4164,8 @@ class RadarWindow(QMainWindow):
     def _compose_coin_detail_text(self):
         """Current detail dock as text (test seam, all assert_clean)."""
         bits = [self.detail_head.text(), self.detail_sub.text(),
+                self.detail_cname.text(), self.detail_px.text(),
+                self.detail_chg.text(), self.detail_pill.text(),
                 self.detail_validity.text(), self.detail_next.text()]
         interval = self._detail_current_interval()
         cached = self.detail_cache.get((self.detail_coin, interval),

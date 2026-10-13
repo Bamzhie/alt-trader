@@ -174,13 +174,9 @@ def test_regions():
                win.body_splitter.widget(1).sizePolicy().horizontalStretch())
     check("grid split runs on 65:35 stretch", stretch == (65, 35),
           f"stretch={stretch}")
-    # Pixel split, measured with the still-docked right panels floated
-    # away (test-only isolation — Tasks 6/7 reparent those docks into
-    # the grid; the docks otherwise crowd the central width).
-    for dock in (win.watcher_dock, win.dashboard_dock,
-                 win.dash_pages_dock, win.detail_dock):
-        dock.hide()
-    APP.processEvents()
+    # Pixel split, measured unisolated (Task 6 reparented the right
+    # docks into the grid, so no floating panel crowds the central
+    # width and no test-only hiding is needed).
     sizes = win.body_splitter.sizes()
     total = sum(sizes)
     # Whole-percent precision: splitter-handle chrome (±a few px) makes
