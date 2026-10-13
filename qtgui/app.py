@@ -47,12 +47,12 @@ from types import SimpleNamespace
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QBrush, QKeySequence, QPainter, QPixmap, \
     QShortcut, QTextCharFormat, QTextCursor
-from PySide6.QtWidgets import QApplication, QButtonGroup, QComboBox, \
-    QDockWidget, QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout, \
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, \
-    QPlainTextEdit, QPushButton, QSpinBox, QSplitter, QStatusBar, \
-    QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, \
-    QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QButtonGroup, QCheckBox, \
+    QComboBox, QDockWidget, QFileDialog, QFrame, QGridLayout, QGroupBox, \
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, \
+    QMainWindow, QPlainTextEdit, QPushButton, QSpinBox, QSplitter, \
+    QStatusBar, QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget, \
+    QTextEdit, QVBoxLayout, QWidget
 
 # --- reuse: worker layer + shared display constants (tkinter-free classes) --
 from gui.app import ACTIVITY, DIR_CHOICES, POLL_MS, SIGNAL_ANCHORS, \
@@ -65,6 +65,7 @@ from proto import picks as picks_mod
 from proto import report as report_mod
 from proto import watcher_feed as watcher_feed_mod
 from proto import store as store_mod
+from proto.watcher import CUSUM_RULE_ID, KILL_HORIZONS, N_GRID, T1_RULE_ID
 from proto.setup_copy import assert_clean, blocking_reason, summarize_setup
 from proto.watcher_view import RESEARCH_BANNER, SILENCE_VALID, STATE_WORDS
 from proto.planner import MAX_LEVERAGE, reference_plan
@@ -890,6 +891,285 @@ class DetailChartWidget(QWidget):
             p.end()
 
 
+# ---- dashboard pages (Task 7: bottom row + six pages, additive) ----
+# Six dashboard pages (the Dashboard dock from Task 5 is the first page;
+# the other five live as tabs in their own dock so the scanner rail,
+# tables and docks above stay byte-for-byte untouched). Nothing here
+# takes a stake or consults is_actionable: the stakeless model (spec
+# section 2) means stake plays no role on any of these surfaces.
+DASH_PAGE_TITLES = ("Dashboard", "Watchlist", "Signals", "Analysis",
+                    "Trades", "Settings")
+
+# Trades is a hypothetical-only ledger (spec section 5). The header says
+# so verbatim; note the wording deliberately avoids the "P&L" token and
+# every BANNED_WORDS entry (assert_clean enforced in tests).
+TRADES_HEADER = "No orders placed — hypothetical outcomes only"
+TRADES_SUB = ("Read-only review of setups with reference plans at 100 USDT"
+              " (reference size, not a position). No orders are placed here.")
+
+# Meta keys for dashboard-owned UI state (starred coins + display prefs).
+# Pause/disable reuse the watcher_feed writers + keys (watcher_paused /
+# watcher_disabled:<rule>) so Settings writes the same flags panels read.
+DASH_STAR_PREFIX = "dash_star:"
+DASH_PREF_AUTOREFRESH = "dash_pref_autorefresh"
+DASH_PREF_COMPACT = "dash_pref_compact"
+
+# Trigger switches offered on the dashboard Settings page: the two known
+# watcher rules plus any rule_id observed in the setups table.
+DASH_KNOWN_RULES = (T1_RULE_ID, CUSUM_RULE_ID)
+
+DASH_MOVERS_N = 3
+DASH_RECENT_N = 5
+DASH_ACTIVITY_N = 12
+
+DASH_NO_QUOTES = "market quotes unavailable — no scan yet"
+DASH_NO_RECENT = "no recent analysis yet"
+DASH_NO_ACTIVITY = "no activity yet"
+DASH_NO_STARS = "no starred coins yet — add one below"
+
+STAR_TABLE_COLUMNS = ("coin", "name", "price", "ch24", "setup")
+STAR_TABLE_HEADINGS = {"coin": "COIN", "name": "NAME", "price": "PRICE",
+                       "ch24": "24H%", "setup": "SETUP"}
+STAR_TABLE_WIDTHS = {"coin": 80, "name": 140, "price": 90, "ch24": 70,
+                     "setup": 220}
+
+SIG_TABLE_COLUMNS = ("coin", "rule", "dir", "state", "src")
+SIG_TABLE_HEADINGS = {"coin": "COIN", "rule": "RULE", "dir": "DIR",
+                      "state": "STATE", "src": "SRC BAR"}
+SIG_TABLE_WIDTHS = {"coin": 80, "rule": 130, "dir": 80, "state": 110,
+                    "src": 130}
+SIG_DIRS = ("All", "Long", "Short")
+
+BOARD_TABLE_COLUMNS = ("setup", "evalbar", "mon", "gross", "net", "note")
+BOARD_TABLE_HEADINGS = {"setup": "SETUP", "evalbar": "EVAL BAR",
+                        "mon": "MONITORING", "gross": "GROSS",
+                        "net": "NET", "note": "NOTE"}
+BOARD_TABLE_WIDTHS = {"setup": 150, "evalbar": 110, "mon": 110,
+                      "gross": 80, "net": 80, "note": 220}
+
+TRADES_TABLE_COLUMNS = ("coin", "dir", "entry", "stop", "target", "risk",
+                        "ret", "state")
+TRADES_TABLE_HEADINGS = {"coin": "COIN", "dir": "DIR", "entry": "ENTRY",
+                         "stop": "STOP", "target": "TARGET",
+                         "risk": "STOP-RISK 100U", "ret": "LATEST RETURN",
+                         "state": "STATE"}
+TRADES_TABLE_WIDTHS = {"coin": 80, "dir": 80, "entry": 90, "stop": 90,
+                       "target": 90, "risk": 110, "ret": 130,
+                       "state": 100}
+
+
+def _dash_vol_text(vol):
+    """Quote-volume cell text (venue number or n/a — never invented)."""
+    try:
+        v = float(vol)
+    except (TypeError, ValueError):
+        return "n/a"
+    if v != v or v < 0:
+        return "n/a"
+    if v >= 1e6:
+        return f"${v / 1e6:.1f}M"
+    return f"${v / 1e3:.0f}K"
+
+
+def _dash_ret_text(value):
+    """Fractional horizon return as percent, or pending when absent."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "pending"
+    if v != v:
+        return "pending"
+    return f"{v * 100.0:+.2f}%"
+
+
+def dashboard_movers(market):
+    """Split offline quotes into gainers/losers/high-volume (pure).
+
+    *market* maps coin -> {name, price, change_24h_pct, quote_vol_24h}.
+    Returns {"gainers", "losers", "high_volume"} lists of
+    (coin, text) capped at DASH_MOVERS_N; coins missing the ranked
+    field are skipped, never invented.
+    """
+    quotes = [(coin, q or {}) for coin, q in (market or {}).items()]
+    with_chg = [(c, q) for c, q in quotes
+                if isinstance(q.get("change_24h_pct"), (int, float))]
+    with_vol = [(c, q) for c, q in quotes
+                if isinstance(q.get("quote_vol_24h"), (int, float))]
+    with_chg.sort(key=lambda kv: kv[1]["change_24h_pct"], reverse=True)
+    with_vol.sort(key=lambda kv: kv[1]["quote_vol_24h"], reverse=True)
+    gainers = [(c, f"{q['change_24h_pct']:+.1f}%") for c, q in with_chg]
+    losers = list(reversed(gainers))
+    vols = [(c, _dash_vol_text(q["quote_vol_24h"])) for c, q in with_vol]
+    return {"gainers": gainers[:DASH_MOVERS_N],
+            "losers": losers[:DASH_MOVERS_N],
+            "high_volume": vols[:DASH_MOVERS_N]}
+
+
+def dashboard_all_setups(db_path):
+    """Every watcher_setup row, newest-first (read-only, never raises).
+
+    The full ledger the Signals page renders: active rows plus history
+    (invalidated/expired/resolved). [] on a fresh/missing DB.
+    """
+    conn = _dash_open_ro(db_path)
+    if conn is None:
+        return []
+    try:
+        try:
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        except Exception:
+            return []
+        if "watcher_setup" not in tables:
+            return []
+        try:
+            cols = [r[1] for r in
+                    conn.execute("PRAGMA table_info(watcher_setup)")]
+        except Exception:
+            return []
+        want = [c for c in ("id", "rule_id", "coin", "direction",
+                            "src_bar_ts", "entry", "stop_px", "tgt_px",
+                            "N_bars", "state", "monitoring", "created_at")
+                if c in cols]
+        if not want or "id" not in want:
+            return []
+        try:
+            cur = conn.execute(
+                f"SELECT {', '.join(want)} FROM watcher_setup"
+                " ORDER BY src_bar_ts DESC, rowid DESC")
+            return [dict(zip(want, r)) for r in cur.fetchall()]
+        except Exception:
+            return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def dashboard_latest_evals(db_path):
+    """Latest watcher_eval row per setup id (read-only, never raises)."""
+    conn = _dash_open_ro(db_path)
+    if conn is None:
+        return {}
+    try:
+        try:
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        except Exception:
+            return {}
+        if "watcher_eval" not in tables:
+            return {}
+        try:
+            cur = conn.execute(
+                "SELECT setup_id, bar_ts, state, monitoring, ret_gross,"
+                " ret_net, note FROM watcher_eval ORDER BY bar_ts")
+            latest = {}
+            for r in cur.fetchall():
+                latest[r[0]] = {"setup_id": r[0], "bar_ts": r[1],
+                                "state": r[2], "monitoring": r[3],
+                                "ret_gross": r[4], "ret_net": r[5],
+                                "note": r[6]}
+            return latest
+        except Exception:
+            return {}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def dashboard_starred(db_path):
+    """Starred coins from meta (read-only, never raises)."""
+    conn = _dash_open_ro(db_path)
+    if conn is None:
+        return set()
+    try:
+        try:
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        except Exception:
+            return set()
+        if "meta" not in tables:
+            return set()
+        try:
+            cur = conn.execute("SELECT key, value FROM meta WHERE key LIKE ?",
+                               (DASH_STAR_PREFIX + "%",))
+            return {key[len(DASH_STAR_PREFIX):] for key, value in
+                    cur.fetchall()
+                    if str(value).strip().lower()
+                    in ("1", "true", "yes", "on")}
+        except Exception:
+            return set()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def dash_write_meta(db_path, key, value):
+    """Contained meta write for dashboard-owned UI state (stars/prefs).
+
+    Pause/disable go through the watcher_feed writers instead (same
+    keys the panels read). Returns True on success, False when the DB
+    is missing/locked — callers degrade to an honest note, never raise.
+    """
+    if not db_path:
+        return False
+    try:
+        conn = sqlite3.connect(db_path, timeout=5.0)
+    except Exception:
+        return False
+    try:
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY"
+                         " KEY, value TEXT)")
+            conn.execute("INSERT OR REPLACE INTO meta (key, value)"
+                         " VALUES (?, ?)", (key, value))
+            conn.commit()
+            return True
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def dash_read_pref(db_path, key):
+    """Contained meta-pref read (False on a fresh/missing DB)."""
+    conn = _dash_open_ro(db_path)
+    if conn is None:
+        return False
+    try:
+        try:
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        except Exception:
+            return False
+        if "meta" not in tables:
+            return False
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key=?",
+                               (key,)).fetchone()
+        except Exception:
+            return False
+        return bool(row) and str(row[0]).strip().lower() in (
+            "1", "true", "yes", "on")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 class RadarWindow(QMainWindow):
     """The ALT RADAR desktop front end. Read-only — no orders, no keys."""
 
@@ -969,6 +1249,23 @@ class RadarWindow(QMainWindow):
         self.dash_cards_pair = (None, None)
         self.dash_rows = []
         self.dash_asof = ""
+        # Dashboard pages (Task 7): bottom-row + six-page caches. Pause
+        # and disable write through the watcher_feed writers so the pages
+        # read the same meta flags as the panels; display prefs persist
+        # under dash_pref_* keys. No stake lives on these surfaces.
+        self.dash_movers_cache = {"gainers": [], "losers": [],
+                                  "high_volume": []}
+        self.dash_recent_cache = []
+        self.dash_activity_cache = []
+        self.dash_ledger = []
+        self.dash_evals = {}
+        self.dash_starred_cache = set()
+        self.dash_paused_cache = False
+        self.dash_disabled_cache = ()
+        self.dash_sig_dir = "All"
+        self.dash_sig_history_on = True
+        self.dash_autorefresh = False
+        self.dash_compact = False
         # Coin detail (Task 6): selected coin + per-(coin, interval) bar
         # cache (None = that tab's fetch failed) + in-flight tokens so a
         # late arrival never clobbers newer fixture/manual bars.
@@ -994,6 +1291,7 @@ class RadarWindow(QMainWindow):
         self._build_watcher_dock()
         self._build_dashboard_dock()
         self._build_detail_dock()
+        self._build_dashboard_pages_dock()
         self._build_status()
         shortcut = QShortcut(QKeySequence("Ctrl+Q"), self)
         shortcut.activated.connect(self._on_close)
@@ -1889,6 +2187,37 @@ class RadarWindow(QMainWindow):
         sv.addWidget(self.dash_table)
         lay.addWidget(sig_box, 1)
 
+        # Bottom row (Task 7): Market Movers (offline quotes only),
+        # Recent Analysis (last 5 emissions/transitions) and Activity Log
+        # (capped journal rows). Appended, never restructured.
+        brow = QHBoxLayout()
+        brow.setSpacing(4)
+        mov_box = QGroupBox("Market Movers")
+        mov_lay = QVBoxLayout(mov_box)
+        mov_lay.setContentsMargins(4, 4, 4, 4)
+        self.dash_movers = QLabel(DASH_NO_QUOTES)
+        self.dash_movers.setWordWrap(True)
+        self.dash_movers.setFont(_theme.mono_font())
+        mov_lay.addWidget(self.dash_movers)
+        brow.addWidget(mov_box, 1)
+        rec_box = QGroupBox("Recent Analysis")
+        rec_lay = QVBoxLayout(rec_box)
+        rec_lay.setContentsMargins(4, 4, 4, 4)
+        self.dash_recent = QLabel(DASH_NO_RECENT)
+        self.dash_recent.setWordWrap(True)
+        self.dash_recent.setFont(_theme.mono_font())
+        rec_lay.addWidget(self.dash_recent)
+        brow.addWidget(rec_box, 1)
+        act_box = QGroupBox("Activity Log")
+        act_lay = QVBoxLayout(act_box)
+        act_lay.setContentsMargins(4, 4, 4, 4)
+        self.dash_activity = QLabel(DASH_NO_ACTIVITY)
+        self.dash_activity.setWordWrap(True)
+        self.dash_activity.setFont(_theme.mono_font())
+        act_lay.addWidget(self.dash_activity)
+        brow.addWidget(act_box, 1)
+        lay.addLayout(brow)
+
         bottom = QHBoxLayout()
         self.btn_dash_refresh = QPushButton("Refresh dashboard")
         self.btn_dash_refresh.clicked.connect(
@@ -1940,6 +2269,7 @@ class RadarWindow(QMainWindow):
         touch of the scanner widgets.
         """
         now = int(time.time() if now is None else now)
+        self._dash_last_now = now  # shared stamp: pages reuse this tick
         try:
             self.dash_cards_pair = dashboard_snapshot_pair(self.db,
                                                            now=now)
@@ -1989,11 +2319,16 @@ class RadarWindow(QMainWindow):
                     arrow = {"LONG": "▲", "SHORT": "▼"}.get(
                         row["direction"], "•")
                     pill = f"{arrow} {row['direction']}"
+                    # Dashboard display pref (Task 7): compact shows the
+                    # first analysis line only (default: both lines).
+                    analysis = row["analysis"]
+                    if getattr(self, "dash_compact", False):
+                        analysis = analysis.split("\n")[0]
                     cells = (
                         (f"{row['coin']}\n{row['name']}", None),
                         (price, row["price"]),
                         (chg, row["change_24h_pct"]),
-                        (row["analysis"], None),
+                        (analysis, None),
                         (row["evidence"], None),
                         (pill, None),
                         (row["expiry"], row["expiry_ts"]),
@@ -2029,6 +2364,748 @@ class RadarWindow(QMainWindow):
                     "dashboard data unavailable — scanner intact")
             except Exception:
                 pass
+        # The six pages render from the same caches (cheap, local only).
+        try:
+            self.refresh_dashboard_pages(now=getattr(self, "_dash_last_now",
+                                                     None))
+        except Exception:
+            pass
+
+    # --------------------------------------- dashboard pages (Task 7)
+    def _build_dashboard_pages_dock(self):
+        """Dashboard pages dock (additive; everything above untouched).
+
+        Six tabs — Dashboard (summary mirror of the Task 5 dock),
+        Watchlist (starred, meta-persisted), Signals (full ledger +
+        history + filters), Analysis (indicator board + coverage +
+        dev-labeled event-study N/kill), Trades (hypothetical-only
+        ledger + header), Settings (display prefs + pause/disable via
+        the watcher_feed writers; no threshold/leverage/stake editing).
+        All reads are local + read-only; writes are contained meta
+        writes that degrade to an honest note, never a raise.
+        """
+        dock = QDockWidget("Dashboard pages (research)", self)
+        dock.setObjectName("dashPagesDock")
+        body = QWidget()
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(4)
+
+        self.dash_pages = QTabWidget()
+        self.dash_tab = {}
+        for title in DASH_PAGE_TITLES:
+            page = QWidget()
+            pv = QVBoxLayout(page)
+            pv.setContentsMargins(4, 4, 4, 4)
+            pv.setSpacing(4)
+            self.dash_pages.addTab(page, title)
+            self.dash_tab[title] = page
+        lay.addWidget(self.dash_pages, 1)
+        self.dash_pages.currentChanged.connect(
+            lambda *_: self.refresh_dashboard_pages())
+
+        self._build_dash_summary_tab()
+        self._build_dash_star_tab()
+        self._build_dash_signals_tab()
+        self._build_dash_analysis_tab()
+        self._build_dash_trades_tab()
+        self._build_dash_settings_tab()
+
+        dock.setWidget(body)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self.dash_pages_dock = dock
+        # Display prefs persist under dash_pref_* keys (fresh DB: off).
+        try:
+            self.dash_autorefresh = dash_read_pref(self.db,
+                                                   DASH_PREF_AUTOREFRESH)
+            self.dash_compact = dash_read_pref(self.db,
+                                               DASH_PREF_COMPACT)
+        except Exception:
+            pass
+
+    def _build_dash_summary_tab(self):
+        page = self.dash_tab["Dashboard"]
+        lay = page.layout()
+        self.dash_summary = QLabel("—")
+        self.dash_summary.setWordWrap(True)
+        self.dash_summary.setFont(_theme.mono_font())
+        lay.addWidget(self.dash_summary, 1)
+        hint = QLabel("Full cards and the Top Signals table live in the"
+                      " Dashboard dock.")
+        hint.setWordWrap(True)
+        hint.setObjectName("headerStats")
+        lay.addWidget(hint)
+
+    def _build_dash_star_tab(self):
+        page = self.dash_tab["Watchlist"]
+        lay = page.layout()
+        self.dash_star_table = self._make_table(
+            STAR_TABLE_COLUMNS, STAR_TABLE_HEADINGS, STAR_TABLE_WIDTHS)
+        lay.addWidget(self.dash_star_table, 1)
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        self.dash_star_edit = QLineEdit()
+        self.dash_star_edit.setPlaceholderText("COIN to star")
+        self.dash_star_edit.setFixedWidth(140)
+        row.addWidget(self.dash_star_edit)
+        self.btn_dash_star = QPushButton("Star")
+        self.btn_dash_star.clicked.connect(
+            lambda: self._on_dash_star(True))
+        row.addWidget(self.btn_dash_star)
+        self.btn_dash_unstar = QPushButton("Unstar")
+        self.btn_dash_unstar.clicked.connect(
+            lambda: self._on_dash_star(False))
+        row.addWidget(self.btn_dash_unstar)
+        self.dash_star_note = QLabel("")
+        self.dash_star_note.setWordWrap(True)
+        self.dash_star_note.setObjectName("headerStats")
+        row.addWidget(self.dash_star_note, 1)
+        lay.addLayout(row)
+
+    def _build_dash_signals_tab(self):
+        page = self.dash_tab["Signals"]
+        lay = page.layout()
+        filt = QHBoxLayout()
+        filt.setSpacing(4)
+        filt.addWidget(QLabel("Direction"))
+        self.dash_sig_cmb_dir = QComboBox()
+        self.dash_sig_cmb_dir.addItems(list(SIG_DIRS))
+        self.dash_sig_cmb_dir.currentTextChanged.connect(
+            lambda *_: self._on_dash_sig_filter())
+        filt.addWidget(self.dash_sig_cmb_dir)
+        self.dash_sig_history = QCheckBox("Show resolved history")
+        self.dash_sig_history.setChecked(True)
+        self.dash_sig_history.toggled.connect(
+            lambda *_: self._on_dash_sig_filter())
+        filt.addWidget(self.dash_sig_history)
+        filt.addStretch(1)
+        lay.addLayout(filt)
+        self.dash_sig_table = self._make_table(
+            SIG_TABLE_COLUMNS, SIG_TABLE_HEADINGS, SIG_TABLE_WIDTHS)
+        lay.addWidget(self.dash_sig_table, 1)
+        self.dash_sig_summary = QLabel("")
+        self.dash_sig_summary.setWordWrap(True)
+        self.dash_sig_summary.setObjectName("headerStats")
+        lay.addWidget(self.dash_sig_summary)
+
+    def _build_dash_analysis_tab(self):
+        page = self.dash_tab["Analysis"]
+        lay = page.layout()
+        board_box = QGroupBox("Indicator board — latest closed-bar eval")
+        bv = QVBoxLayout(board_box)
+        bv.setContentsMargins(4, 4, 4, 4)
+        self.dash_board_table = self._make_table(
+            BOARD_TABLE_COLUMNS, BOARD_TABLE_HEADINGS, BOARD_TABLE_WIDTHS)
+        bv.addWidget(self.dash_board_table)
+        lay.addWidget(board_box, 2)
+        self.dash_coverage = QLabel("")
+        self.dash_coverage.setWordWrap(True)
+        self.dash_coverage.setFont(_theme.mono_font())
+        lay.addWidget(self.dash_coverage)
+        study_box = QGroupBox("Event-study (dev)")
+        sv = QVBoxLayout(study_box)
+        sv.setContentsMargins(4, 4, 4, 4)
+        self.dash_eventstudy = QLabel("")
+        self.dash_eventstudy.setWordWrap(True)
+        self.dash_eventstudy.setFont(_theme.mono_font())
+        sv.addWidget(self.dash_eventstudy)
+        lay.addWidget(study_box, 1)
+
+    def _build_dash_trades_tab(self):
+        page = self.dash_tab["Trades"]
+        lay = page.layout()
+        self.dash_trades_head = QLabel(TRADES_HEADER)
+        self.dash_trades_head.setWordWrap(True)
+        self.dash_trades_head.setFont(
+            _theme.ui_font(_theme.BASE_POINT_SIZE + 1, bold=True))
+        lay.addWidget(self.dash_trades_head)
+        self.dash_trades_sub = QLabel(TRADES_SUB)
+        self.dash_trades_sub.setWordWrap(True)
+        self.dash_trades_sub.setObjectName("headerStats")
+        lay.addWidget(self.dash_trades_sub)
+        for widget in (self.dash_trades_head, self.dash_trades_sub):
+            try:
+                assert_clean(widget.text())
+            except ValueError:
+                pass
+        self.dash_trades_table = self._make_table(
+            TRADES_TABLE_COLUMNS, TRADES_TABLE_HEADINGS,
+            TRADES_TABLE_WIDTHS)
+        lay.addWidget(self.dash_trades_table, 1)
+
+    def _build_dash_settings_tab(self):
+        page = self.dash_tab["Settings"]
+        lay = page.layout()
+        pause_box = QGroupBox("Watcher pause")
+        pv = QVBoxLayout(pause_box)
+        pv.setContentsMargins(4, 4, 4, 4)
+        self.dash_set_paused = QCheckBox("Pause watcher")
+        self.dash_set_paused.toggled.connect(
+            lambda on: self._on_dash_pause(bool(on)))
+        pv.addWidget(self.dash_set_paused)
+        lay.addWidget(pause_box)
+        trig_box = QGroupBox("Trigger switches")
+        tv = QVBoxLayout(trig_box)
+        tv.setContentsMargins(4, 4, 4, 4)
+        self.dash_trig_layout = tv
+        self.dash_set_rules = {}
+        for rule in DASH_KNOWN_RULES:
+            box = QCheckBox(f"Disable {rule}")
+            box.toggled.connect(
+                lambda on, r=rule: self._on_dash_rule(r, bool(on)))
+            tv.addWidget(box)
+            self.dash_set_rules[rule] = box
+        lay.addWidget(trig_box)
+        disp_box = QGroupBox("Display")
+        dv = QVBoxLayout(disp_box)
+        dv.setContentsMargins(4, 4, 4, 4)
+        self.dash_set_autorefresh = QCheckBox(
+            "Refresh dashboard pages with each scan result")
+        self.dash_set_autorefresh.toggled.connect(
+            lambda on: self._on_dash_pref(DASH_PREF_AUTOREFRESH,
+                                          bool(on)))
+        dv.addWidget(self.dash_set_autorefresh)
+        self.dash_set_compact = QCheckBox(
+            "Compact analysis lines (first line only)")
+        self.dash_set_compact.toggled.connect(
+            lambda on: self._on_dash_pref(DASH_PREF_COMPACT, bool(on)))
+        dv.addWidget(self.dash_set_compact)
+        lay.addWidget(disp_box)
+        self.dash_set_note = QLabel("")
+        self.dash_set_note.setWordWrap(True)
+        self.dash_set_note.setObjectName("headerStats")
+        lay.addWidget(self.dash_set_note)
+        lay.addStretch(1)
+
+    # ------------------------------------------------ page data + render
+    def refresh_dashboard_pages(self, now=None):
+        """Re-read page data (local, read-only) and render all six pages.
+
+        Contained: a missing/locked DB keeps honest fallback copy on
+        every page, never a raise, never a touch of the scanner widgets.
+        """
+        if getattr(self, "dash_pages", None) is None:
+            return
+        now = int(time.time() if now is None else now)
+        self._dash_last_now = now
+        try:
+            self.dash_movers_cache = dashboard_movers(
+                self.dash_market_data)
+            events = dashboard_recent_events(
+                self.db, limit=max(DASH_ACTIVITY_N, DASH_RECENT_N))
+            kinds = ("emission", "invalidation", "expiry")
+            self.dash_recent_cache = [e for e in events
+                                      if e.get("kind") in kinds
+                                      ][:DASH_RECENT_N]
+            self.dash_activity_cache = list(events)[:DASH_ACTIVITY_N]
+            self.dash_ledger = dashboard_all_setups(self.db)
+            self.dash_evals = dashboard_latest_evals(self.db)
+            self.dash_starred_cache = dashboard_starred(self.db)
+            try:
+                panel = watcher_feed_mod.load_panel(self.db)
+            except Exception:
+                panel = None
+            self._dash_panel_cache = panel
+            ro = _dash_open_ro(self.db)
+            try:
+                if ro is None:
+                    self.dash_paused_cache = False
+                    self.dash_disabled_cache = ()
+                else:
+                    paused, disabled = watcher_feed_mod.get_flags(ro)
+                    self.dash_paused_cache = bool(paused)
+                    self.dash_disabled_cache = tuple(disabled or ())
+            finally:
+                try:
+                    ro.close()
+                except Exception:
+                    pass
+        except Exception:
+            self.dash_movers_cache = {"gainers": [], "losers": [],
+                                      "high_volume": []}
+            self.dash_recent_cache = []
+            self.dash_activity_cache = []
+            self.dash_ledger = []
+            self.dash_evals = {}
+            self.dash_starred_cache = set()
+            self._dash_panel_cache = None
+        self._render_bottom()
+        self._render_dash_summary()
+        self._render_star_page()
+        self._render_signals_page()
+        self._render_analysis_page()
+        self._render_trades_page()
+        self._render_settings_page()
+
+    def _render_bottom(self):
+        """Bottom row: movers + recent analysis + activity log."""
+        try:
+            movers = self.dash_movers_cache or {}
+            bits = []
+            for title, key in (("Gainers", "gainers"), ("Losers", "losers"),
+                               ("High Volume", "high_volume")):
+                bits.append(title)
+                bits.extend(f"{c} {t}" for c, t in (movers.get(key) or []))
+            self.dash_movers.setText("\n".join(bits) if any(
+                movers.get(k) for k in ("gainers", "losers",
+                                        "high_volume"))
+                else DASH_NO_QUOTES)
+            if self.dash_recent_cache:
+                self.dash_recent.setText("\n".join(
+                    f"{e.get('kind')} {e.get('coin')} — {e.get('text')}"
+                    for e in self.dash_recent_cache))
+            else:
+                self.dash_recent.setText(DASH_NO_RECENT)
+            if self.dash_activity_cache:
+                self.dash_activity.setText("\n".join(
+                    f"{e.get('kind')} {e.get('coin')} — {e.get('text')}"
+                    for e in self.dash_activity_cache))
+            else:
+                self.dash_activity.setText(DASH_NO_ACTIVITY)
+            for widget in (self.dash_movers, self.dash_recent,
+                           self.dash_activity):
+                assert_clean(widget.text())
+        except Exception:
+            pass
+
+    def bottom_text(self):
+        """Bottom-row text: group titles + movers + recent + activity."""
+        try:
+            return "\n".join(("Market Movers", self.dash_movers.text(),
+                               "Recent Analysis", self.dash_recent.text(),
+                               "Activity Log", self.dash_activity.text()))
+        except (AttributeError, RuntimeError):
+            return ""
+
+    def _render_dash_summary(self):
+        try:
+            lines = [f"{t}: {v} ({s})"
+                     for t, v, s in self.dashboard_cards()]
+            lines.append(getattr(self, "dash_asof_text", ""))
+            text = "\n".join(lines)
+            assert_clean(text)
+            self.dash_summary.setText(text)
+        except Exception:
+            pass
+
+    def _render_star_page(self):
+        """Starred-coins table from the meta-persisted star set."""
+        try:
+            table = self.dash_star_table
+            starred = sorted(self.dash_starred_cache or ())
+            active = {}
+            try:
+                for row in (self.dash_rows or []):
+                    if row.get("coin") in starred:
+                        active[row["coin"]] = row
+            except Exception:
+                active = {}
+            self._refilling = True
+            try:
+                table.setRowCount(len(starred))
+                for r, coin in enumerate(starred):
+                    quote = (self.dash_market_data or {}).get(coin) or {}
+                    row = active.get(coin) or {}
+                    price = quote.get("price")
+                    chg = quote.get("change_24h_pct")
+                    setup = (f"{row.get('direction', '')} via"
+                             f" {row.get('id', '').split(':')[0]}"
+                             if row else "no active setup")
+                    cells = (
+                        coin, str(quote.get("name", coin)),
+                        "n/a" if price is None else f"{price:.8g}",
+                        "n/a" if chg is None else f"{chg:+.1f}%",
+                        setup)
+                    for c, text in enumerate(cells):
+                        item = _CellItem(text)
+                        item.setToolTip(text.split("\n")[0])
+                        table.setItem(r, c, item)
+            finally:
+                self._refilling = False
+        except Exception:
+            pass
+
+    def watchlist_text(self):
+        """Starred-page table text (test seam)."""
+        try:
+            bits = []
+            for r in range(self.dash_star_table.rowCount()):
+                for c in range(self.dash_star_table.columnCount()):
+                    item = self.dash_star_table.item(r, c)
+                    bits.append(item.text() if item is not None else "")
+            text = "\n".join(bits)
+            return text if text.strip() else DASH_NO_STARS
+        except (AttributeError, RuntimeError):
+            return DASH_NO_STARS
+
+    def set_dashboard_star(self, coin, starred):
+        """Star/unstar a coin (meta-persisted; contained, honest note)."""
+        coin = str(coin or "").strip().upper()
+        if not coin:
+            try:
+                self.dash_star_note.setText("enter a coin first")
+            except (AttributeError, RuntimeError):
+                pass
+            return
+        ok = dash_write_meta(self.db, DASH_STAR_PREFIX + coin,
+                             "1" if starred else "0")
+        try:
+            self.dash_star_note.setText(
+                f"{coin} {'starred' if starred else 'unstarred'}"
+                if ok else f"{coin} not saved — database busy")
+        except (AttributeError, RuntimeError):
+            pass
+        self.refresh_dashboard_pages()
+
+    def _on_dash_star(self, starred):
+        try:
+            coin = self.dash_star_edit.text()
+        except (AttributeError, RuntimeError):
+            return
+        self.set_dashboard_star(coin, starred)
+
+    def _on_dash_sig_filter(self, *_a):
+        try:
+            self.dash_sig_dir = self.dash_sig_cmb_dir.currentText()
+            self.dash_sig_history_on = self.dash_sig_history.isChecked()
+        except (AttributeError, RuntimeError):
+            return
+        try:
+            self._render_signals_page()
+        except (AttributeError, RuntimeError):
+            pass
+
+    def _render_signals_page(self):
+        """Full setup ledger + history counts (newest-first)."""
+        try:
+            rows = list(self.dash_ledger or [])
+            if self.dash_sig_dir != "All":
+                rows = [r for r in rows
+                        if str(r.get("direction", "")).upper()
+                        == self.dash_sig_dir.upper()]
+            if not self.dash_sig_history_on:
+                rows = [r for r in rows
+                        if str(r.get("state", "")).lower() == "active"]
+            table = self.dash_sig_table
+            self._refilling = True
+            try:
+                table.setRowCount(len(rows))
+                for r, row in enumerate(rows):
+                    state = str(row.get("state", "active"))
+                    src = row.get("src_bar_ts")
+                    cells = (str(row.get("coin", "?")),
+                             str(row.get("rule_id", "?")),
+                             str(row.get("direction", "?")).upper(),
+                             state,
+                             "n/a" if src is None else f"src bar {src}")
+                    for c, text in enumerate(cells):
+                        assert_clean(text)
+                        item = _CellItem(text)
+                        item.setToolTip(text.split("\n")[0])
+                        table.setItem(r, c, item)
+            finally:
+                self._refilling = False
+            counts = {}
+            for row in (self.dash_ledger or []):
+                key = str(row.get("state", "active"))
+                counts[key] = counts.get(key, 0) + 1
+            summary = (f"ledger {len(self.dash_ledger or [])} setups"
+                       + (" — " + " · ".join(
+                           f"{k}: {counts[k]}" for k in sorted(counts))
+                           if counts else ""))
+            assert_clean(summary)
+            self.dash_sig_summary.setText(summary)
+        except Exception:
+            pass
+
+    def signals_text(self):
+        """Signals-page table + summary text (test seam)."""
+        try:
+            bits = []
+            for r in range(self.dash_sig_table.rowCount()):
+                for c in range(self.dash_sig_table.columnCount()):
+                    item = self.dash_sig_table.item(r, c)
+                    bits.append(item.text() if item is not None else "")
+            bits.append(self.dash_sig_summary.text())
+            return "\n".join(bits)
+        except (AttributeError, RuntimeError):
+            return ""
+
+    def _render_analysis_page(self):
+        """Indicator board + coverage + dev-labeled event-study block."""
+        try:
+            evals = self.dash_evals or {}
+            setups = {s.get("id"): s for s in (self.dash_ledger or [])
+                      if s.get("id")}
+            ids = sorted(setups) or sorted(evals)
+            table = self.dash_board_table
+            self._refilling = True
+            try:
+                table.setRowCount(len(ids))
+                for r, sid in enumerate(ids):
+                    ev = evals.get(sid) or {}
+                    coin = (setups.get(sid) or {}).get("coin", sid)
+                    bar = ev.get("bar_ts")
+                    cells = (
+                        str(coin),
+                        "n/a" if bar is None else f"bar {bar}",
+                        str(ev.get("monitoring", "n/a")),
+                        _dash_ret_text(ev.get("ret_gross")),
+                        _dash_ret_text(ev.get("ret_net")),
+                        str(ev.get("note") or "n/a"))
+                    for c, text in enumerate(cells):
+                        assert_clean(text)
+                        item = _CellItem(text)
+                        item.setToolTip(text.split("\n")[0])
+                        table.setItem(r, c, item)
+            finally:
+                self._refilling = False
+            panel = getattr(self, "_dash_panel_cache", None)
+            details = (getattr(panel, "by_id", None) or {}) if panel \
+                else {}
+            if details:
+                ok = sum(1 for d in details.values()
+                         if (d or {}).get("monitoring", "ok") == "ok")
+                total = len(details)
+                pct = (100.0 * ok / total) if total else 0.0
+                unav = sum(1 for d in details.values()
+                           if (d or {}).get("monitoring") == "unavailable")
+                coverage = (f"monitoring coverage {ok}/{total} ok"
+                            f" ({pct:.1f}%) · unavailable: {unav}")
+            else:
+                coverage = ("monitoring coverage unavailable — "
+                            "no setups read")
+            assert_clean(coverage)
+            self.dash_coverage.setText(coverage)
+            study = "\n".join((
+                "event-study (dev only — not a result)",
+                f"N grid {', '.join(str(h) for h in N_GRID)} bars of 5m"
+                " (1h/4h/8h/24h);"
+                f" kill horizons {', '.join(str(h) for h in KILL_HORIZONS)}",
+                "no stored event-study result — rows above are marked"
+                " returns, not study outcomes"))
+            assert_clean(study)
+            self.dash_eventstudy.setText(study)
+        except Exception:
+            pass
+
+    def analysis_text(self):
+        """Analysis-page text: board + coverage + event-study (test seam)."""
+        try:
+            bits = []
+            for r in range(self.dash_board_table.rowCount()):
+                for c in range(self.dash_board_table.columnCount()):
+                    item = self.dash_board_table.item(r, c)
+                    bits.append(item.text() if item is not None else "")
+            bits.append(self.dash_coverage.text())
+            bits.append(self.dash_eventstudy.text())
+            return "\n".join(bits)
+        except (AttributeError, RuntimeError):
+            return ""
+
+    def _render_trades_page(self):
+        """Hypothetical-only ledger: setups + reference plans + returns."""
+        try:
+            rows = [s for s in (self.dash_ledger or [])
+                    if str(s.get("state", "")).lower() == "active"]
+            table = self.dash_trades_table
+            self._refilling = True
+            try:
+                table.setRowCount(len(rows))
+                for r, setup in enumerate(rows):
+                    risk = "n/a"
+                    try:
+                        entry = float(setup.get("entry"))
+                        stop = float(setup.get("stop_px"))
+                        tgt = float(setup.get("tgt_px"))
+                        plan = reference_plan(
+                            {"entry_low": entry, "entry_high": entry,
+                             "stop": stop, "tp1": tgt, "tp2": tgt})
+                        risk = f"{plan['stop_risk']:.2f} USDT"
+                        entry_t = f"{entry:.8g}"
+                        stop_t = f"{stop:.8g}"
+                        tgt_t = f"{tgt:.8g}"
+                    except (TypeError, ValueError):
+                        entry_t = stop_t = tgt_t = "n/a"
+                    ev = (self.dash_evals or {}).get(setup.get("id")) or {}
+                    gross = _dash_ret_text(ev.get("ret_gross"))
+                    net = _dash_ret_text(ev.get("ret_net"))
+                    ret = ("pending" if gross == "pending" and net == "pending"
+                           else f"gross {gross} · net {net}")
+                    cells = (str(setup.get("coin", "?")),
+                             str(setup.get("direction", "?")).upper(),
+                             entry_t, stop_t, tgt_t, risk, ret,
+                             str(setup.get("state", "active")))
+                    for c, text in enumerate(cells):
+                        assert_clean(text)
+                        item = _CellItem(text)
+                        item.setToolTip(text.split("\n")[0])
+                        table.setItem(r, c, item)
+            finally:
+                self._refilling = False
+        except Exception:
+            pass
+
+    def trades_text(self):
+        """Trades-page text: header + ledger (test seam)."""
+        try:
+            bits = [self.dash_trades_head.text(),
+                    self.dash_trades_sub.text()]
+            for r in range(self.dash_trades_table.rowCount()):
+                for c in range(self.dash_trades_table.columnCount()):
+                    item = self.dash_trades_table.item(r, c)
+                    bits.append(item.text() if item is not None else "")
+            return "\n".join(bits)
+        except (AttributeError, RuntimeError):
+            return TRADES_HEADER + "\n" + TRADES_SUB
+
+    def _render_settings_page(self):
+        """Sync pause/rule/pref controls from meta (signals blocked)."""
+        try:
+            rules = list(DASH_KNOWN_RULES)
+            for setup in (self.dash_ledger or []):
+                rule = setup.get("rule_id")
+                if rule and rule not in rules:
+                    rules.append(rule)
+            for rule in rules:
+                if rule not in self.dash_set_rules:
+                    box = QCheckBox(f"Disable {rule}")
+                    box.toggled.connect(
+                        lambda on, r=rule: self._on_dash_rule(r, bool(on)))
+                    try:
+                        self.dash_trig_layout.addWidget(box)
+                    except (AttributeError, RuntimeError):
+                        pass
+                    self.dash_set_rules[rule] = box
+            for box in [self.dash_set_paused, self.dash_set_autorefresh,
+                        self.dash_set_compact,
+                        *self.dash_set_rules.values()]:
+                box.blockSignals(True)
+            try:
+                self.dash_set_paused.setChecked(bool(
+                    self.dash_paused_cache))
+                for rule, box in self.dash_set_rules.items():
+                    box.setChecked(rule in (self.dash_disabled_cache or ()))
+                self.dash_set_autorefresh.setChecked(bool(
+                    self.dash_autorefresh))
+                self.dash_set_compact.setChecked(bool(self.dash_compact))
+            finally:
+                for box in [self.dash_set_paused,
+                            self.dash_set_autorefresh,
+                            self.dash_set_compact,
+                            *self.dash_set_rules.values()]:
+                    box.blockSignals(False)
+        except (AttributeError, RuntimeError):
+            pass
+
+    def dash_settings_labels(self):
+        """Settings-tab labels + control texts (test seam)."""
+        try:
+            page = self.dash_tab["Settings"]
+            bits = [w.text() for w in page.findChildren(QLabel)]
+            bits += [w.text() for w in page.findChildren(QCheckBox)]
+            bits += [w.title() for w in page.findChildren(QGroupBox)]
+            bits.append(self.dash_set_note.text())
+            return "\n".join(bits)
+        except (AttributeError, RuntimeError):
+            return ""
+
+    def dash_pages_text(self):
+        """All six pages as text (test seam)."""
+        try:
+            return "\n".join((self.dash_summary.text(),
+                               self.watchlist_text(), self.signals_text(),
+                               self.analysis_text(), self.trades_text(),
+                               self.dash_settings_labels()))
+        except (AttributeError, RuntimeError):
+            return ""
+
+    def _dash_open_rw(self):
+        """Short-timeout read-write handle for settings writes, or None."""
+        if not getattr(self, "db", None):
+            return None
+        try:
+            conn = sqlite3.connect(self.db, timeout=5.0)
+            conn.execute("SELECT 1")
+            return conn
+        except Exception:
+            return None
+
+    def _on_dash_pause(self, paused):
+        """Pause/resume switch: the watcher_feed writer, same key panels."""
+        conn = self._dash_open_rw()
+        note = ""
+        if conn is None:
+            note = "pause not saved — database unavailable"
+        else:
+            try:
+                watcher_feed_mod.set_paused(conn, bool(paused))
+                self.dash_paused_cache = bool(paused)
+                note = ("watcher paused — setups listed but not acted on"
+                        if paused else "watcher resumed")
+            except Exception:
+                note = "pause not saved — database busy"
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        try:
+            self.dash_set_note.setText(note)
+            assert_clean(note)
+        except (AttributeError, RuntimeError, ValueError):
+            pass
+        self.refresh_dashboard_pages()
+
+    def _on_dash_rule(self, rule, disabled):
+        """Per-trigger switch: the watcher_feed writer, same key panels."""
+        conn = self._dash_open_rw()
+        note = ""
+        if conn is None:
+            note = "trigger switch not saved — database unavailable"
+        else:
+            try:
+                watcher_feed_mod.set_rule_disabled(conn, rule,
+                                                   bool(disabled))
+                flags = set(self.dash_disabled_cache or ())
+                if disabled:
+                    flags.add(rule)
+                else:
+                    flags.discard(rule)
+                self.dash_disabled_cache = tuple(sorted(flags))
+                note = (f"{rule} disabled" if disabled
+                        else f"{rule} enabled")
+            except Exception:
+                note = "trigger switch not saved — database busy"
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        try:
+            self.dash_set_note.setText(note)
+            assert_clean(note)
+        except (AttributeError, RuntimeError, ValueError):
+            pass
+        self.refresh_dashboard_pages()
+
+    def _on_dash_pref(self, key, on):
+        """Display pref toggle: persist to meta, apply immediately."""
+        ok = dash_write_meta(self.db, key, "1" if on else "0")
+        if key == DASH_PREF_AUTOREFRESH:
+            self.dash_autorefresh = bool(on)
+        elif key == DASH_PREF_COMPACT:
+            self.dash_compact = bool(on)
+            try:
+                self._render_dashboard()
+            except (AttributeError, RuntimeError):
+                pass
+        try:
+            self.dash_set_note.setText(
+                "display preference saved"
+                if ok else "preference not saved — database busy")
+        except (AttributeError, RuntimeError):
+            pass
 
     # ------------------------------------------------ coin detail (Task 6)
     def _build_detail_dock(self):
@@ -3090,6 +4167,10 @@ class RadarWindow(QMainWindow):
             self.plan24 = msg["plan24"]
         self._render_header()
         self._render_outcomes()
+        # Dashboard display pref (Task 7): pages follow each stats result
+        # only when the user switched autorefresh on (default off).
+        if getattr(self, "dash_autorefresh", False):
+            self.refresh_dashboard()
 
     def _on_resolve(self, msg):
         n = int(msg.get("resolved", 0))

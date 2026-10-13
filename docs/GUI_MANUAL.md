@@ -644,3 +644,43 @@ leverage cap are versioned into a `config_hash`. Mixed configs are tolerated
 and reported as separate cohorts, never merged. GUI and daemon logging the
 same coin under one config is safe: ordering and late-observation rules
 prevent duplicate open episodes.
+
+## 16. Qt trader dashboard (research, read-only)
+
+The PySide6 app (`qtgui/`) carries a research dashboard alongside the
+scanner views. Everything on it is read-only and stakeless: no orders are
+placed anywhere, no stake sizes anything, and no model scores or
+success-estimate copy appears on any dashboard surface.
+
+**Dashboard dock.** Four stat cards (Active Setups, Eligible Perps with
+eligible vs evaluated counts shown separately, Monitoring Coverage, New
+Setups 24h) with day-over-day deltas against the snapshot covering the
+same point 24h earlier, or an honest "comparison unavailable" when no
+prior snapshot covers it. Below the cards: the Top Signals table (one row
+per active setup, LONG/SHORT pill, rule-evidence cells, expiry
+countdowns) with Direction / Market / Horizon (4h default, N=48; 24h,
+N=288) / Sort filters, under the research banner. Pre-cut snapshots and
+journal rows are filtered out at read time, so cohorts never pool across
+the epoch cut.
+
+**Bottom row.** Market Movers (Gainers / Losers / High Volume from the
+latest sweep's quotes — "market quotes unavailable" before any scan),
+Recent Analysis (last 5 emission/transition journal rows) and Activity
+Log (newest journal rows including sweep-complete). Missing data renders
+shorter honest copy, never an inferred value.
+
+**Dashboard pages dock (six tabs).**
+
+| Tab | Contents |
+|---|---|
+| Dashboard | Card values + stamp mirror (full cards and table stay in the dock above) |
+| Watchlist | Starred coins, persisted in `meta` (`dash_star:<COIN>`); Star/Unstar buttons |
+| Signals | Full setup ledger (active + invalidated/expired/resolved history) with direction filter and history toggle |
+| Analysis | Indicator board (latest closed-bar eval per setup: monitoring, gross/net marked returns), monitoring coverage, and the event-study N grid / kill horizons block, labeled dev-only (no stored result) |
+| Trades | Hypothetical-only ledger: "No orders placed — hypothetical outcomes only". Rows show frozen entry/stop/target, the reference stop-risk at 100 USDT (reference size, not a position) and the latest marked return or "pending" |
+| Settings | Watcher pause + per-trigger disable switches (they write the same `watcher_paused` / `watcher_disabled:<rule>` meta flags the panels read) and two display prefs: follow each scan result, and compact analysis lines. No threshold, leverage or stake editing exists on this page |
+
+Coins with no active setup show "no setup yet" plus the blocking reason
+(veto / cooldown / missing data / recently invalidated). Zero setups is a
+valid silence, every stamp is a closed-bar `data as of`, and feed/DB
+failures degrade to contained fallback copy with the scanner intact.
