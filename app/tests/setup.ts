@@ -7,6 +7,8 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const net = require("node:net") as typeof import("node:net");
 const dgram = require("node:dgram") as typeof import("node:dgram");
+const http = require("node:http") as typeof import("node:http");
+const https = require("node:https") as typeof import("node:https");
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"]);
 
@@ -37,6 +39,58 @@ net.connect = ((...args: Parameters<typeof net.connect>) => {
   }
   return originalConnect(...args);
 }) as typeof net.connect;
+
+// node:http and node:https internally call `net.createConnection`, which is a
+// SEPARATE export of the same underlying function — patching only net.connect
+// leaves those paths open. Patch both entries (they are distinct properties,
+// even though net.connect === net.createConnection at load time).
+const originalCreateConnection = net.createConnection.bind(net);
+net.createConnection = ((
+  ...args: Parameters<typeof net.createConnection>
+) => {
+  const [first, second] = args;
+  if (first !== null && typeof first === "object") {
+    const opts = first as { host?: string; hostname?: string };
+    assertLoopback("net.createConnection", opts.host ?? opts.hostname);
+  } else if (typeof second === "string") {
+    assertLoopback("net.createConnection", second);
+  }
+  return originalCreateConnection(...args);
+}) as typeof net.createConnection;
+
+// http.request / https.request (and the .get shorthand) accept either an
+// options object or a URL string as first argument; the host can also arrive
+// via the `hostname` key or as a parsed URL. Check every shape.
+function assertHttpLoopback(where: string, ...args: unknown[]): void {
+  const first = args[0];
+  if (typeof first === "string") {
+    let hostname: string | undefined;
+    try {
+      hostname = new URL(first).hostname;
+    } catch {
+      // not a parseable URL — leave the host to the net-level checks
+    }
+    if (hostname !== undefined) assertLoopback(where, hostname);
+    return;
+  }
+  if (first !== null && typeof first === "object") {
+    const opts = first as { host?: string; hostname?: string };
+    const host = opts.host ?? opts.hostname;
+    if (host !== undefined) assertLoopback(where, host);
+  }
+}
+
+for (const [label, mod] of [
+  ["http", http],
+  ["https", https],
+] as const) {
+  for (const fn of ["request", "get"] as const) {
+    const original = (mod[fn] as (...a: unknown[]) => unknown).bind(mod);
+    (mod as unknown as Record<string, (...a: unknown[]) => unknown>)[fn] = (
+      ...args: unknown[]
+    ) => assertHttpLoopback(`${label}.${fn}`, ...args) ?? original(...args);
+  }
+}
 
 const originalCreateSocket = dgram.createSocket.bind(dgram);
 dgram.createSocket = ((...args: Parameters<typeof dgram.createSocket>) => {

@@ -1,5 +1,9 @@
 /* ALT RADAR theme — the 12 spec hexes as CSS vars (deep navy #0b0e17 family, dark).
    Tailwind maps every color utility to these vars (see tailwind.config.ts). */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 :root {
   /* surfaces */
   --bg: #0b0e17;            /* page background — deep navy */
