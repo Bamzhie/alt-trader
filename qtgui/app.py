@@ -38,6 +38,7 @@ Read-only: no order code path exists, no keys are held.
 import csv
 import os
 import queue
+import sqlite3
 import time
 from types import SimpleNamespace
 
@@ -60,6 +61,9 @@ from gui import model
 from proto import picks as picks_mod
 from proto import report as report_mod
 from proto import watcher_feed as watcher_feed_mod
+from proto import store as store_mod
+from proto.setup_copy import assert_clean, summarize_setup
+from proto.watcher_view import RESEARCH_BANNER, SILENCE_VALID, STATE_WORDS
 from proto.planner import MAX_LEVERAGE
 
 from . import theme as _theme
@@ -102,6 +106,432 @@ WATCHER_HEADINGS = {"id": "ID", "rule": "RULE", "coin": "COIN", "dir": "DIR",
                     "tgt": "TGT"}
 WATCHER_WIDTHS = {"id": 170, "rule": 120, "coin": 90, "dir": 60,
                   "state": 110, "entry": 100, "stop": 100, "tgt": 100}
+
+
+# ---- dashboard (Task 5: stat cards + Top Signals table, additive) ----
+# Filter vocab (spec section 3): direction All/Long/Short, market All /
+# Top 20 by 24h quote volume / Tail, horizon 4h (N=48) / 24h (N=288) with
+# a 4h default, sort newest (default) / expiry / 24h%.
+DASH_DIRS = ("All", "Long", "Short")
+DASH_MARKETS = ("All", "Top 20", "Tail")
+DASH_HORIZONS = ("4h", "24h")
+DASH_DEFAULT_HORIZON = "4h"
+DASH_SORTS = ("Newest", "Expiry", "24h%")
+
+# Top Signals columns: one row per active setup. Deliberately NO tier or
+# score column (spec 2089540 removed them); direction rides a LONG/SHORT
+# pill, analysis is the 2-line rule-evidence copy, evidence names the
+# matched rule evidence, expiry is a countdown.
+DASH_TABLE_COLUMNS = ("coin", "price", "ch24", "analysis", "evidence",
+                      "dir", "expiry")
+DASH_TABLE_HEADINGS = ("COIN", "PRICE", "24H%", "ANALYSIS", "EVIDENCE",
+                       "DIR", "EXPIRY")
+DASH_TABLE_WIDTHS = {"coin": 90, "price": 90, "ch24": 70, "analysis": 320,
+                     "evidence": 220, "dir": 80, "expiry": 110}
+
+# The watcher geometry grid runs on 5-minute bars; a setup's expiry stamp
+# is src_bar_ts + N_bars * 300s (logged row values only, never inferred).
+DASH_BAR_S = 300
+DASH_DAY_S = 86400
+
+# dashboard_snapshot columns, in DDL order.
+_DASH_SNAP_COLS = ("ts", "eligible_count", "evaluated_count",
+                   "active_setups", "new_setups_24h",
+                   "monitoring_coverage")
+
+# watcher_events kinds (Task 2 journal); the dashboard reads the journal
+# read-only for the activity feed.
+_DASH_EVENT_KINDS = ("emission", "invalidation", "expiry",
+                     "sweep-complete")
+
+# Withheld-comparison copy (spec section 1: no prior snapshot covering
+# now-24h -> show unavailable, never an inferred value).
+DASH_NO_COMPARISON = "comparison unavailable"
+
+
+def _dash_open_ro(db_path):
+    """Read-only sqlite handle, or None when the DB cannot be opened."""
+    if not db_path or not os.path.isfile(db_path):
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True,
+                               timeout=2.0)
+        conn.execute("SELECT 1")
+        return conn
+    except Exception:
+        return None
+
+
+def dashboard_cut_ts(db_path):
+    """Active-epoch cut_ts for read-time cohort filtering, or None.
+
+    None before any operator cut (no filtering) and on any unreadable
+    DB — callers degrade to unfiltered reads, never a raise.
+    """
+    conn = _dash_open_ro(db_path)
+    if conn is None:
+        return None
+    try:
+        try:
+            epoch = store_mod.active_epoch(conn)
+        except Exception:
+            return None
+        if not epoch:
+            return None
+        return epoch.get("cut_ts")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _dash_post_cut(rows, cut_ts):
+    """Keep rows with ts >= cut_ts (Task 2 carry: journal/snapshot reads
+    are filtered at read time so pre-cut and post-cut cohorts never
+    pool). No active cut -> rows unchanged."""
+    if cut_ts is None:
+        return list(rows)
+    try:
+        cut = int(cut_ts)
+    except (TypeError, ValueError):
+        return list(rows)
+    return [r for r in rows if r.get("ts") is not None
+            and int(r["ts"]) >= cut]
+
+
+def dashboard_snapshot_pair(db_path, now=None):
+    """(latest, prior_or_None) from dashboard_snapshot, post-cut only.
+
+    Same pair rule as proto/watcher_journal.snapshot_pair (prior = the
+    nearest snapshot at or before now-24h, excluding the latest row) but
+    read-only (never creates tables) and filtered to ts >= the active
+    epoch's cut_ts at read time. (None, None) on a fresh/missing DB.
+    """
+    now = int(time.time() if now is None else now)
+    conn = _dash_open_ro(db_path)
+    if conn is None:
+        return (None, None)
+    try:
+        try:
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        except Exception:
+            return (None, None)
+        if "dashboard_snapshot" not in tables:
+            return (None, None)
+        cut_ts = dashboard_cut_ts(db_path)
+        try:
+            cur = conn.execute(
+                f"SELECT {', '.join(_DASH_SNAP_COLS)} FROM dashboard_snapshot"
+                " ORDER BY ts ASC, rowid ASC")
+            rows = [dict(zip(_DASH_SNAP_COLS, r)) for r in cur.fetchall()]
+        except Exception:
+            return (None, None)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    rows = _dash_post_cut(rows, cut_ts)
+    if not rows:
+        return (None, None)
+    latest = rows[-1]
+    prior = None
+    for row in rows[:-1]:
+        if int(row["ts"]) <= now - DASH_DAY_S:
+            prior = row
+    return (latest, prior)
+
+
+def dashboard_recent_events(db_path, limit=50):
+    """Newest-first watcher_events rows, post-cut only (read-only).
+
+    Shared read path for the activity feed: journal rows filtered by ts
+    vs the active cut at read time, newest first, capped at *limit*.
+    [] on a fresh/missing DB — never a raise.
+    """
+    conn = _dash_open_ro(db_path)
+    if conn is None:
+        return []
+    try:
+        try:
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        except Exception:
+            return []
+        if "watcher_events" not in tables:
+            return []
+        cut_ts = dashboard_cut_ts(db_path)
+        try:
+            cur = conn.execute(
+                "SELECT ts, kind, coin, text FROM watcher_events"
+                " ORDER BY ts DESC, rowid DESC")
+            rows = [{"ts": r[0], "kind": r[1], "coin": r[2], "text": r[3]}
+                    for r in cur.fetchall()
+                    if r[1] in _DASH_EVENT_KINDS]
+        except Exception:
+            return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    rows = _dash_post_cut(rows, cut_ts)
+    rows.sort(key=lambda r: int(r["ts"]), reverse=True)
+    return rows[:max(0, int(limit))]
+
+
+def dashboard_setup_meta(db_path):
+    """{setup id: {N_bars, src_bar_ts}} from watcher_setup (read-only).
+
+    The shared panel detail dicts do not carry the geometry-grid N_bars
+    the horizon filter needs, so the dashboard reads those two columns
+    directly (SELECT only, never a write). {} on a fresh/missing DB —
+    never a raise; rows then render unknown-bucket/expiry-unavailable
+    copy instead of vanishing.
+    """
+    conn = _dash_open_ro(db_path)
+    if conn is None:
+        return {}
+    try:
+        try:
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        except Exception:
+            return {}
+        if "watcher_setup" not in tables:
+            return {}
+        try:
+            cols = {r[1] for r in
+                    conn.execute("PRAGMA table_info(watcher_setup)")}
+        except Exception:
+            return {}
+        if not {"id", "N_bars", "src_bar_ts"} <= cols:
+            return {}
+        try:
+            cur = conn.execute(
+                "SELECT id, N_bars, src_bar_ts FROM watcher_setup")
+            return {r[0]: {"N_bars": r[1], "src_bar_ts": r[2]}
+                    for r in cur.fetchall()}
+        except Exception:
+            return {}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _dash_delta(cur, old):
+    """Signed day-over-day delta text, or DASH_NO_COMPARISON."""
+    if cur is None or old is None:
+        return DASH_NO_COMPARISON
+    diff = cur - old
+    if diff == 0:
+        return "no change vs prior day"
+    sign = "+" if diff > 0 else ""
+    if isinstance(cur, float) or isinstance(old, float):
+        return f"{sign}{diff:.1f} pts vs prior day"
+    return f"{sign}{diff:d} vs prior day"
+
+
+def format_dashboard_cards(latest, prior):
+    """Four (title, value, sub) stat cards from a snapshot pair.
+
+    Eligible vs evaluated counts are shown separately (never called
+    "scanned"). Every sub is either a day-over-day delta or
+    DASH_NO_COMPARISON — never an inferred value. All strings pass
+    proto/setup_copy.assert_clean (fail-closed: raises on banned
+    wording instead of rendering it).
+    """
+    if latest is None:
+        cards = [("Active Setups", "—", DASH_NO_COMPARISON),
+                 ("Eligible Perps", "—", DASH_NO_COMPARISON),
+                 ("Monitoring Coverage", "unavailable",
+                  DASH_NO_COMPARISON),
+                 ("New Setups 24h", "—", DASH_NO_COMPARISON)]
+    else:
+        cov = latest.get("monitoring_coverage")
+        cov_text = f"{cov * 100.0:.1f}%" if cov is not None \
+            else "unavailable"
+        old_cov = prior.get("monitoring_coverage") if prior else None
+        cards = [
+            ("Active Setups", str(latest.get("active_setups", "—")),
+             _dash_delta(latest.get("active_setups"),
+                         prior.get("active_setups") if prior else None)),
+            ("Eligible Perps",
+             f"eligible {latest.get('eligible_count', '—')} · "
+             f"evaluated {latest.get('evaluated_count', '—')}",
+             _dash_delta(latest.get("eligible_count"),
+                         prior.get("eligible_count") if prior else None)),
+            ("Monitoring Coverage", cov_text,
+             _dash_delta(cov, old_cov)
+             if cov is not None and old_cov is not None
+             else DASH_NO_COMPARISON),
+            ("New Setups 24h", str(latest.get("new_setups_24h", "—")),
+             _dash_delta(latest.get("new_setups_24h"),
+                         prior.get("new_setups_24h") if prior else None)),
+        ]
+    for title, value, sub in cards:
+        assert_clean(title)
+        assert_clean(value)
+        assert_clean(sub)
+    return cards
+
+
+def setup_horizon_bucket(setup):
+    """'4h' for N_bars <= 48, '24h' above; None when N_bars is unknown.
+
+    Unknown-bucket rows are shown under both horizon filters (an
+    unclassifiable active setup is never hidden by a filter).
+    """
+    try:
+        n = setup.get("N_bars")
+    except AttributeError:
+        return None
+    if n is None:
+        return None
+    try:
+        return "4h" if int(n) <= 48 else "24h"
+    except (TypeError, ValueError):
+        return None
+
+
+def setup_expiry_ts(setup):
+    """Expiry stamp from logged row values (src_bar_ts + N_bars*300s)."""
+    try:
+        src = setup.get("src_bar_ts")
+        n = setup.get("N_bars")
+    except AttributeError:
+        return None
+    if src is None or n is None:
+        return None
+    try:
+        return int(src) + int(n) * DASH_BAR_S
+    except (TypeError, ValueError):
+        return None
+
+
+def _dash_duration(seconds):
+    seconds = int(seconds)
+    hours, rem = divmod(seconds, 3600)
+    minutes = rem // 60
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def format_expiry(expiry_ts, now=None):
+    """Countdown text for an expiry stamp ('3h 12m left' / 'expired…')."""
+    if expiry_ts is None:
+        return "expiry unavailable"
+    now = int(time.time() if now is None else now)
+    delta = int(expiry_ts) - now
+    if delta < 0:
+        return f"expired {_dash_duration(-delta)} ago"
+    return f"{_dash_duration(delta)} left"
+
+
+def build_dashboard_rows(panel, market=None, now=None, meta=None):
+    """One row-dict per ACTIVE setup, in panel order.
+
+    *panel* is a proto/watcher_view.WatcherPanel (or None -> []). *market*
+    maps coin -> {name, price, change_24h_pct, quote_vol_24h} (offline
+    quotes; absent coins render n/a, never an invented quote). *meta* maps
+    setup id -> {N_bars, src_bar_ts} (see dashboard_setup_meta): the
+    shared detail dicts do not carry N_bars, which the horizon bucket and
+    expiry countdown need; without it those cells render honest
+    unknown-bucket/expiry-unavailable copy. Analysis lines come from
+    proto/setup_copy.summarize_setup (rule criteria + computed inputs
+    only); the evidence cell cites the rule, direction, STATE_WORDS verb
+    verbatim, and any missing-input/monitoring notes.
+    """
+    market = market or {}
+    meta = meta or {}
+    now = int(time.time() if now is None else now)
+    if panel is None:
+        return []
+    by_id = getattr(panel, "by_id", None) or {}
+    groups = getattr(panel, "groups", None) or {}
+    rows = []
+    for sid in list(groups.get("active", [])):
+        detail = by_id.get(sid) or {}
+        coin = detail.get("coin", "?")
+        quote = market.get(coin) or {}
+        setup = {"rule_id": detail.get("rule", "?"),
+                 "direction": detail.get("direction", "?"),
+                 "criteria": detail.get("criteria", []),
+                 "confirmations": detail.get("confirmations", [])}
+        inputs = {}
+        if detail.get("monitoring") is not None:
+            inputs["monitoring"] = detail["monitoring"]
+        for missing in detail.get("missing") or []:
+            inputs[str(missing)] = None
+        stamp = detail.get("last_bar_ts", detail.get("src_bar_ts"))
+        if stamp is not None:
+            inputs["data_as_of"] = stamp
+        line1, line2 = summarize_setup(setup, inputs)
+        state = detail.get("state", STATE_WORDS["active"])
+        evidence = f"{state} · {setup['rule_id']} {setup['direction']}"
+        missing = detail.get("missing") or []
+        if missing:
+            evidence += f"; missing {', '.join(str(m) for m in missing)}"
+        if detail.get("monitoring") == "unavailable":
+            evidence += "; monitoring unavailable"
+        hint = (meta.get(sid) or {}) if isinstance(meta, dict) else {}
+        n_bars = detail.get("N_bars")
+        if n_bars is None:
+            n_bars = hint.get("N_bars")
+        src_ts = detail.get("src_bar_ts")
+        if src_ts is None:
+            src_ts = hint.get("src_bar_ts")
+        expiry_ts = setup_expiry_ts({"src_bar_ts": src_ts,
+                                     "N_bars": n_bars})
+        horizon = setup_horizon_bucket({"N_bars": n_bars})
+        row = {"id": sid, "coin": coin,
+               "name": quote.get("name", coin),
+               "direction": str(setup["direction"]).upper(),
+               "price": quote.get("price"),
+               "change_24h_pct": quote.get("change_24h_pct"),
+               "quote_vol_24h": quote.get("quote_vol_24h"),
+               "analysis": f"{line1}\n{line2}", "evidence": evidence,
+               "expiry_ts": expiry_ts,
+               "expiry": format_expiry(expiry_ts, now=now),
+               "horizon": horizon,
+               "src_bar_ts": detail.get("src_bar_ts") or 0}
+        assert_clean(row["analysis"])
+        assert_clean(row["evidence"])
+        assert_clean(row["expiry"])
+        rows.append(row)
+    return rows
+
+
+def filter_dashboard_rows(rows, dir="All", market="All", horizon="4h",
+                           sort="Newest"):
+    """Apply the dashboard filters (pure; returns a new list)."""
+    out = [r for r in (rows or [])
+           if dir == "All" or r.get("direction") == dir.upper()]
+    ranked = sorted(out, key=lambda r: (r.get("quote_vol_24h") is None,
+                                        -(r.get("quote_vol_24h") or 0.0)))
+    if market == "Top 20":
+        out = ranked[:20]
+    elif market == "Tail":
+        out = ranked[20:]
+    else:
+        out = list(out)
+    if horizon in DASH_HORIZONS:
+        out = [r for r in out
+               if r.get("horizon") in (None, horizon)]
+    if sort == "Expiry":
+        out.sort(key=lambda r: (r.get("expiry_ts") is None,
+                                r.get("expiry_ts") or 0))
+    elif sort == "24h%":
+        out.sort(key=lambda r: (r.get("change_24h_pct") is None,
+                                -(r.get("change_24h_pct") or 0.0)))
+    else:  # "Newest" (default): newest setup first.
+        out.sort(key=lambda r: -(r.get("src_bar_ts") or 0))
+    return out
 
 
 def watcher_correlated_lines(db_path):
@@ -251,6 +681,17 @@ class RadarWindow(QMainWindow):
         self._plans_pending = set()
         self._busy = set()              # job kinds in flight
         self._closing = False
+        # Dashboard (Task 5): filter state + cached snapshot pair/rows.
+        # Market quotes ride this test-only seam (offline fixtures); the
+        # dock never fetches the venue itself.
+        self.dash_dir = "All"
+        self.dash_market = "All"
+        self.dash_horizon = DASH_DEFAULT_HORIZON
+        self.dash_sort = "Newest"
+        self.dash_market_data = {}
+        self.dash_cards_pair = (None, None)
+        self.dash_rows = []
+        self.dash_asof = ""
         self._lookup_goto_scanner = False  # watchlist lookup: show on Scanner
         self._launch_snapshot_at = 0.0
         self._has_live_scan = False
@@ -265,6 +706,7 @@ class RadarWindow(QMainWindow):
         self._build_topbar()
         self._build_pages()
         self._build_watcher_dock()
+        self._build_dashboard_dock()
         self._build_status()
         shortcut = QShortcut(QKeySequence("Ctrl+Q"), self)
         shortcut.activated.connect(self._on_close)
@@ -1078,6 +1520,228 @@ class RadarWindow(QMainWindow):
         # Brief Step 1 shape: dock.table is the setup table.
         dock.table = self.watcher_table
 
+    # ------------------------------------------ dashboard dock (Task 5)
+    def _build_dashboard_dock(self):
+        """Dashboard dock (additive; rail/scanner/watcher untouched).
+
+        Stat cards (snapshot pair or withheld comparison) + the Top
+        Signals table (one row per active setup, filter combos, evidence
+        cells, expiry countdowns) under the research banner. All reads
+        are local + read-only; every render path is contained so a
+        missing DB degrades to honest fallback copy, never a raise.
+        """
+        dock = QDockWidget("Dashboard — active setups (research)", self)
+        dock.setObjectName("dashboardDock")
+        body = QWidget()
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(4)
+
+        self.dash_banner = QLabel(RESEARCH_BANNER)
+        self.dash_banner.setWordWrap(True)
+        self.dash_banner.setObjectName("headerStats")
+        lay.addWidget(self.dash_banner)
+
+        cards = QHBoxLayout()
+        cards.setSpacing(4)
+        self.dash_card_value = []
+        self.dash_card_sub = []
+        for title, _value, _sub in format_dashboard_cards(None, None):
+            frame = QFrame()
+            frame.setObjectName("tile")
+            fl = QVBoxLayout(frame)
+            fl.setContentsMargins(8, 4, 8, 4)
+            fl.setSpacing(1)
+            t = QLabel(title)
+            t.setObjectName("tileTitle")
+            fl.addWidget(t)
+            v = QLabel("—")
+            v.setObjectName("tileValue")
+            v.setFont(_theme.mono_font(_theme.DETAIL_POINT_SIZE + 1))
+            fl.addWidget(v)
+            s = QLabel(DASH_NO_COMPARISON)
+            s.setObjectName("headerStats")
+            s.setWordWrap(True)
+            fl.addWidget(s)
+            cards.addWidget(frame)
+            self.dash_card_value.append(v)
+            self.dash_card_sub.append(s)
+        lay.addLayout(cards)
+
+        filt = QHBoxLayout()
+        filt.setSpacing(4)
+        self.dash_cmb_dir = QComboBox()
+        self.dash_cmb_dir.addItems(list(DASH_DIRS))
+        self.dash_cmb_market = QComboBox()
+        self.dash_cmb_market.addItems(list(DASH_MARKETS))
+        self.dash_cmb_horizon = QComboBox()
+        self.dash_cmb_horizon.addItems(list(DASH_HORIZONS))
+        self.dash_cmb_horizon.setCurrentText(DASH_DEFAULT_HORIZON)
+        self.dash_cmb_sort = QComboBox()
+        self.dash_cmb_sort.addItems(list(DASH_SORTS))
+        for label, combo in (("Direction", self.dash_cmb_dir),
+                             ("Market", self.dash_cmb_market),
+                             ("Horizon", self.dash_cmb_horizon),
+                             ("Sort", self.dash_cmb_sort)):
+            filt.addWidget(QLabel(label))
+            filt.addWidget(combo)
+            combo.currentTextChanged.connect(
+                lambda *_: self._on_dash_filter())
+        filt.addStretch(1)
+        lay.addLayout(filt)
+
+        sig_box = QGroupBox("Top Signals — one row per active setup")
+        sv = QVBoxLayout(sig_box)
+        sv.setContentsMargins(4, 4, 4, 4)
+        self.dash_table = self._make_table(DASH_TABLE_COLUMNS,
+                                           dict(zip(DASH_TABLE_COLUMNS,
+                                                    DASH_TABLE_HEADINGS)),
+                                           DASH_TABLE_WIDTHS)
+        self.dash_table.setMinimumHeight(120)
+        sv.addWidget(self.dash_table)
+        lay.addWidget(sig_box, 1)
+
+        bottom = QHBoxLayout()
+        self.btn_dash_refresh = QPushButton("Refresh dashboard")
+        self.btn_dash_refresh.clicked.connect(
+            lambda: self.refresh_dashboard())
+        bottom.addWidget(self.btn_dash_refresh)
+        self.dash_asof = QLabel("")
+        self.dash_asof.setObjectName("headerStats")
+        self.dash_asof.setWordWrap(True)
+        bottom.addWidget(self.dash_asof, 1)
+        lay.addLayout(bottom)
+
+        dock.setWidget(body)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self.dashboard_dock = dock
+
+    def _on_dash_filter(self, *_a):
+        """Filter combo changed: re-render the cached rows (no I/O)."""
+        self.dash_dir = self.dash_cmb_dir.currentText()
+        self.dash_market = self.dash_cmb_market.currentText()
+        self.dash_horizon = self.dash_cmb_horizon.currentText()
+        self.dash_sort = self.dash_cmb_sort.currentText()
+        self._render_dashboard()
+
+    def dashboard_cards(self):
+        """Current (title, value, sub) cards from the cached pair."""
+        return format_dashboard_cards(*self.dash_cards_pair)
+
+    def dashboard_cards_text(self):
+        """Card titles + values + subs as text (test seam)."""
+        return "\n".join(f"{t}\n{v}\n{s}"
+                         for t, v, s in self.dashboard_cards())
+
+    def dashboard_text(self):
+        """Full dashboard page text (banner + cards + table + stamp)."""
+        bits = [self.dash_banner.text(), self.dashboard_cards_text()]
+        for r in range(self.dash_table.rowCount()):
+            for c in range(self.dash_table.columnCount()):
+                item = self.dash_table.item(r, c)
+                bits.append(item.text() if item is not None else "")
+        bits.append(self.dash_asof.text())
+        return "\n".join(bits)
+
+    def refresh_dashboard(self, now=None):
+        """Re-read snapshots + active setups, then render (contained).
+
+        Snapshot/journal reads are post-cut only (read-time ts-vs-cut_ts
+        filter). A missing/locked DB keeps withheld-comparison cards and
+        an empty table with an honest stamp — never a raise, never a
+        touch of the scanner widgets.
+        """
+        now = int(time.time() if now is None else now)
+        try:
+            self.dash_cards_pair = dashboard_snapshot_pair(self.db,
+                                                           now=now)
+            try:
+                panel = watcher_feed_mod.load_panel(self.db)
+            except Exception:
+                panel = None
+            self.dash_rows = build_dashboard_rows(
+                panel, market=self.dash_market_data, now=now,
+                meta=dashboard_setup_meta(self.db))
+            if panel is None:
+                self.dash_asof_text = (
+                    "dashboard data unavailable — scanner intact")
+            elif not self.dash_rows:
+                self.dash_asof_text = SILENCE_VALID
+            else:
+                asof = getattr(panel, "asof_ts", 0) or now
+                self.dash_asof_text = f"data as of {asof}"
+        except Exception:
+            self.dash_cards_pair = (None, None)
+            self.dash_rows = []
+            self.dash_asof_text = (
+                "dashboard data unavailable — scanner intact")
+        self._render_dashboard()
+
+    def _render_dashboard(self):
+        """Render cached cards + filtered rows (no I/O, never raises)."""
+        try:
+            cards = format_dashboard_cards(*self.dash_cards_pair)
+            for i, (_title, value, sub) in enumerate(cards):
+                if i < len(self.dash_card_value):
+                    self.dash_card_value[i].setText(value)
+                    self.dash_card_sub[i].setText(sub)
+            rows = filter_dashboard_rows(
+                self.dash_rows, dir=self.dash_dir,
+                market=self.dash_market, horizon=self.dash_horizon,
+                sort=self.dash_sort)
+            table = self.dash_table
+            self._refilling = True
+            try:
+                table.setRowCount(len(rows))
+                for r, row in enumerate(rows):
+                    price = ("n/a" if row["price"] is None
+                             else f"{row['price']:.8g}")
+                    chg = ("n/a" if row["change_24h_pct"] is None
+                           else f"{row['change_24h_pct']:+.1f}%")
+                    arrow = {"LONG": "▲", "SHORT": "▼"}.get(
+                        row["direction"], "•")
+                    pill = f"{arrow} {row['direction']}"
+                    cells = (
+                        (f"{row['coin']}\n{row['name']}", None),
+                        (price, row["price"]),
+                        (chg, row["change_24h_pct"]),
+                        (row["analysis"], None),
+                        (row["evidence"], None),
+                        (pill, None),
+                        (row["expiry"], row["expiry_ts"]),
+                    )
+                    dir_fg = _theme.direction_foreground(row["direction"])
+                    for c, (text, number) in enumerate(cells):
+                        anchor = "w"
+                        if DASH_TABLE_COLUMNS[c] in ("price", "ch24",
+                                                     "expiry"):
+                            anchor = "e"
+                        elif DASH_TABLE_COLUMNS[c] == "dir":
+                            anchor = "center"
+                        bg = None
+                        fg = None
+                        if DASH_TABLE_COLUMNS[c] == "dir" and dir_fg:
+                            bg = (_theme.LONG_BG
+                                  if row["direction"] == "LONG"
+                                  else _theme.SHORT_BG)
+                            fg = dir_fg
+                        item = _CellItem(text, number, _align(anchor), bg,
+                                         fg)
+                        item.setToolTip(text.split("\n")[0])
+                        if c == 0:
+                            item.setData(Qt.ItemDataRole.UserRole,
+                                         row["id"])
+                        table.setItem(r, c, item)
+            finally:
+                self._refilling = False
+            self.dash_asof.setText(getattr(self, "dash_asof_text", ""))
+        except Exception:
+            try:
+                self.dash_asof.setText(
+                    "dashboard data unavailable — scanner intact")
+            except Exception:
+                pass
+
     def _fmt_ts(self, ts):
         try:
             return time.strftime("%m-%d %H:%M", time.localtime(float(ts)))
@@ -1454,6 +2118,7 @@ class RadarWindow(QMainWindow):
             self._watcher_paused = any(
                 str(n).startswith("paused") for n in (panel.notices or []))
         self._render_watcher()
+        self.refresh_dashboard()
 
     def _render_watcher(self):
         table = self.watcher_table
@@ -1843,6 +2508,7 @@ class RadarWindow(QMainWindow):
         self._render_detail()
         self._render_watchlist()
         self._render_outcomes()
+        self._render_dashboard()
         self._render_status()
 
     def _venue_text(self):
