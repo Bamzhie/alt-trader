@@ -15,16 +15,19 @@ import hmac
 import json
 import logging
 import os
+import queue
 import re
 import secrets
 import sqlite3
 import threading
 import time
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from .collector import read_bars
 from .planner import REFERENCE_NOTIONAL, reference_plan
+from . import watcher as _watcher_mod
 
 LOG = logging.getLogger("proto.service")
 
@@ -82,6 +85,153 @@ class _RedactingFilter(logging.Filter):
 
 
 LOG.addFilter(_RedactingFilter())
+
+# -- Task 3: transition-only SSE event bus --------------------------------
+# Wire format mirrors app/dev/mock_service.py exactly (the frontend's
+# subscribe-then-reconcile contract): zero-padded width-6 monotonic string
+# ids, frames `id: / event: / data:`, Last-Event-ID replay, below-floor
+# cursor -> `resync` first, 15s `: keepalive` comments, ring keeps the last
+# 500 events / 30-minute window. Events enter ONLY via watcher lifecycle
+# transition hooks (setup.emitted/invalidated/expired/resolved,
+# monitoring.unavailable/ok) plus record_sweep_completed (the scan loop
+# calls it once per completed sweep; Task 5 wires the loop).
+
+EVENT_KINDS = ("setup.emitted", "setup.invalidated", "setup.expired",
+               "setup.resolved", "monitoring.unavailable", "monitoring.ok",
+               "sweep.completed")
+EVENT_CAP = 500
+EVENT_TTL_S = 30 * 60
+EVENT_ID_WIDTH = 6
+HEARTBEAT_S = 15
+_ZERO_ID = "0" * EVENT_ID_WIDTH
+
+_EVENT_LOCK = threading.RLock()
+_EVENTS = deque()
+_NEXT_SEQ = 1
+_SUBSCRIBERS = []
+
+
+def _next_event_id():
+    global _NEXT_SEQ
+    seq = _NEXT_SEQ
+    _NEXT_SEQ += 1
+    return f"{seq:0{EVENT_ID_WIDTH}d}"
+
+
+def _prune_ring_locked():
+    """Cap at 500 events and a true 30-minute window by event ts (not
+    insertion order), relative to the newest event — same as the mock."""
+    while len(_EVENTS) > EVENT_CAP:
+        _EVENTS.popleft()
+    if not _EVENTS:
+        return
+    newest = max(e["ts"] for e in _EVENTS)
+    floor = newest - EVENT_TTL_S
+    kept = deque(e for e in _EVENTS if e["ts"] >= floor)
+    _EVENTS.clear()
+    _EVENTS.extend(kept)
+
+
+def emit_event(kind, coin=None, setup_id=None, state=None, ts=None):
+    """Append one transition event; returns the event dict.
+
+    Raises ValueError on an unknown kind. Live subscriber queues are fed
+    on append (bounded; a slow subscriber drops, never blocks).
+    """
+    if kind not in EVENT_KINDS:
+        raise ValueError(f"unknown event kind {kind!r}; "
+                         f"expected one of {EVENT_KINDS}")
+    event = {"id": None, "kind": kind,
+             "ts": int(time.time()) if ts is None else int(ts),
+             "coin": coin}
+    if setup_id is not None:
+        event["setup_id"] = setup_id
+    if state is not None:
+        event["state"] = state
+    with _EVENT_LOCK:
+        event["id"] = _next_event_id()
+        _EVENTS.append(event)
+        _prune_ring_locked()
+        subs = list(_SUBSCRIBERS)
+    for sub in subs:
+        try:
+            sub.put_nowait(dict(event))
+        except queue.Full:
+            pass
+    return dict(event)
+
+
+def record_sweep_completed(eligible_count=0, evaluated_count=0):
+    """One sweep.completed event per completed universe sweep.
+
+    The scan loop calls this (Task 5 wires it); tests and operators can
+    call it directly. Returns the event dict.
+    """
+    return emit_event("sweep.completed", coin=None)
+
+
+def reset_events():
+    """Clear the ring and restart ids (test isolation only)."""
+    global _NEXT_SEQ
+    with _EVENT_LOCK:
+        _EVENTS.clear()
+        _NEXT_SEQ = 1
+
+
+def head_event_id():
+    """Ring head id ("000000" when empty) — the snapshot_event_id value."""
+    with _EVENT_LOCK:
+        if not _EVENTS:
+            return _ZERO_ID
+        return _EVENTS[-1]["id"]
+
+
+def ring_floor():
+    """Oldest retained id, or None when the ring is empty."""
+    with _EVENT_LOCK:
+        return _EVENTS[0]["id"] if _EVENTS else None
+
+
+def _subscribe():
+    q = queue.Queue(maxsize=256)
+    with _EVENT_LOCK:
+        _SUBSCRIBERS.append(q)
+    return q
+
+
+def _unsubscribe(q):
+    with _EVENT_LOCK:
+        try:
+            _SUBSCRIBERS.remove(q)
+        except ValueError:
+            pass
+
+
+def _on_watcher_transition(kind, payload):
+    """Watcher hook -> ring buffer. Transition-only by construction: the
+    watcher calls this solely at emission, terminal and monitoring-flip
+    points, so per-refresh / per-bar traffic never reaches the ring."""
+    if kind not in EVENT_KINDS:
+        return
+    payload = payload or {}
+    emit_event(kind, coin=payload.get("coin"),
+               setup_id=payload.get("setup_id"),
+               state=payload.get("state"))
+
+
+_watcher_mod.register_transition_listener(_on_watcher_transition)
+
+
+def _frame_event(event):
+    """One SSE frame: `id: / event: / data:` with the {id,kind,ts,coin}
+    JSON payload (plus setup_id/state when present)."""
+    payload = {"id": event["id"], "kind": event["kind"],
+               "ts": event["ts"], "coin": event["coin"]}
+    for key in ("setup_id", "state"):
+        if key in event:
+            payload[key] = event[key]
+    return (f"id: {event['id']}\nevent: {event['kind']}\n"
+            f"data: {json.dumps(payload)}\n\n")
 
 # -- Task 2: resource routes -----------------------------------------------
 # Envelope `{ok, data, error:{code,message}}`; timestamps are UTC-seconds
@@ -348,6 +498,10 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                 self._handle_snapshot(gated)
                 return
 
+            if self.command == "GET" and path == "/events":
+                self._handle_events(gated)
+                return
+
             if self.command == "GET" and path == "/readyz":
                 self._handle_readyz(gated, _ready_ok, cfg_store)
                 return
@@ -385,7 +539,7 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
         # -- Task 2 resource handlers (typed envelope) -------------------
         def _handle_snapshot(self, origin, store_path=cfg_store):
             now = int(time.time())
-            data = {"ts": now, "snapshot_event_id": 0,
+            data = {"ts": now, "snapshot_event_id": head_event_id(),
                     "setups": {}, "signals": None, "unavailable": []}
             try:
                 conn = _open_db(store_path)
@@ -631,6 +785,78 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                 self._send_json(200, envelope(True, data), origin=origin)
             finally:
                 conn.close()
+
+        # -- Task 3 SSE stream (transition-only, subscribe-then-reconcile) --
+        def _sse_write(self, frame):
+            self.wfile.write(frame.encode("utf-8"))
+            self.wfile.flush()
+
+        def _handle_events(self, origin):
+            cursor = self.headers.get("Last-Event-ID")
+            if cursor is not None:
+                cursor = cursor.strip()
+            # Subscribe BEFORE copying the ring: copying first and
+            # subscribing afterwards opens a window where an event appended
+            # in between lands in neither the replay nor the subscriber
+            # queue. Anything the queue delivers that was already replayed
+            # is skipped below by id.
+            q = _subscribe()
+            try:
+                with _EVENT_LOCK:
+                    _prune_ring_locked()
+                    snapshot = [dict(e) for e in _EVENTS]
+                    floor = snapshot[0]["id"] if snapshot else None
+                replay_from = _ZERO_ID
+                send_resync = False
+                if cursor:
+                    if cursor.isdigit():
+                        # Zero-pad so short numeric cursors compare
+                        # numerically against the width-6 ids.
+                        replay_from = cursor.zfill(EVENT_ID_WIDTH)
+                        send_resync = (floor is not None
+                                       and replay_from < floor)
+                    # Unparseable cursor: replay everything retained, no
+                    # resync (same as the mock).
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("X-Accel-Buffering", "no")
+                if origin is not None:
+                    self.send_header("Access-Control-Allow-Origin", origin)
+                    self.send_header("Vary", "Origin")
+                self.end_headers()
+                if send_resync:
+                    # Below the ring-buffer floor: the client cannot
+                    # reconcile from replay, so it must re-snapshot.
+                    self._sse_write(
+                        "id: " + floor + "\nevent: resync\ndata: "
+                        + json.dumps({"id": floor, "kind": "resync",
+                                      "ts": int(time.time()), "coin": None,
+                                      "reason": "cursor below ring-buffer "
+                                      "floor — re-snapshot"}) + "\n\n")
+                last_replayed = _ZERO_ID
+                for event in snapshot:
+                    if event["id"] > replay_from:
+                        self._sse_write(_frame_event(event))
+                        if event["id"] > last_replayed:
+                            last_replayed = event["id"]
+                while True:
+                    try:
+                        event = q.get(timeout=HEARTBEAT_S)
+                    except queue.Empty:
+                        self._sse_write(f": keepalive {int(time.time())}\n\n")
+                        continue
+                    # Skip anything the snapshot already covered.
+                    if event["id"] <= last_replayed:
+                        continue
+                    self._sse_write(_frame_event(event))
+                    if event["id"] > last_replayed:
+                        last_replayed = event["id"]
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return
+            finally:
+                _unsubscribe(q)
 
         def do_GET(self):
             self._route(False)

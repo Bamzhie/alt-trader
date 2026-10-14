@@ -676,6 +676,43 @@ GAP_EXPIRY_BARS = 48
 # monitoring=unavailable (state overlay preserved).
 RECOMPUTE_TOL = 1e-9
 
+# ---------------------------------------------------------------------------
+# Headless-service transition hooks (append-only).
+#
+# A process-local subscriber list for lifecycle transitions. The service
+# registers a listener that appends to its SSE ring buffer; the watcher
+# itself never knows about HTTP. Hooks fire ONLY at existing transition
+# points (emission of a new row, terminal writes and monitoring flips in
+# eval_bar._write) — no lifecycle logic is changed. A raising listener
+# never breaks evaluation.
+# ---------------------------------------------------------------------------
+
+_TRANSITION_LISTENERS = []
+
+
+def register_transition_listener(fn):
+    """Subscribe fn(kind, payload) to lifecycle transitions. Idempotent."""
+    if fn not in _TRANSITION_LISTENERS:
+        _TRANSITION_LISTENERS.append(fn)
+    return fn
+
+
+def unregister_transition_listener(fn):
+    """Remove a previously registered transition listener."""
+    try:
+        _TRANSITION_LISTENERS.remove(fn)
+    except ValueError:
+        pass
+
+
+def _notify_transition(kind, payload):
+    for fn in list(_TRANSITION_LISTENERS):
+        try:
+            fn(kind, dict(payload))
+        except Exception:
+            continue
+
+
 # Per-(coin, rule) emission cooldowns (T1 24h, CUSUM 12h): suppress
 # duplicate alerts, not independence claims.
 EMIT_COOLDOWN_S = {T1_RULE_ID: 86400, CUSUM_RULE_ID: 43200}
@@ -807,6 +844,12 @@ def emit_setup(conn, setup):
         _log_event(conn, "emission", row["coin"],
                    f"{row['id']} emitted ({row['direction']} "
                    f"via {row['rule_id']})")
+        # Append-only hook: a genuinely new row is a transition. Dedupe /
+        # cooldown suppressions return above with no event.
+        _notify_transition("setup.emitted", {
+            "setup_id": row["id"], "rule_id": row["rule_id"],
+            "coin": row["coin"], "direction": row["direction"],
+            "src_bar_ts": row["src_bar_ts"]})
     return row["id"]
 
 
@@ -879,6 +922,22 @@ def eval_bar(conn, setup_id, bar, ctx):
         elif state in ("expired_time", "expired_gap"):
             _log_event(conn, "expiry", srow["coin"],
                        f"{setup_id} expired ({state}): {note}")
+        # Append-only SSE hooks (headless service): terminal transitions
+        # and monitoring flips only. Steady-state live bars (same state,
+        # same monitoring) emit nothing. No journal writes here — the
+        # journal rows above are untouched, never duplicated.
+        base = {"setup_id": setup_id, "coin": srow["coin"],
+                "state": state, "monitoring": monitoring, "bar_ts": bar_ts}
+        if monitoring != srow["monitoring"]:
+            _notify_transition(
+                "monitoring.unavailable" if monitoring == "unavailable"
+                else "monitoring.ok", dict(base))
+        if state == "invalidated":
+            _notify_transition("setup.invalidated", dict(base))
+        elif state in ("expired_time", "expired_gap"):
+            _notify_transition("setup.expired", dict(base))
+        elif state in ("resolved_stop", "resolved_target"):
+            _notify_transition("setup.resolved", dict(base))
 
     # 1. Gap/stale -> unavailable overlay; 48 consecutive -> expired_gap.
     stale = bool(ctx.get("missing")) or bar is None
