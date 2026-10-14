@@ -58,6 +58,8 @@ Only after the final branch review is clean.
 
 ### Task 2: Rewire frontend + conformance
 
+Prerequisite: service Task 6 converged the real contract on the mock/dashboard shapes — the switch below is config-only as originally intended. Known edge: `tradeplan.setup_id` may be `null` when a pre-cut plan has no watcher row; the client must type it `string | null` and render accordingly (never crash, never invent).
+
 **Files:**
 - Modify: `app/src/api/client.ts` (baseUrl/token source), `app/dev/*` (mock role docs only)
 - Test: `app/tests/test_conformance.test.ts` (new; runs fixture suite against real service)
@@ -74,8 +76,11 @@ Only after the final branch review is clean.
 test("real service conforms", async () => {
   const c = createClient({ baseUrl: REAL_URL, token: REAL_TOKEN });
   expect((await c.snapshot()).setups).toEqual(fixtureSnapshot().setups);
+  expect_nullable_ok((await c.tradeplan("tp-x")).setup_id); // string | null tolerated
 });
 ```
+
+The test asserts differential parity against the mock-served fixture snapshot (same assertions, both servers); it fails while the client still points at the mock only if defaults are asserted too — pin `baseUrl` default to the real origin in the same test.
 
 plus: `grep -r "dev/mock_service" app/src --include=*.ts*` empty (import-boundary assertion in the test file header comment, enforced by eslint no-restricted-imports).
 
