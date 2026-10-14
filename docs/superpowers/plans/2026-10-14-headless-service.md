@@ -248,9 +248,59 @@ git add proto/service.py proto/daemon.py altradar.service.example tests/test_ser
 git commit -m "feat(service): embed daemon loop with single-scanner guarantee"
 ```
 
+### Task 6: Dashboard read model (drop-in parity with the mock contract)
+
+**Files:**
+- Modify: `proto/service.py` (append read-model builders; reshape existing route data objects)
+- Test: `tests/test_service_dashboard.py` (new; differential assertions runnable against mock AND real)
+
+**Interfaces:**
+- Consumes: Tasks 1–5 (envelope, auth, pagination, SSE, store/journal helpers); `app/dev/mock_service.py` shapes as the oracle (read-only reference, never imported).
+- Produces (converged contract — the mock/dashboard shapes win; sparse shapes are replaced, with test updates justified by this reconciliation):
+  - `GET /snapshot` data: `{ts, data_as_of, snapshot_event_id: str, eligible_count, evaluated_count, active_setups: [...], comparison_24h | null, market_overview: [...], movers, supported_timeframes, unavailable: []}` (replaces the counts-object `setups` key; counts remain derivable as `len(active_setups)`)
+  - `GET /setups`: `{setups: [...], next_cursor: str | null}` with opaque string cursors (replaces integer-offset cursor)
+  - `GET /setup/:id`: watcher row PLUS `inputs/criteria/analysis` (rule criteria from trigger definitions + availability) and `tradeplan_id`
+  - `GET /bars`: `{bars: [{ts,open,high,low,close,volume,closed}], closed_only: true, count, data_as_of, unavailable}` (key rename from o/h/l/c/vol; old keys dropped)
+  - `GET /metrics`: `{coin, ts, rsi, macd, ema50, ema200, volume_pct, unavailable, data_as_of}` (adds coin/ts; renames macd_hist→macd, vol_quote→volume_pct)
+  - `GET /tradeplan/:id`: `{id: "tp-…", setup_id, entry_zone: {low, high}, reference_notional_usdt: 100.0, …}` (string tp id; no leverage key — unchanged rule)
+  - Setup states keep `active/invalidated/expired/resolved` (no `emitted` state; emission is the create event, not a state)
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_dashboard_shapes():
+    snap = get("/snapshot")["data"]
+    assert isinstance(snap["active_setups"], list) and "data_as_of" in snap
+    page = get("/setups?limit=2")
+    assert isinstance(page["data"]["next_cursor"], str)
+    assert get("/bars?coin=X&tf=5m")["data"]["bars"][0].keys() >= {"open", "high", "low", "close", "volume", "closed"}
+```
+
+plus: differential run of the same assertions against the mock (documents parity, not run in `run_all.py` by default).
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python3 tests/test_service_dashboard.py`
+Expected: FAIL (counts-object `setups`, missing keys).
+
+- [ ] **Step 3: Implement the read model in `proto/service.py`**
+
+Reuse existing helpers (store reads, `detail_metrics`, `reference_plan`, rule criteria from trigger definitions); update the Task-2 tests that pinned sparse shapes, with each change justified in the commit message as contract reconciliation (spec authority: frontend spec §3 line 48 drop-in promise).
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python3 tests/test_service_dashboard.py`, then full `run_all.py` — ALL SUITES PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add proto/service.py tests/test_service_dashboard.py tests/test_service_routes.py
+git commit -m "feat(service): dashboard read model matching the mock contract"
+```
+
 ## Self-Review
 
-- Spec coverage: §1 server/auth/origin/tokens → T1; routes/envelope/pagination/codes/indicators → T2; events/reconcile/resync → T3; commands → T4; embedding/lockfile/shutdown → T5; ready split → T1+T2 (`/readyz`); frontend/packaging/integration-matrix items belong to follow-up plans (frontend plan, Tauri/packaging plan), each testable on its own.
+- Spec coverage: §1 server/auth/origin/tokens → T1; routes/envelope/pagination/codes/indicators → T2, reshaped to the dashboard contract in T6; events/reconcile/resync → T3; commands → T4; embedding/lockfile/shutdown → T5; ready split → T1+T2 (`/readyz`); frontend/packaging/integration-matrix items belong to follow-up plans (frontend plan, Tauri/packaging plan), each testable on its own.
 - Step scan: test steps pin names/assertions; code steps pin signatures/files; no TBD.
 - Type consistency: `serve/load_or_create_token`, envelope keys, `snapshot_event_id`, `JOURNAL_CAP` reuse, `meta` flag keys shared verbatim across tasks.
 - Review Focus: all five lines owned (auth matrix→T1; transition-only→T3; reconcile→T3; lockfile→T5; redaction→T1).
