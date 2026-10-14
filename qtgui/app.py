@@ -45,14 +45,14 @@ import time
 from types import SimpleNamespace
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QBrush, QKeySequence, QPainter, QPixmap, \
-    QShortcut, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QColor, QBrush, QIcon, QKeySequence, QPainter, \
+    QPen, QPixmap, QShortcut, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import QApplication, QButtonGroup, QCheckBox, \
     QComboBox, QDockWidget, QFileDialog, QFrame, QGridLayout, QGroupBox, \
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, \
-    QMainWindow, QPlainTextEdit, QPushButton, QSpinBox, QSplitter, \
-    QStatusBar, QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget, \
-    QTextEdit, QVBoxLayout, QWidget
+    QMainWindow, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter, \
+    QStatusBar, QStackedWidget, QStyledItemDelegate, QStyle, QTableWidget, \
+    QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget
 
 # --- reuse: worker layer + shared display constants (tkinter-free classes) --
 from gui.app import ACTIVITY, DIR_CHOICES, POLL_MS, SIGNAL_ANCHORS, \
@@ -66,7 +66,8 @@ from proto import report as report_mod
 from proto import watcher_feed as watcher_feed_mod
 from proto import store as store_mod
 from proto.watcher import CUSUM_RULE_ID, KILL_HORIZONS, N_GRID, T1_RULE_ID
-from proto.setup_copy import assert_clean, blocking_reason, summarize_setup
+from proto.setup_copy import assert_clean, badge_letters, blocking_reason, \
+    summarize_setup
 from proto.watcher_view import RESEARCH_BANNER, SILENCE_VALID, STATE_WORDS
 from proto.planner import MAX_LEVERAGE, reference_plan
 
@@ -99,6 +100,11 @@ RAIL_PAGES = (("scanner", "Scanner", "◉"), ("watchlist", "Watchlist", "★"),
 # In-app event ring buffer size (recent-logs lists, Q4 brief: max 50).
 EVENTS_MAX = 50
 
+# 3-region grid breakpoint: below this window width the right detail
+# dock collapses (the scanner page's in-page Detail group stays
+# reachable as the drawer fallback); at/above it the dock is shown.
+LAYOUT_NARROW_PX = 1100
+
 # Watcher setup dock columns (watcher UI Task 5): setup id + rule/coin/dir +
 # the STATE_WORDS verb verbatim + the entry/stop/tgt trio. Header text
 # matches the TUI watcher screen columns one-for-one (parity test pins
@@ -125,13 +131,16 @@ DASH_SORTS = ("Newest", "Expiry", "24h%")
 # Top Signals columns: one row per active setup. Deliberately NO tier or
 # score column (spec 2089540 removed them); direction rides a LONG/SHORT
 # pill, analysis is the 2-line rule-evidence copy, evidence names the
-# matched rule evidence, expiry is a countdown.
-DASH_TABLE_COLUMNS = ("coin", "price", "ch24", "analysis", "evidence",
-                      "dir", "expiry")
-DASH_TABLE_HEADINGS = ("COIN", "PRICE", "24H%", "ANALYSIS", "EVIDENCE",
-                       "DIR", "EXPIRY")
-DASH_TABLE_WIDTHS = {"coin": 90, "price": 90, "ch24": 70, "analysis": 320,
-                     "evidence": 220, "dir": 80, "expiry": 110}
+# matched rule evidence, trend is a sparkline over offline closes
+# (honest unavailable copy when short), expiry is a countdown, and the
+# trailing chevron column opens the detail dock.
+DASH_TABLE_COLUMNS = ("coin", "price", "ch24", "trend", "analysis",
+                      "evidence", "dir", "expiry", "chev")
+DASH_TABLE_HEADINGS = ("COIN", "PRICE", "24H", "TREND", "ANALYSIS",
+                       "EVIDENCE", "SIGNAL", "EXPIRES", "")
+DASH_TABLE_WIDTHS = {"coin": 90, "price": 90, "ch24": 70, "trend": 100,
+                     "analysis": 300, "evidence": 220, "dir": 90,
+                     "expiry": 110, "chev": 36}
 
 # The watcher geometry grid runs on 5-minute bars; a setup's expiry stamp
 # is src_bar_ts + N_bars * 300s (logged row values only, never inferred).
@@ -797,6 +806,96 @@ class _CellItem(QTableWidgetItem):
         return self.text().casefold() < str(other.text()).casefold()
 
 
+def _letter_badge_icon(letters):
+    """QIcon disc badge with 1-2 letters (proto/setup_copy.badge_letters).
+
+    Drawn at paint time from the coin symbol — no image assets, no
+    network. Letters come from badge_letters() so non-alpha symbols
+    still get an honest "?" badge, never a blank icon.
+    """
+    text = str(letters or "?")[:2] or "?"
+    size = 22
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    try:
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QBrush(QColor(_theme.BORDER)))
+        p.setPen(QPen(QColor(_theme.ACCENT), 1))
+        p.drawEllipse(1, 1, size - 2, size - 2)
+        p.setPen(QColor(_theme.TEXT))
+        font = p.font()
+        font.setPointSize(8)
+        font.setBold(True)
+        p.setFont(font)
+        p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, text)
+    finally:
+        p.end()
+    return QIcon(pm)
+
+
+class _TrendSparkDelegate(QStyledItemDelegate):
+    """Paints the TREND cell: sparkline from UserRole closes, else text.
+
+    Closes ride the item's UserRole (offline fixture/quote history set
+    at render time); None/short histories fall back to the item's own
+    honest "trend unavailable" text — points are never invented.
+    Selected rows keep the platform highlight behind the line.
+    """
+
+    def paint(self, painter, option, index):
+        try:
+            hist = index.data(Qt.ItemDataRole.UserRole)
+        except Exception:
+            hist = None
+        pts = sparkline_points(hist) if isinstance(hist, list) else []
+        if not pts:
+            super().paint(painter, option, index)
+            return
+        painter.save()
+        try:
+            if option.state & QStyle.State_Selected:
+                painter.fillRect(option.rect,
+                                 option.palette.highlight())
+                painter.setPen(QPen(QColor(
+                    option.palette.highlightedText().color()), 1.5))
+            else:
+                painter.fillRect(option.rect, QColor(_theme.SURFACE))
+                painter.setPen(QPen(QColor(_theme.ACCENT), 1.5))
+            pad = 4
+            w = max(1, option.rect.width() - 2 * pad)
+            h = max(1, option.rect.height() - 2 * pad)
+            x0, y0 = option.rect.x() + pad, option.rect.y() + pad
+            prev = None
+            for x, y in pts:
+                pt = (x0 + x * w, y0 + y * h)
+                if prev is not None:
+                    painter.drawLine(int(prev[0]), int(prev[1]),
+                                     int(pt[0]), int(pt[1]))
+                prev = pt
+        finally:
+            painter.restore()
+
+
+class _ChevronDelegate(QStyledItemDelegate):
+    """Paints the trailing chevron cell ("›", accent, centered)."""
+
+    def paint(self, painter, option, index):
+        painter.save()
+        try:
+            if option.state & QStyle.State_Selected:
+                painter.fillRect(option.rect,
+                                 option.palette.highlight())
+                painter.setPen(QColor(
+                    option.palette.highlightedText().color()))
+            else:
+                painter.setPen(QColor(_theme.TEXT_DIM))
+            painter.drawText(option.rect,
+                             Qt.AlignmentFlag.AlignCenter, "›")
+        finally:
+            painter.restore()
+
+
 class DetailChartWidget(QWidget):
     """Candlestick chart with EMA50/200 overlays + volume band (Task 6).
 
@@ -887,6 +986,171 @@ class DetailChartWidget(QWidget):
 
             poly(e50, _theme.ACCENT)
             poly(e200, _theme.INFO_FG)
+        finally:
+            p.end()
+
+
+# ---- KPI cards (rebuild Task 4: QPainter sparklines + coverage gauge) ----
+# Each card carries a sparkline over the last SPARKLINE_N 5-minute closes
+# (test/fixture seam: RadarWindow.dash_card_history maps card title ->
+# closes; the dock never fetches the venue itself). Histories shorter
+# than SPARKLINE_MIN_BARS render a flat unavailable state — points are
+# never invented. The Monitoring Coverage card additionally carries a
+# semicircular gauge over the snapshot's monitoring_coverage fraction
+# (None -> unavailable, never a guessed arc).
+SPARKLINE_N = 24
+SPARKLINE_MIN_BARS = 2
+SPARKLINE_UNAVAILABLE = "unavailable"
+
+
+def sparkline_points(history):
+    """Normalized [(x, y)] points in [0, 1]^2 from closes, or [].
+
+    [] when history is None, shorter than SPARKLINE_MIN_BARS, or has
+    no finite values — callers render the flat unavailable state.
+    A flat series maps to the vertical midline (no fake movement).
+    """
+    try:
+        vals = [float(v) for v in (history or [])]
+    except (TypeError, ValueError):
+        return []
+    vals = [v for v in vals if math.isfinite(v)]
+    if len(vals) < SPARKLINE_MIN_BARS:
+        return []
+    if len(vals) > SPARKLINE_N:
+        vals = vals[-SPARKLINE_N:]
+    lo, hi = min(vals), max(vals)
+    span = (hi - lo) or 1.0
+    n = len(vals)
+    if n < 2:
+        return []
+    return [(i / (n - 1),
+             0.5 if hi == lo else 1.0 - (v - lo) / span)
+            for i, v in enumerate(vals)]
+
+
+class SparklineWidget(QWidget):
+    """Single-polyline sparkline (pure QPainter, no data fetching).
+
+    set_history() takes closes oldest-first (or None); short/empty
+    histories set the unavailable flag and paint the honest flat
+    "unavailable" copy — never invented points.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._history = []
+        self.unavailable = True
+        self.setMinimumHeight(36)
+        self.setMinimumWidth(80)
+
+    def set_history(self, history):
+        try:
+            vals = [float(v) for v in (history or [])]
+        except (TypeError, ValueError):
+            vals = []
+        self._history = [v for v in vals if math.isfinite(v)]
+        self.unavailable = not bool(sparkline_points(self._history))
+        self.update()
+
+    def points(self):
+        """Normalized points, or [] when unavailable (test seam)."""
+        if self.unavailable:
+            return []
+        return sparkline_points(self._history)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.fillRect(self.rect(), QColor(_theme.SURFACE))
+            pad = 4
+            w, h = max(1, self.width()), max(1, self.height())
+            pts = self.points()
+            if not pts:
+                p.setPen(QPen(QColor(_theme.TEXT_DIM),
+                             1, Qt.PenStyle.DashLine))
+                mid = h // 2
+                p.drawLine(pad, mid, w - pad, mid)
+                p.setPen(QColor(_theme.TEXT_DIM))
+                p.drawText(self.rect(),
+                           Qt.AlignmentFlag.AlignCenter,
+                           SPARKLINE_UNAVAILABLE)
+                return
+            pw, ph = max(1, w - 2 * pad), max(1, h - 2 * pad)
+            xy = [(pad + x * pw, pad + y * ph) for x, y in pts]
+            p.setPen(QPen(QColor(_theme.ACCENT), 1.5))
+            prev = None
+            for pt in xy:
+                if prev is not None:
+                    p.drawLine(int(prev[0]), int(prev[1]),
+                               int(pt[0]), int(pt[1]))
+                prev = pt
+            last = xy[-1]
+            p.setBrush(QBrush(QColor(_theme.ACCENT)))
+            p.setPen(QPen(QColor(_theme.ACCENT), 1))
+            p.drawEllipse(int(last[0]) - 2, int(last[1]) - 2, 4, 4)
+        finally:
+            p.end()
+
+
+class CoverageGaugeWidget(QWidget):
+    """Semicircular coverage gauge (pure QPainter, no data fetching).
+
+    set_value() takes the monitoring_coverage fraction (or None);
+    None/non-finite sets the unavailable flag and paints the honest
+    "unavailable" copy — never a guessed arc.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.value = None
+        self.unavailable = True
+        self.setMinimumHeight(64)
+        self.setMinimumWidth(120)
+
+    def set_value(self, frac):
+        try:
+            v = None if frac is None else float(frac)
+        except (TypeError, ValueError):
+            v = None
+        if v is None or not math.isfinite(v):
+            self.value = None
+            self.unavailable = True
+        else:
+            self.value = max(0.0, min(1.0, v))
+            self.unavailable = False
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.fillRect(self.rect(), QColor(_theme.SURFACE))
+            w, h = max(1, self.width()), max(1, self.height())
+            pad = 8
+            dial = min(w - 2 * pad, 2 * (h - 2 * pad - 12))
+            dial = max(24, dial)
+            x0 = (w - dial) // 2
+            y0 = h - pad - 12 - dial // 2
+            rect = (x0, y0, dial, dial)
+            p.setPen(QPen(QColor(_theme.BORDER), 6,
+                         Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawArc(*rect, 180 * 16, 180 * 16)
+            if self.unavailable or self.value is None:
+                p.setPen(QColor(_theme.TEXT_DIM))
+                p.drawText(self.rect(),
+                           Qt.AlignmentFlag.AlignCenter,
+                           SPARKLINE_UNAVAILABLE)
+                return
+            p.setPen(QPen(QColor(_theme.ACCENT), 6,
+                         Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawArc(*rect, 180 * 16, -int(round(self.value * 180)) * 16)
+            p.setPen(QColor(_theme.TEXT))
+            p.drawText(self.rect(),
+                       Qt.AlignmentFlag.AlignHCenter
+                       | Qt.AlignmentFlag.AlignBottom,
+                       f"{self.value * 100.0:.1f}%")
         finally:
             p.end()
 
@@ -1247,8 +1511,29 @@ class RadarWindow(QMainWindow):
         self.dash_sort = "Newest"
         self.dash_market_data = {}
         self.dash_cards_pair = (None, None)
+        # KPI cards (rebuild Task 4): per-title 5m-close histories feeding
+        # the card sparklines (test/fixture seam; the dock never fetches
+        # the venue). Empty by default -> flat unavailable sparklines.
+        self.dash_card_history = {}
+        # Top Signals table (rebuild Task 5): per-setup-id close histories
+        # feeding the TREND sparkline delegate (test/fixture seam; the
+        # dock never fetches the venue) + the selected setup id (selection
+        # is by setup id, never row index, so it survives refresh
+        # reorders — same rule as the shared watcher view-model).
+        self.dash_trend_data = {}
+        self.dash_selected_id = None
         self.dash_rows = []
         self.dash_asof = ""
+        # Market Overview (rebuild Task 6): per-coin close histories
+        # feeding the BTC/ETH row sparklines (test/fixture seam; the
+        # grid never fetches the venue). Empty by default -> flat
+        # unavailable sparklines, never invented points.
+        self.overview_history = {}
+        self.overview_rows = {}
+        self.overview_box = None
+        self._right_scroll = None
+        self._grid_center = None
+        self._grid_right = None
         # Dashboard pages (Task 7): bottom-row + six-page caches. Pause
         # and disable write through the watcher_feed writers so the pages
         # read the same meta flags as the panels; display prefs persist
@@ -1281,6 +1566,7 @@ class RadarWindow(QMainWindow):
         self._refilling = False         # blocks selection signals during fill
         self._hdr_section = None        # header-sort state (fresh-click order)
         self.events = []                # (ts, level, text) ring buffer, max 50
+        self._narrow_mode = False     # 3-region grid: right dock collapsed
 
         self._jobs = queue.Queue()      # UI -> worker
         self._results = queue.Queue()   # worker -> UI
@@ -1292,6 +1578,9 @@ class RadarWindow(QMainWindow):
         self._build_dashboard_dock()
         self._build_detail_dock()
         self._build_dashboard_pages_dock()
+        # Task 6: docks live in the grid (center/right panes), never as
+        # floating right-area panels crowding the central width.
+        self._reparent_docks_to_grid()
         self._build_status()
         shortcut = QShortcut(QKeySequence("Ctrl+Q"), self)
         shortcut.activated.connect(self._on_close)
@@ -1364,6 +1653,8 @@ class RadarWindow(QMainWindow):
         self._central_layout.setSpacing(4)
 
         bar = QWidget()
+        bar.setObjectName("header")
+        bar.setFixedHeight(50)
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
@@ -1391,18 +1682,33 @@ class RadarWindow(QMainWindow):
         self.lbl_scan_utc = QLabel("Scan: --:--:--")
         self.lbl_scan_utc.setObjectName("headerStats")
         lay.addWidget(self.lbl_scan_utc)
+        # SCANNING dot + elapsed: driven ONLY by real worker/scan state
+        # (see _render_topbar) — never a hardcoded or invented timer.
+        self.lbl_scan_dot = QLabel("● IDLE")
+        self.lbl_scan_dot.setObjectName("scanDot")
+        self.lbl_scan_dot.setStyleSheet(f"color: {_theme.TEXT_DIM};")
+        lay.addWidget(self.lbl_scan_dot)
+        self.lbl_scan_elapsed = QLabel("no scan yet")
+        self.lbl_scan_elapsed.setObjectName("headerStats")
+        lay.addWidget(self.lbl_scan_elapsed)
         self.lbl_countdown = QLabel("Next scan: --:--")
         self.lbl_countdown.setObjectName("headerStats")
         lay.addWidget(self.lbl_countdown)
         self.lbl_venue = QLabel("MEXC –")
         self.lbl_venue.setObjectName("badgeVenue")
         lay.addWidget(self.lbl_venue)
+        # UTC clock (real UTC, refreshed on every tick/render).
+        self.lbl_clock = QLabel("--:--:-- UTC")
+        self.lbl_clock.setObjectName("headerStats")
+        lay.addWidget(self.lbl_clock)
         self.btn_gear = QPushButton("⚙")
         self.btn_gear.setFixedWidth(28)
         self.btn_gear.setToolTip("Open Settings")
         self.btn_gear.clicked.connect(lambda: self._switch_page("settings"))
         lay.addWidget(self.btn_gear)
         self._central_layout.addWidget(bar)
+        # 3-region grid anchor: the fixed-height top strip (50px).
+        self.header = bar
 
     # --------------------------------------------------------------- rail
     def _build_pages(self):
@@ -1416,7 +1722,8 @@ class RadarWindow(QMainWindow):
         # ---- narrow icon rail: glyph + tiny label, exclusive selection ----
         rail = QWidget()
         rail.setObjectName("rail")
-        rail.setFixedWidth(88)
+        rail.setFixedWidth(145)
+        self.rail = rail
         rail_lay = QVBoxLayout(rail)
         rail_lay.setContentsMargins(3, 3, 3, 3)
         rail_lay.setSpacing(2)
@@ -1436,6 +1743,25 @@ class RadarWindow(QMainWindow):
             self.rail_buttons[key] = btn
             rail_lay.addWidget(btn)
         rail_lay.addStretch(1)
+        # Bottom status blocks: API + venue from REAL connection state
+        # (mexc_ok / self.venue, same sources as the top-bar pill), the
+        # account block states the read-only invariant (no keys held) —
+        # none of them ever hardcodes a "Connected" claim.
+        self.lbl_rail_api = QLabel("API: MEXC –")
+        self.lbl_rail_venue = QLabel("venue: Bybit –")
+        self.lbl_rail_account = QLabel("account: read-only (no keys)")
+        for block in (self.lbl_rail_api, self.lbl_rail_venue,
+                      self.lbl_rail_account):
+            block.setObjectName("railStatus")
+            block.setWordWrap(True)
+            block.setFont(_theme.ui_font(_theme.BASE_POINT_SIZE - 1))
+            block.setStyleSheet(f"color: {_theme.TEXT_DIM};")
+            rail_lay.addWidget(block)
+        # Selected-page green edge (ACC_POS accent). Rail-local override
+        # so qtgui/theme.py stays untouched.
+        rail.setStyleSheet(
+            "#railButton:checked { border-left: 2px solid %s; "
+            "font-weight: 700; }" % _theme.ACC_POS)
         row_lay.addWidget(rail)
 
         # ---- stacked pages ----
@@ -1483,6 +1809,75 @@ class RadarWindow(QMainWindow):
             if i == idx:
                 return key
         return "scanner"
+
+    # --------------------------------------------- 3-region responsive grid
+    def resizeEvent(self, event):
+        """Collapse/restore the right detail dock across the breakpoint."""
+        super().resizeEvent(event)
+        try:
+            self._update_narrow_mode()
+        except Exception:
+            pass
+
+    def _update_narrow_mode(self):
+        """Hide the right dock below LAYOUT_NARROW_PX, show it above."""
+        dock = getattr(self, "detail_dock", None)
+        if dock is None:
+            return
+        narrow = self.width() < LAYOUT_NARROW_PX
+        self._narrow_mode = narrow
+        if narrow:
+            dock.hide()
+        else:
+            dock.show()
+
+    def drawer_available(self):
+        """True while the right panel is collapsed to its drawer fallback.
+
+        The fallback is the scanner page's in-page Detail group, which
+        stays visible and reachable in narrow mode — collapsing the dock
+        never strands the detail content.
+        """
+        return bool(getattr(self, "_narrow_mode", False))
+
+    def _reparent_docks_to_grid(self):
+        """Task 6: the right-area docks live IN the grid, not around it.
+
+        The watcher/dashboard/pages shells join the grid's center pane
+        and the coin-detail shell joins the right pane (under the Market
+        Overview card). Floating right docks used to crowd the central
+        width and force the test-only dock-hiding isolation; embedded,
+        the 65:35 splitter split holds unisolated. Shells keep their
+        object names, children, and attributes (isinstance + child
+        searches keep working); floating/close features are off so a
+        panel can never strand itself. Never raises.
+        """
+        try:
+            center = getattr(self, "_grid_center", None)
+            right = getattr(self, "_grid_right", None)
+            if center is None or right is None:
+                return
+            for dock in (getattr(self, "dashboard_dock", None),
+                         getattr(self, "watcher_dock", None),
+                         getattr(self, "dash_pages_dock", None)):
+                if dock is None:
+                    continue
+                self.removeDockWidget(dock)
+                dock.setFloating(False)
+                dock.setFeatures(
+                    QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+                center.layout().addWidget(dock)
+                dock.show()
+            dock = getattr(self, "detail_dock", None)
+            if dock is not None:
+                self.removeDockWidget(dock)
+                dock.setFloating(False)
+                dock.setFeatures(
+                    QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+                right.layout().addWidget(dock)
+                dock.show()
+        except Exception:
+            pass
 
     # ----------------------------------------------------------- toolbar
     def _group(self, parent_lay, text, stretch=0):
@@ -1602,11 +1997,55 @@ class RadarWindow(QMainWindow):
         lv.addWidget(vet_box)
         vet_box.hide()
 
-        # ---- right: detail pane + outcomes dock ----
+        # ---- right: market overview + detail pane + outcomes ----
+        # Task 6: the grid's right column. The Market Overview card (BTC
+        # + ETH rows with sparklines; NO TOTAL row — the venue feed has
+        # no total-market-cap source) heads the column; quotes ride the
+        # dash_market_data seam (offline fixtures in tests, swept live
+        # quotes in app paths), sparkline closes ride overview_history.
         right = QWidget()
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
-        rv.setSpacing(0)
+        rv.setSpacing(4)
+
+        ovw_box = QGroupBox("Market Overview")
+        self.overview_box = ovw_box
+        ov = QVBoxLayout(ovw_box)
+        ov.setContentsMargins(6, 6, 6, 6)
+        ov.setSpacing(2)
+        self.overview_rows = {}
+        for coin in ("BTC", "ETH"):
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            badge = QLabel(badge_letters(coin))
+            badge.setObjectName("badgeDirNeutral")
+            row.addWidget(badge)
+            sym = QLabel(coin)
+            sym.setObjectName("tileValue")
+            sym.setFont(_theme.mono_font(_theme.DETAIL_POINT_SIZE + 1,
+                                         bold=True))
+            row.addWidget(sym)
+            name = QLabel(coin)
+            name.setObjectName("headerStats")
+            row.addWidget(name)
+            row.addStretch(1)
+            price = QLabel("—")
+            price.setObjectName("tileValue")
+            price.setFont(_theme.mono_font(_theme.DETAIL_POINT_SIZE + 1,
+                                           bold=True))
+            row.addWidget(price)
+            chg = QLabel("")
+            chg.setFont(_theme.mono_font(_theme.DETAIL_POINT_SIZE))
+            row.addWidget(chg)
+            spark = SparklineWidget()
+            spark.setFixedWidth(120)
+            spark.setFixedHeight(28)
+            row.addWidget(spark)
+            ov.addLayout(row)
+            self.overview_rows[coin] = {"badge": badge, "sym": sym,
+                                        "name": name, "price": price,
+                                        "chg": chg, "spark": spark}
+        rv.addWidget(ovw_box)
 
         detail_outcomes = QSplitter(Qt.Orientation.Vertical)
         detail_outcomes.setChildrenCollapsible(False)
@@ -1733,12 +2172,32 @@ class RadarWindow(QMainWindow):
         detail_outcomes.setSizes([570, 190])
         rv.addWidget(detail_outcomes, 1)
 
-        splitter.addWidget(left)
-        splitter.addWidget(right)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        splitter.setSizes([780, 560])
+        # Task 6: the grid panes scroll instead of clipping — the
+        # reparented docks (below) make both columns taller than the
+        # viewport. QScrollArea keeps every region reachable with no
+        # horizontal page overflow; stretch stays 65:35 on the panes.
+        left_scroll = QScrollArea()
+        left_scroll.setObjectName("centerScroll")
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        left_scroll.setWidget(left)
+        right_scroll = QScrollArea()
+        right_scroll.setObjectName("rightScroll")
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        right_scroll.setWidget(right)
+        splitter.addWidget(left_scroll)
+        splitter.addWidget(right_scroll)
+        self._right_scroll = right_scroll
+        self._grid_center = left
+        self._grid_right = right
+        # 3-region grid split: center ~65% / right ~35% of the flexible
+        # area (stretch only — no absolute positioning, user-adjustable).
+        splitter.setStretchFactor(0, 65)
+        splitter.setStretchFactor(1, 35)
+        splitter.setSizes([845, 455])
         parent_lay.addWidget(splitter, 1)
+        self.body_splitter = splitter
         self._reset_detail()
 
     def _tile(self, parent_lay, title):
@@ -2137,6 +2596,8 @@ class RadarWindow(QMainWindow):
         cards.setSpacing(4)
         self.dash_card_value = []
         self.dash_card_sub = []
+        self.dash_card_spark = []
+        self.dash_coverage_gauge = None
         for title, _value, _sub in format_dashboard_cards(None, None):
             frame = QFrame()
             frame.setObjectName("tile")
@@ -2154,6 +2615,13 @@ class RadarWindow(QMainWindow):
             s.setObjectName("headerStats")
             s.setWordWrap(True)
             fl.addWidget(s)
+            spark = SparklineWidget()
+            fl.addWidget(spark)
+            self.dash_card_spark.append(spark)
+            if title == "Monitoring Coverage":
+                gauge = CoverageGaugeWidget()
+                fl.addWidget(gauge)
+                self.dash_coverage_gauge = gauge
             cards.addWidget(frame)
             self.dash_card_value.append(v)
             self.dash_card_sub.append(s)
@@ -2189,6 +2657,12 @@ class RadarWindow(QMainWindow):
                                                     DASH_TABLE_HEADINGS)),
                                            DASH_TABLE_WIDTHS)
         self.dash_table.setMinimumHeight(120)
+        self.dash_table.setItemDelegateForColumn(
+            DASH_TABLE_COLUMNS.index("trend"),
+            _TrendSparkDelegate(self.dash_table))
+        self.dash_table.setItemDelegateForColumn(
+            DASH_TABLE_COLUMNS.index("chev"),
+            _ChevronDelegate(self.dash_table))
         self.dash_table.itemSelectionChanged.connect(self._on_dash_select)
         sv.addWidget(self.dash_table)
         lay.addWidget(sig_box, 1)
@@ -2256,6 +2730,109 @@ class RadarWindow(QMainWindow):
         return "\n".join(f"{t}\n{v}\n{s}"
                          for t, v, s in self.dashboard_cards())
 
+    def set_card_history(self, mapping):
+        """Per-title 5m-close histories for the card sparklines.
+
+        Pure seam (fixtures/tests only — no fetching): unknown titles
+        are ignored, and missing titles keep the flat unavailable
+        sparkline. Never raises.
+        """
+        try:
+            self.dash_card_history = dict(mapping or {})
+        except Exception:
+            self.dash_card_history = {}
+        try:
+            self._render_dashboard()
+        except Exception:
+            pass
+
+    def set_trend_history(self, mapping):
+        """Per-setup-id close histories for the TREND sparkline delegate.
+
+        Pure seam (fixtures/tests only — no fetching): unknown ids are
+        ignored, and missing ids keep the honest unavailable trend cell.
+        Never raises.
+        """
+        try:
+            self.dash_trend_data = dict(mapping or {})
+        except Exception:
+            self.dash_trend_data = {}
+        try:
+            self._render_dashboard()
+        except Exception:
+            pass
+
+    def set_overview_history(self, mapping):
+        """Per-coin close histories for the Market Overview sparklines.
+
+        Pure seam (fixtures/tests only — no fetching): unknown coins
+        are ignored, and missing coins keep the flat unavailable
+        sparkline. Never raises.
+        """
+        try:
+            self.overview_history = dict(mapping or {})
+        except Exception:
+            self.overview_history = {}
+        try:
+            self._render_overview()
+        except Exception:
+            pass
+
+    def _render_overview(self):
+        """Market Overview BTC/ETH rows from dash_market_data (no I/O).
+
+        Missing quotes render "—"/unavailable copy, never an invented
+        price. There is deliberately NO total row: the venue feed has
+        no total-market-cap source (binding spec 2089540). Never
+        raises.
+        """
+        try:
+            rows = getattr(self, "overview_rows", None) or {}
+            for coin in ("BTC", "ETH"):
+                w = rows.get(coin)
+                if not w:
+                    continue
+                quote = (self.dash_market_data or {}).get(coin) or {}
+                name = quote.get("name") or coin
+                price = quote.get("price")
+                chg = quote.get("change_24h_pct")
+                price_text = (f"{price:.8g}" if price is not None
+                              else "—")
+                chg_text = (f"{chg:+.1f}%" if chg is not None
+                            else "unavailable")
+                for text in (coin, str(name), price_text, chg_text):
+                    assert_clean(text)
+                w["name"].setText(str(name))
+                w["price"].setText(price_text)
+                w["chg"].setText(chg_text)
+                if chg is not None:
+                    color = (_theme.ACC_POS if chg >= 0
+                             else _theme.ACC_NEG)
+                    w["chg"].setStyleSheet(f"color: {color};")
+                hist = (self.overview_history or {}).get(coin)
+                w["spark"].set_history(
+                    hist if isinstance(hist, list) else None)
+        except Exception:
+            pass
+
+    def overview_text(self):
+        """Market Overview rows as text (test seam, all assert_clean)."""
+        bits = ["Market Overview"]
+        rows = getattr(self, "overview_rows", None) or {}
+        for coin in ("BTC", "ETH"):
+            w = rows.get(coin) or {}
+            for key in ("sym", "name", "price", "chg"):
+                lbl = w.get(key)
+                if lbl is not None:
+                    bits.append(lbl.text())
+            spark = w.get("spark")
+            bits.append("sparkline" if spark is not None
+                        and not spark.unavailable
+                        else "sparkline unavailable")
+        text = "\n".join(bits)
+        assert_clean(text)
+        return text
+
     def dashboard_text(self):
         """Full dashboard page text (banner + cards + table + stamp)."""
         bits = [self.dash_banner.text(), self.dashboard_cards_text()]
@@ -2305,10 +2882,23 @@ class RadarWindow(QMainWindow):
         """Render cached cards + filtered rows (no I/O, never raises)."""
         try:
             cards = format_dashboard_cards(*self.dash_cards_pair)
-            for i, (_title, value, sub) in enumerate(cards):
+            for i, (title, value, sub) in enumerate(cards):
                 if i < len(self.dash_card_value):
                     self.dash_card_value[i].setText(value)
                     self.dash_card_sub[i].setText(sub)
+                if i < len(getattr(self, "dash_card_spark", [])):
+                    try:
+                        hist = (self.dash_card_history or {}).get(title)
+                    except Exception:
+                        hist = None
+                    self.dash_card_spark[i].set_history(hist)
+            try:
+                latest = (self.dash_cards_pair or (None, None))[0] or {}
+                cov = latest.get("monitoring_coverage")
+            except Exception:
+                cov = None
+            if getattr(self, "dash_coverage_gauge", None) is not None:
+                self.dash_coverage_gauge.set_value(cov)
             rows = filter_dashboard_rows(
                 self.dash_rows, dir=self.dash_dir,
                 market=self.dash_market, horizon=self.dash_horizon,
@@ -2330,22 +2920,40 @@ class RadarWindow(QMainWindow):
                     analysis = row["analysis"]
                     if getattr(self, "dash_compact", False):
                         analysis = analysis.split("\n")[0]
+                    try:
+                        trend_hist = (self.dash_trend_data or {}).get(
+                            row["id"])
+                    except Exception:
+                        trend_hist = None
+                    trend_pts = (sparkline_points(trend_hist)
+                                 if isinstance(trend_hist, list) else [])
+                    if trend_pts:
+                        trend_text = f"{len(trend_pts)} closes"
+                    else:
+                        trend_text = "trend unavailable"
+                        trend_hist = None
                     cells = (
                         (f"{row['coin']}\n{row['name']}", None),
                         (price, row["price"]),
                         (chg, row["change_24h_pct"]),
+                        (trend_text, None),
                         (analysis, None),
                         (row["evidence"], None),
                         (pill, None),
                         (row["expiry"], row["expiry_ts"]),
+                        ("›", None),
                     )
                     dir_fg = _theme.direction_foreground(row["direction"])
                     for c, (text, number) in enumerate(cells):
+                        # Fail-closed: every rendered cell string passes
+                        # the banned-wording guard (binding: no tier,
+                        # score, or probability copy on this surface).
+                        assert_clean(text)
                         anchor = "w"
                         if DASH_TABLE_COLUMNS[c] in ("price", "ch24",
                                                      "expiry"):
                             anchor = "e"
-                        elif DASH_TABLE_COLUMNS[c] == "dir":
+                        elif DASH_TABLE_COLUMNS[c] in ("dir", "chev"):
                             anchor = "center"
                         bg = None
                         fg = None
@@ -2360,6 +2968,12 @@ class RadarWindow(QMainWindow):
                         if c == 0:
                             item.setData(Qt.ItemDataRole.UserRole,
                                          row["id"])
+                            item.setIcon(_letter_badge_icon(
+                                badge_letters(row["coin"])))
+                        if (DASH_TABLE_COLUMNS[c] == "trend"
+                                and trend_hist is not None):
+                            item.setData(Qt.ItemDataRole.UserRole,
+                                         list(trend_hist))
                         table.setItem(r, c, item)
             finally:
                 self._refilling = False
@@ -2374,6 +2988,12 @@ class RadarWindow(QMainWindow):
         try:
             self.refresh_dashboard_pages(now=getattr(self, "_dash_last_now",
                                                      None))
+        except Exception:
+            pass
+        # Market Overview (Task 6) rides the same swept-quote caches —
+        # no new fetching, honest unavailable states only.
+        try:
+            self._render_overview()
         except Exception:
             pass
 
@@ -3142,6 +3762,37 @@ class RadarWindow(QMainWindow):
         self.detail_sub.setWordWrap(True)
         lay.addWidget(self.detail_sub)
 
+        # Task 6 header: letter badge, symbol + name, live price, 24h%,
+        # direction pill, sparkline. Quotes come from dash_market_data
+        # (swept live values, fixtures in tests); missing quotes render
+        # "—", never an invented price.
+        hrow = QHBoxLayout()
+        hrow.setSpacing(6)
+        self.detail_badge = QLabel("—")
+        self.detail_badge.setObjectName("badgeDirNeutral")
+        hrow.addWidget(self.detail_badge)
+        self.detail_cname = QLabel("—")
+        self.detail_cname.setObjectName("detailTitle")
+        self.detail_cname.setFont(_theme.ui_font(_theme.BASE_POINT_SIZE + 1,
+                                                 bold=True))
+        hrow.addWidget(self.detail_cname)
+        hrow.addStretch(1)
+        self.detail_px = QLabel("—")
+        self.detail_px.setObjectName("tileValue")
+        self.detail_px.setFont(_theme.mono_font(_theme.DETAIL_POINT_SIZE + 1,
+                                                bold=True))
+        hrow.addWidget(self.detail_px)
+        self.detail_chg = QLabel("")
+        self.detail_chg.setFont(_theme.mono_font(_theme.DETAIL_POINT_SIZE))
+        hrow.addWidget(self.detail_chg)
+        self.detail_pill = QLabel("")
+        self.detail_pill.setObjectName("badgeDirNeutral")
+        hrow.addWidget(self.detail_pill)
+        lay.addLayout(hrow)
+        self.detail_spark = SparklineWidget()
+        self.detail_spark.setFixedHeight(28)
+        lay.addWidget(self.detail_spark)
+
         self.detail_tf_tabs = QTabWidget()
         self.detail_charts = {}
         for tf in DETAIL_TIMEFRAMES:
@@ -3173,6 +3824,12 @@ class RadarWindow(QMainWindow):
         self.detail_low_tabs.addTab(self.detail_plan, "Trade Plan")
         self.detail_low_tabs.addTab(self.detail_metrics_view, "Metrics")
         lay.addWidget(self.detail_low_tabs, 2)
+
+        self.btn_full_analysis = QPushButton("View Full Analysis")
+        self.btn_full_analysis.clicked.connect(
+            lambda: self._on_full_analysis())
+        lay.addWidget(self.btn_full_analysis, 0,
+                      Qt.AlignmentFlag.AlignLeft)
 
         self.detail_asof = QLabel("")
         self.detail_asof.setObjectName("headerStats")
@@ -3319,7 +3976,12 @@ class RadarWindow(QMainWindow):
                 pass
 
     def _on_dash_select(self, *_a):
-        """Dashboard row selected: mirror the coin into the detail dock."""
+        """Dashboard row selected: mirror the setup into the detail dock.
+
+        Selection is by setup id (the coin cell's UserRole), never row
+        index, so it survives refresh reorders. The id resolves to its
+        coin through the cached rows before rendering the detail dock.
+        """
         if getattr(self, "_refilling", False):
             return
         try:
@@ -3328,9 +3990,67 @@ class RadarWindow(QMainWindow):
             if not sel:
                 return
             item = self.dash_table.item(sel[0].row(), 0)
-            coin = item.text().split("\n")[0] if item else None
-            if coin:
-                self.show_coin_detail(coin)
+            sid = (item.data(Qt.ItemDataRole.UserRole)
+                   if item is not None else None)
+            by_id = {r.get("id"): r for r in (self.dash_rows or [])}
+            picked = by_id.get(sid)
+            if picked is None:
+                return
+            self.dash_selected_id = sid
+            self.show_coin_detail(picked.get("coin"))
+        except Exception:
+            pass
+
+    def _fill_detail_header(self, coin, direction=None, bars=None):
+        """Task 6 header row: badge, symbol + name, price, 24h%, pill,
+        sparkline — from swept quotes + bar closes (no I/O, never
+        raises). Missing quotes render "—", never an invented price.
+        """
+        try:
+            quote = (self.dash_market_data or {}).get(coin) or {}
+            name = quote.get("name") or coin
+            price = quote.get("price")
+            chg = quote.get("change_24h_pct")
+            cname = (f"{coin} / {name}" if name != coin else str(coin))
+            px_text = (f"{price:.8g}" if price is not None else "—")
+            chg_text = (f"{chg:+.1f}%" if chg is not None else "—")
+            arrow = {"LONG": "▲", "SHORT": "▼"}.get(
+                str(direction or "").upper(), "•")
+            pill = (f"{arrow} {str(direction).upper()}"
+                    if direction else "—")
+            for text in (cname, px_text, chg_text, pill):
+                assert_clean(text)
+            self.detail_badge.setText(badge_letters(coin))
+            self.detail_cname.setText(cname)
+            self.detail_px.setText(px_text)
+            self.detail_chg.setText(chg_text)
+            self.detail_pill.setText(pill)
+            if chg is not None:
+                color = (_theme.ACC_POS if chg >= 0 else _theme.ACC_NEG)
+                self.detail_chg.setStyleSheet(f"color: {color};")
+            closes = None
+            if bars:
+                try:
+                    closes = indicators_mod.closes(bars)
+                except Exception:
+                    closes = None
+            if not closes:
+                hist = (self.overview_history or {}).get(coin)
+                closes = hist if isinstance(hist, list) else None
+            self.detail_spark.set_history(closes)
+        except Exception:
+            pass
+
+    def _on_full_analysis(self):
+        """View Full Analysis: open the Analysis tab and scroll it into
+        view (the grid's right column scrolls). Never raises."""
+        try:
+            self.detail_low_tabs.setCurrentWidget(self.detail_analysis)
+            scroll = getattr(self, "_right_scroll", None)
+            if scroll is not None:
+                scroll.ensureWidgetVisible(self.detail_analysis)
+            else:
+                self.detail_analysis.ensureCursorVisible()
         except Exception:
             pass
 
@@ -3344,6 +4064,12 @@ class RadarWindow(QMainWindow):
                 self.detail_head.setText("—")
                 self.detail_sub.setText(
                     "select a coin for the full breakdown")
+                self.detail_badge.setText("—")
+                self.detail_cname.setText("—")
+                self.detail_px.setText("—")
+                self.detail_chg.setText("")
+                self.detail_pill.setText("")
+                self.detail_spark.set_history(None)
                 self.detail_analysis.setPlainText("")
                 self.detail_plan.setPlainText("")
                 self.detail_metrics_view.setPlainText("")
@@ -3364,6 +4090,7 @@ class RadarWindow(QMainWindow):
                 chart.set_bars(entry if isinstance(entry, list) else None)
             if detail is None:
                 self.detail_head.setText(coin)
+                self._fill_detail_header(coin)
                 reason = blocking_reason(
                     coin, detail_blocking_ctx(panel, coin))
                 assert_clean(reason)
@@ -3385,6 +4112,7 @@ class RadarWindow(QMainWindow):
                 direction = str(detail.get("direction", "?")).upper()
                 arrow = {"LONG": "▲", "SHORT": "▼"}.get(direction, "•")
                 self.detail_head.setText(f"{coin} {arrow} {direction}")
+                self._fill_detail_header(coin, direction, bars)
                 setup = {"rule_id": detail.get("rule", "?"),
                          "direction": direction,
                          "criteria": detail.get("criteria", []),
@@ -3436,6 +4164,8 @@ class RadarWindow(QMainWindow):
     def _compose_coin_detail_text(self):
         """Current detail dock as text (test seam, all assert_clean)."""
         bits = [self.detail_head.text(), self.detail_sub.text(),
+                self.detail_cname.text(), self.detail_px.text(),
+                self.detail_chg.text(), self.detail_pill.text(),
                 self.detail_validity.text(), self.detail_next.text()]
         interval = self._detail_current_interval()
         cached = self.detail_cache.get((self.detail_coin, interval),
@@ -4232,7 +4962,7 @@ class RadarWindow(QMainWindow):
                 and time.time() - self._last_stats_ts >= STATS_EVERY_S):
             if self._submit("stats"):
                 self._last_stats_ts = time.time()
-        self._render_countdown()
+        self._render_topbar()
 
     # ------------------------------------------------------------ rendering
     def _render_all(self):
@@ -4262,13 +4992,35 @@ class RadarWindow(QMainWindow):
         return " · ".join(parts)
 
     def _render_topbar(self):
-        """Scan UTC stamp, live countdown, venue pill (top-bar widgets)."""
+        """Scan UTC stamp, live countdown, venue pill (top-bar widgets).
+
+        The SCANNING dot follows the real worker lane ("scan" in flight),
+        the elapsed label derives ONLY from last_scan_ts (honest "no scan
+        yet" before the first scan), the clock is real UTC, and the rail's
+        bottom status blocks mirror the same venue state — never a
+        hardcoded connection claim. No bell: there is no backing event
+        source, so omission is the correct state.
+        """
         if self.last_scan_ts:
             self.lbl_scan_utc.setText(
                 "Scan: " + time.strftime("%H:%M:%S",
                                          time.gmtime(self.last_scan_ts)) + " UTC")
+            delta = int(time.time() - self.last_scan_ts)
+            self.lbl_scan_elapsed.setText(
+                "elapsed %02d:%02d" % divmod(max(0, delta), 60))
         else:
             self.lbl_scan_utc.setText("Scan: --:--:--")
+            self.lbl_scan_elapsed.setText("no scan yet")
+        if "scan" in self._busy:
+            self.lbl_scan_dot.setText("● SCANNING")
+            self.lbl_scan_dot.setStyleSheet(
+                f"color: {_theme.LONG_FG};")
+        else:
+            self.lbl_scan_dot.setText("● IDLE")
+            self.lbl_scan_dot.setStyleSheet(
+                f"color: {_theme.TEXT_DIM};")
+        self.lbl_clock.setText(
+            time.strftime("%H:%M:%S", time.gmtime()) + " UTC")
         self._render_countdown()
         if self.mexc_ok is None:
             self.lbl_venue.setText("MEXC –")
@@ -4279,6 +5031,33 @@ class RadarWindow(QMainWindow):
         else:
             self.lbl_venue.setText("MEXC DEGRADED")
             self.lbl_venue.setStyleSheet(f"color: {_theme.ERROR_FG};")
+        self._render_rail_status()
+
+    def _render_rail_status(self):
+        """Rail bottom blocks from real venue/scan state (never hardcoded)."""
+        api = getattr(self, "lbl_rail_api", None)
+        venue_lbl = getattr(self, "lbl_rail_venue", None)
+        if api is not None:
+            if self.mexc_ok is None:
+                api.setText("API: MEXC –")
+                api.setStyleSheet(f"color: {_theme.TEXT_DIM};")
+            elif self.mexc_ok:
+                api.setText("API: MEXC ok")
+                api.setStyleSheet(f"color: {_theme.LONG_FG};")
+            else:
+                api.setText("API: MEXC DEGRADED")
+                api.setStyleSheet(f"color: {_theme.ERROR_FG};")
+        if venue_lbl is not None:
+            st = (self.venue or {}).get("bybit")
+            if st is None:
+                venue_lbl.setText("venue: Bybit –")
+                venue_lbl.setStyleSheet(f"color: {_theme.TEXT_DIM};")
+            elif st.get("ok"):
+                venue_lbl.setText("venue: Bybit ok")
+                venue_lbl.setStyleSheet(f"color: {_theme.LONG_FG};")
+            else:
+                venue_lbl.setText("venue: Bybit DEGRADED")
+                venue_lbl.setStyleSheet(f"color: {_theme.ERROR_FG};")
 
     def _countdown_text(self):
         """'Next scan: mm:ss' from interval − elapsed (or 'paused')."""

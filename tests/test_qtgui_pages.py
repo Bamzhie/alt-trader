@@ -487,11 +487,13 @@ def t_settings_writers():
     check("autorefresh off leaves the dashboard alone", calls == [],
           str(calls))
     # Compact pref is real: the Top Signals analysis cell shortens.
-    before = win.dash_table.item(0, 3).text() if win.dash_table.rowCount() \
+    acol = [win.dash_table.horizontalHeaderItem(i).text()
+            for i in range(win.dash_table.columnCount())].index("ANALYSIS")
+    before = win.dash_table.item(0, acol).text() if win.dash_table.rowCount() \
         else ""
     win.dash_set_compact.setChecked(True)
     pump()
-    after = win.dash_table.item(0, 3).text() if win.dash_table.rowCount() \
+    after = win.dash_table.item(0, acol).text() if win.dash_table.rowCount() \
         else ""
     check("compact pref shortens the analysis cell",
           before != "" and "\n" in before and "\n" not in after,
