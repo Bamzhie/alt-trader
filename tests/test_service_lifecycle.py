@@ -139,6 +139,35 @@ def snapshot_count(db):
         conn.close()
 
 
+def journal_sweep_count(db):
+    if not os.path.exists(db):
+        return 0
+    conn = sqlite3.connect(db, timeout=5)
+    try:
+        try:
+            return conn.execute(
+                "SELECT COUNT(*) FROM watcher_events"
+                " WHERE kind='sweep-complete'").fetchone()[0]
+        except sqlite3.Error:
+            return 0
+    finally:
+        conn.close()
+
+
+def latest_snapshot_counts(db):
+    conn = sqlite3.connect(db, timeout=5)
+    try:
+        try:
+            return conn.execute(
+                "SELECT eligible_count, evaluated_count"
+                " FROM dashboard_snapshot"
+                " ORDER BY ts DESC, rowid DESC LIMIT 1").fetchone()
+        except sqlite3.Error:
+            return None
+    finally:
+        conn.close()
+
+
 def service_argv(lock, db, token="lifecycle-test-token", **kw):
     argv = ["--lock-file", lock, "--port", "0", "--token", token,
             "--db", db, "--no-scan", "--iterations", "1",
@@ -234,6 +263,65 @@ def main():
             sys.stdout = old_stdout
         check("first instance runs to completion (exit 0)", code == 0,
               f"got {code}")
+
+        # -- no-scan collect cycles count as sweeps (readiness) -------------
+        # Sweep = one data-collection pass (scan OR collect). A no-scan
+        # deployment (the shipped unit's flags) must still go ready and
+        # record snapshots via its collect cycles; evaluated is honestly
+        # 0, never invented. A failed collect records nothing.
+        db_ns = os.path.join(tmp, "noscan.db")
+        svc.reset_events()
+        real_collect = dmod.colmod.collect_full_universe
+        dmod.App = FakeApp
+        try:
+            dmod.colmod.collect_full_universe = (
+                lambda *a, **k: {"BTC": 3, "ETH": 1})
+            dmod.run_daemon_loop(daemon_args(db_ns, no_scan=True,
+                                             iterations=1, collect_every=0))
+            check("no-scan successful collect emits one sweep event",
+                  sweep_event_count(svc) == 1,
+                  f"got {sweep_event_count(svc)}")
+            check("no-scan successful collect writes one snapshot",
+                  snapshot_count(db_ns) == 1,
+                  f"got {snapshot_count(db_ns)}")
+            check("no-scan snapshot counts honest (2 eligible, 0 evaluated)",
+                  latest_snapshot_counts(db_ns) == (2, 0),
+                  f"got {latest_snapshot_counts(db_ns)}")
+            check("no-scan successful collect journals sweep-complete",
+                  journal_sweep_count(db_ns) == 1,
+                  f"got {journal_sweep_count(db_ns)}")
+            fired = []
+            dmod.run_daemon_loop(daemon_args(db_ns, no_scan=True,
+                                             iterations=1, collect_every=0),
+                                 on_sweep=lambda eligible, evaluated:
+                                 fired.append((eligible, evaluated)))
+            check("no-scan successful collect marks ready (on_sweep fired)",
+                  fired == [(2, 0)], f"got {fired}")
+
+            def _collect_boom(*a, **k):
+                raise RuntimeError("collect down")
+
+            dmod.colmod.collect_full_universe = _collect_boom
+            svc.reset_events()
+            snaps_before = snapshot_count(db_ns)
+            journal_before = journal_sweep_count(db_ns)
+            fired_fail = []
+            dmod.run_daemon_loop(daemon_args(db_ns, no_scan=True,
+                                             iterations=1, collect_every=0),
+                                 on_sweep=lambda eligible, evaluated:
+                                 fired_fail.append((eligible, evaluated)))
+            check("no-scan failed collect stays unready (no sweep fired)",
+                  fired_fail == [], f"got {fired_fail}")
+            check("no-scan failed collect writes no snapshot",
+                  snapshot_count(db_ns) == snaps_before,
+                  f"{snaps_before} -> {snapshot_count(db_ns)}")
+            check("no-scan failed collect journals nothing",
+                  journal_sweep_count(db_ns) == journal_before,
+                  f"{journal_before} -> {journal_sweep_count(db_ns)}")
+        finally:
+            dmod.colmod.collect_full_universe = real_collect
+            dmod.App = real_app
+        svc.reset_events()
 
         # -- clean shutdown: SIGTERM stops loop, server, sessions in order --
         lock3 = os.path.join(tmp, "locks3", "scanner.lock")

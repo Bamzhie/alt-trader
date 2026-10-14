@@ -148,8 +148,10 @@ def record_completed_sweep(db_path, eligible_count, evaluated_count):
 
     Exactly one ``sweep.completed`` SSE event (via the service emitter)
     plus one journal event + dashboard_snapshot row. The scan loop calls
-    this once per completed sweep; failures inside are reported, never
-    raised, so a sweep record can never break the loop.
+    this once per completed sweep — a scan cycle, or in --no-scan mode a
+    successful collect cycle (collect passes evaluated_count=0 honestly);
+    failures inside are reported, never raised, so a sweep record can
+    never break the loop.
     """
     from . import service as svc
     svc.record_sweep_completed(eligible_count, evaluated_count)
@@ -172,9 +174,13 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
     ``stop_event`` (a threading.Event) breaks the loop between sweeps and
     cuts the inter-sweep sleep short for prompt shutdown. ``on_sweep`` is
     called once per *completed* sweep as ``on_sweep(eligible, evaluated)``;
-    the default records the sweep (SSE + snapshot). ``app_box``, when
-    given, receives the App under ``app_box["app"]`` so the owner can
-    close sessions after the loop stops.
+    the default records the sweep (SSE + snapshot). A sweep is one
+    data-collection pass: a scan cycle, or — in --no-scan mode, where
+    scans are disabled — a successful collect cycle (with evaluated=0,
+    honestly measured, never invented). The first successful data cycle
+    of either kind therefore marks readiness downstream. ``app_box``,
+    when given, receives the App under ``app_box["app"]`` so the owner
+    can close sessions after the loop stops.
     """
     app = make_app(args)
     if app_box is not None:
@@ -205,6 +211,12 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                 break
             t0 = time.time()
             sweep_ok = False
+            # Sweep definition: one data-collection pass (scan OR collect).
+            # In --no-scan mode scans never run, so a successful collect
+            # cycle below completes the sweep for readiness/snapshot/
+            # journal purposes (same on_sweep flag scan sweeps set).
+            collect_ok = False
+            collect_coins = 0
             if args.no_scan:
                 print(f"[{time.strftime('%H:%M:%S')}] no-scan mode: "
                       f"collector + resolver only", flush=True)
@@ -226,6 +238,8 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                 try:
                     counts = colmod.collect_full_universe()
                     last_collect = now
+                    collect_ok = True
+                    collect_coins = len(counts)
                     print(f"[{time.strftime('%H:%M:%S')}] collect: "
                           f"{len(counts)} coins "
                           f"{sum(counts.values())} new bars", flush=True)
@@ -308,9 +322,17 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                     print(f"[{time.strftime('%H:%M:%S')}] measure FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
             n += 1
+            sweep_counts = None
             if sweep_ok:
+                sweep_counts = (len(app.uni), len(app.cards))
+            elif args.no_scan and collect_ok:
+                # No-scan deployments never scan: the successful collect
+                # above is this iteration's sweep. evaluated is honestly
+                # 0 (no scan evaluated anything) — never invented.
+                sweep_counts = (collect_coins, 0)
+            if sweep_counts is not None:
                 try:
-                    on_sweep(len(app.uni), len(app.cards))
+                    on_sweep(*sweep_counts)
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] sweep record "
                           f"FAILED: {type(e).__name__}: {e}", flush=True)
