@@ -28,6 +28,14 @@ from urllib.parse import parse_qs, urlparse
 from .collector import read_bars
 from .planner import REFERENCE_NOTIONAL, reference_plan
 from . import watcher as _watcher_mod
+from .watcher import CUSUM_RULE_ID, T1_RULE_ID
+from .watcher_feed import (
+    DISABLED_PREFIX,
+    PAUSED_KEY,
+    get_flags as _feed_flags,
+    set_paused as _feed_set_paused,
+    set_rule_disabled as _feed_set_rule_disabled,
+)
 
 LOG = logging.getLogger("proto.service")
 
@@ -232,6 +240,88 @@ def _frame_event(event):
             payload[key] = event[key]
     return (f"id: {event['id']}\nevent: {event['kind']}\n"
             f"data: {json.dumps(payload)}\n\n")
+
+# -- Task 4: idempotent commands ------------------------------------------
+# POST /commands/{pause,resume,disable-trigger,enable-trigger}. Repeated
+# identical calls return the same state (no duplication, no toggle); every
+# write goes to the SAME meta keys the Qt panels read (watcher_feed
+# PAUSED_KEY / DISABLED_PREFIX, via its setters — never re-spelled here),
+# so flags survive a process restart (reload-safe via meta persistence).
+# Trigger commands take a JSON body {"rule"} and answer 400 BAD_REQUEST on
+# a missing or unknown rule; unknown commands answer 404 NOT_FOUND.
+
+COMMANDS = ("pause", "resume", "disable-trigger", "enable-trigger")
+MAX_COMMAND_BODY = 1 << 20
+
+
+def _known_trigger_rules(store_path):
+    """Rule ids a trigger command may address: the static watcher rule ids
+    plus every rule_id already present in watcher_setup plus every rule
+    with a disable key in meta. Unknown anything-else -> 400."""
+    known = {T1_RULE_ID, CUSUM_RULE_ID}
+    try:
+        conn = sqlite3.connect(store_path, timeout=5)
+    except sqlite3.Error:
+        return known
+    try:
+        try:
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        except sqlite3.Error:
+            return known
+        if "watcher_setup" in tables:
+            try:
+                for (rule_id,) in conn.execute(
+                        "SELECT DISTINCT rule_id FROM watcher_setup"):
+                    if rule_id:
+                        known.add(str(rule_id))
+            except sqlite3.Error:
+                pass
+        if "meta" in tables:
+            try:
+                for (key,) in conn.execute(
+                        "SELECT key FROM meta WHERE key LIKE ?",
+                        (DISABLED_PREFIX + "%",)):
+                    suffix = key[len(DISABLED_PREFIX):]
+                    if suffix:
+                        known.add(suffix)
+            except sqlite3.Error:
+                pass
+    finally:
+        conn.close()
+    return known
+
+
+def _command_flags(store_path):
+    """(paused, disabled) via the panel read path; DB trouble -> (False, ())."""
+    try:
+        conn = sqlite3.connect(store_path, timeout=5)
+    except sqlite3.Error:
+        return (False, ())
+    try:
+        try:
+            return _feed_flags(conn)
+        except sqlite3.Error:
+            return (False, ())
+    finally:
+        conn.close()
+
+
+def _apply_pause(store_path, paused):
+    conn = sqlite3.connect(store_path, timeout=5)
+    try:
+        _feed_set_paused(conn, paused)
+    finally:
+        conn.close()
+
+
+def _apply_trigger(store_path, rule, disabled):
+    conn = sqlite3.connect(store_path, timeout=5)
+    try:
+        _feed_set_rule_disabled(conn, rule, disabled)
+    finally:
+        conn.close()
+
 
 # -- Task 2: resource routes -----------------------------------------------
 # Envelope `{ok, data, error:{code,message}}`; timestamps are UTC-seconds
@@ -527,10 +617,9 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                                        cfg_store)
                 return
 
-            if self.command == "POST" and path == "/commands/pause":
-                # Stub: real pause/resume semantics arrive with Task 4.
-                self._send_json(200, envelope(True, {"paused": False}),
-                                origin=gated)
+            if self.command == "POST" and path.startswith("/commands/"):
+                self._handle_command(gated, path[len("/commands/"):],
+                                     cfg_store)
                 return
 
             self._deny(404, "NOT_FOUND",
@@ -786,6 +875,67 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
             finally:
                 conn.close()
 
+        # -- Task 4 commands (idempotent, meta-persisted) -------------------
+        def _handle_command(self, origin, name, store_path):
+            if name not in COMMANDS:
+                self._deny(404, "NOT_FOUND",
+                           f"unknown command {name!r}; known: "
+                           + ", ".join(COMMANDS), origin=origin)
+                return
+            raw = getattr(self, "_body", b"") or b""
+            if not raw.strip():
+                body = {}
+            else:
+                try:
+                    body = json.loads(raw.decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    self._deny(400, "BAD_REQUEST",
+                               "request body must be a JSON object",
+                               origin=origin)
+                    return
+            if not isinstance(body, dict):
+                self._deny(400, "BAD_REQUEST",
+                           "request body must be a JSON object",
+                           origin=origin)
+                return
+            try:
+                if name == "pause":
+                    _apply_pause(store_path, True)
+                    self._send_json(200, envelope(
+                        True, {"command": name, "idempotent": True,
+                               "paused": True}), origin=origin)
+                    return
+                if name == "resume":
+                    _apply_pause(store_path, False)
+                    self._send_json(200, envelope(
+                        True, {"command": name, "idempotent": True,
+                               "paused": False}), origin=origin)
+                    return
+                rule = body.get("rule")
+                if not isinstance(rule, str) or not rule:
+                    self._deny(400, "BAD_REQUEST",
+                               "missing 'rule' in request body",
+                               origin=origin)
+                    return
+                known = _known_trigger_rules(store_path)
+                if rule not in known:
+                    self._deny(400, "BAD_REQUEST",
+                               "unknown trigger rule; known: "
+                               + ", ".join(sorted(known)), origin=origin)
+                    return
+                _apply_trigger(store_path, rule,
+                               name == "disable-trigger")
+                _, disabled = _command_flags(store_path)
+                self._send_json(200, envelope(
+                    True, {"command": name, "rule": rule,
+                           "idempotent": True,
+                           "enabled": name == "enable-trigger",
+                           "disabled_triggers": sorted(disabled)}),
+                    origin=origin)
+            except sqlite3.Error:
+                self._deny(503, "UNAVAILABLE", "database unavailable",
+                           origin=origin)
+
         # -- Task 3 SSE stream (transition-only, subscribe-then-reconcile) --
         def _sse_write(self, frame):
             self.wfile.write(frame.encode("utf-8"))
@@ -862,13 +1012,30 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
             self._route(False)
 
         def do_POST(self):
+            # Read the full body (1 MiB cap on kept bytes, remainder drained)
+            # so a large/over-long body never desyncs the keep-alive stream.
             length = self.headers.get("Content-Length")
             try:
                 n = int(length) if length else 0
             except ValueError:
                 n = 0
+            if n < 0:
+                n = 0
+            body = b""
             if n > 0:
-                self.rfile.read(min(n, 1 << 20))
+                keep = min(n, MAX_COMMAND_BODY)
+                while len(body) < keep:
+                    chunk = self.rfile.read(min(65536, keep - len(body)))
+                    if not chunk:
+                        break
+                    body += chunk
+                remaining = n - len(body)
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            self._body = body
             self._route(False)
 
         def do_OPTIONS(self):
