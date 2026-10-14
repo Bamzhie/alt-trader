@@ -11,14 +11,20 @@ later tasks; this module owns ``serve`` / ``load_or_create_token`` and the
 auth/origin gate every future route inherits.
 """
 
+import argparse
+import errno
+import fcntl
 import hmac
+import importlib
 import json
 import logging
 import os
 import queue
 import re
 import secrets
+import signal
 import sqlite3
+import sys
 import threading
 import time
 from collections import deque
@@ -26,6 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from .collector import read_bars
+from . import daemon as _daemon_mod
 from .planner import REFERENCE_NOTIONAL, reference_plan
 from . import watcher as _watcher_mod
 from .watcher import CUSUM_RULE_ID, T1_RULE_ID
@@ -1065,3 +1072,283 @@ def serve(port, token, ready, store_path=None, data_dir=None,
     LOG.info("service listening on 127.0.0.1:%d",
              server.server_address[1])
     return server
+
+
+# -- Task 5: daemon embedding + single scanner -------------------------------
+# One process does both jobs: the HTTP/SSE server above plus the daemon
+# scan/collect/resolve loop. The loop is IMPORTED from proto.daemon
+# (run_daemon_loop / build_parser / make_app / maybe_handle_measure_status
+# / record_completed_sweep) — its body is never copied here. Singular
+# ownership: an fcntl lockfile refuses a second scanner, and SIGTERM/SIGINT
+# stops the loop, the server, then the sessions, in that order.
+
+DEFAULT_PORT = 18741
+PORT_SCAN_ATTEMPTS = 16
+SCANNER_LOCK_NAME = "scanner.lock"
+LOCK_REFUSED_EXIT = 1
+DEFAULT_TOKEN_FILE = os.path.join("~", ".config", "altradar",
+                                  "service.token")
+
+
+class ScannerAlreadyRunning(Exception):
+    """A second scanner asked to start while the lock is held."""
+
+
+def default_lock_path(db_path):
+    """Lockfile beside the deployment DB (overridable via --lock-file)."""
+    parent = os.path.dirname(os.path.abspath(db_path))
+    return os.path.join(parent, SCANNER_LOCK_NAME)
+
+
+def acquire_scanner_lock(path):
+    """Hold an exclusive non-blocking flock on *path*.
+
+    Returns the open file object (the lock lives until it is closed).
+    Raises ScannerAlreadyRunning when another process — or another open
+    of this path — already holds it. fcntl locks vanish with the process,
+    so a crashed owner never leaves a stale lock behind.
+    """
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    fh = open(path, "a+b")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            fh.close()
+        except OSError:
+            pass
+        raise ScannerAlreadyRunning(
+            f"another scanner is already running (lock {path})")
+    try:
+        fh.seek(0)
+        fh.truncate()
+        fh.write(f"{os.getpid()}\n".encode("utf-8"))
+        fh.flush()
+    except OSError:
+        pass
+    return fh
+
+
+def serve_with_fallback(port, token, ready, attempts=PORT_SCAN_ATTEMPTS,
+                        **kw):
+    """Bind port..port+attempts-1 on loopback; return (server, bound_port).
+
+    Raises the last OSError when every candidate is taken; non-conflict
+    errors (e.g. permission) raise immediately.
+    """
+    last = None
+    for candidate in range(port, port + attempts):
+        try:
+            server = serve(candidate, token, ready, **kw)
+            return server, server.server_address[1]
+        except OSError as e:
+            if e.errno != errno.EADDRINUSE:
+                raise
+            last = e
+    raise last
+
+
+def install_signal_handlers(stop_event):
+    """Install SIGTERM/SIGINT -> stop_event.set(); return the old handlers."""
+
+    def _handle(signum, _frame):
+        print(f"service: caught signal {signum}; shutting down",
+              flush=True)
+        stop_event.set()
+
+    old = {}
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            old[sig] = signal.signal(sig, _handle)
+        except (ValueError, OSError, RuntimeError):
+            pass
+    return old
+
+
+def restore_signal_handlers(old):
+    """Undo install_signal_handlers (best effort)."""
+    for sig, handler in old.items():
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError, RuntimeError):
+            pass
+
+
+def close_sessions(app=None):
+    """Last shutdown step: close exchange sessions, then the Store.
+
+    The venues use per-request connections (no persistent sessions today),
+    so this calls any ``close_session`` hook the venue modules expose and
+    then closes the App's Store. Never raises.
+    """
+    for modname in ("mexc", "bybit"):
+        try:
+            mod = importlib.import_module("." + modname, __package__)
+        except Exception:
+            continue
+        closer = getattr(mod, "close_session", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                pass
+    if app is not None:
+        store = getattr(app, "store", None)
+        if store is not None:
+            try:
+                store.close()
+            except Exception:
+                pass
+
+
+def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
+                lock_path=None, daemon_argv=None, stop_event=None,
+                install_signals=True, on_serving=None):
+    """Run the HTTP server plus the embedded daemon loop; return a result.
+
+    ``daemon_argv`` is parsed by the daemon parser (imported, never
+    re-spelled) for the loop cadences; ``db`` feeds both the loop and the
+    resource routes. ``stop_event`` (or SIGTERM/SIGINT) ends the run.
+    Shutdown is ordered — loop, server, sessions — and recorded in
+    ``result["shutdown_order"]``. A held lockfile returns
+    ``{"refused": True, "exit_code": LOCK_REFUSED_EXIT}`` without starting
+    any scanning.
+    """
+    result = {"ok": False, "refused": False, "exit_code": 0, "port": None,
+              "shutdown_order": [], "loop_error": None}
+    lock_path = lock_path or default_lock_path(db)
+    try:
+        lock_fh = acquire_scanner_lock(lock_path)
+    except ScannerAlreadyRunning as e:
+        print(f"service: refused: {e}", file=sys.stderr, flush=True)
+        result["refused"] = True
+        result["exit_code"] = LOCK_REFUSED_EXIT
+        return result
+
+    stop = stop_event if stop_event is not None else threading.Event()
+    old_handlers = {}
+    if install_signals:
+        old_handlers = install_signal_handlers(stop)
+    try:
+        parser = _daemon_mod.build_parser()
+        loop_args = parser.parse_args(daemon_argv or [])
+        loop_args.db = db
+        sweep_done = threading.Event()
+
+        def _on_sweep(eligible, evaluated):
+            _daemon_mod.record_completed_sweep(db, eligible, evaluated)
+            sweep_done.set()
+
+        server, bound = serve_with_fallback(
+            port, token, lambda: {"sweep_done": sweep_done.is_set()},
+            store_path=db, data_dir=data_dir,
+            is_ready=sweep_done.is_set)
+        result["port"] = bound
+        print(f"service: listening on 127.0.0.1:{bound} db={db} "
+              f"lock={lock_path}", flush=True)
+        if on_serving is not None:
+            on_serving(server, bound)
+
+        app_box = {}
+
+        def _run_loop():
+            try:
+                _daemon_mod.run_daemon_loop(
+                    loop_args, stop_event=stop, on_sweep=_on_sweep,
+                    app_box=app_box)
+            except Exception as e:  # never lose the server on loop failure
+                result["loop_error"] = f"{type(e).__name__}: {e}"
+                print(f"service: loop FAILED: {result['loop_error']}",
+                      flush=True)
+                stop.set()
+
+        loop_thread = threading.Thread(target=_run_loop,
+                                       name="daemon-loop", daemon=True)
+        loop_thread.start()
+        try:
+            while loop_thread.is_alive():
+                if stop.wait(0.25):
+                    break
+            stop.set()
+        except KeyboardInterrupt:
+            stop.set()
+
+        loop_thread.join()
+        result["shutdown_order"].append("loop")
+        try:
+            server.shutdown()
+        finally:
+            server.server_close()
+        result["shutdown_order"].append("server")
+        close_sessions(app_box.get("app"))
+        result["shutdown_order"].append("sessions")
+        result["ok"] = result["loop_error"] is None
+        print("service: stopped cleanly", flush=True)
+        return result
+    finally:
+        if old_handlers:
+            restore_signal_handlers(old_handlers)
+        try:
+            lock_fh.close()
+        except OSError:
+            pass
+
+
+def build_service_parser():
+    """Daemon flags (imported) plus the service's own --port/--token flags."""
+    ap = _daemon_mod.build_parser()
+    ap.description = ("ALT RADAR headless service: HTTP API plus the "
+                      "embedded scan/collect/resolve loop")
+    ap.add_argument("--port", type=int, default=DEFAULT_PORT,
+                    help="first loopback port to try; scans upward on "
+                         "conflict (default 18741)")
+    ap.add_argument("--token", default=None,
+                    help="per-launch bearer token (otherwise the token file "
+                         "is used)")
+    ap.add_argument("--token-file", default=DEFAULT_TOKEN_FILE,
+                    help="config-file bearer token (0600, auto-generated on "
+                         "first start if absent)")
+    ap.add_argument("--lock-file", default=None,
+                    help="single-scanner lockfile (default: beside the DB)")
+    ap.add_argument("--data-dir", default=None,
+                    help="bar archive dir for /bars and /metrics")
+    return ap
+
+
+def main(argv=None):
+    """Entry point: ``python3 -m proto.service``. Returns an exit code."""
+    args = build_service_parser().parse_args(argv)
+    if args.measure_status or args.enable_measurement_epoch:
+        # Read-only operator path, owned by the daemon module (no copy).
+        app = _daemon_mod.make_app(args)
+        try:
+            _daemon_mod.maybe_handle_measure_status(app, args)
+        finally:
+            try:
+                app.store.close()
+            except Exception:
+                pass
+        return 0
+    token = args.token or load_or_create_token(args.token_file)
+    data_dir = args.data_dir
+    daemon_argv = []
+    for name in ("stake", "coins", "interval", "log_threshold", "use_v3",
+                 "collect_every", "resolve_every", "measure_every",
+                 "iterations", "no_scan"):
+        value = getattr(args, name)
+        flag = "--" + name.replace("_", "-")
+        if isinstance(value, bool):
+            if value:
+                daemon_argv.append(flag)
+        elif value is not None:
+            daemon_argv += [flag, str(value)]
+    result = run_service(port=args.port, token=token, db=args.db,
+                         data_dir=data_dir,
+                         lock_path=args.lock_file,
+                         daemon_argv=daemon_argv)
+    return result.get("exit_code", 0)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

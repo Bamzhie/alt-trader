@@ -57,6 +57,17 @@ def resolve_batch(db_path):
 
 
 def main():
+    """Thin legacy entrypoint: exec the service headless.
+
+    All flags are preserved: the service parser is a superset of the
+    daemon flags, so argv passes through untouched.
+    """
+    from .service import main as service_main
+    return service_main()
+
+
+def build_parser():
+    """The daemon CLI flags (shared with the service by import, never copied)."""
     ap = argparse.ArgumentParser(description="ALT RADAR collection daemon")
     ap.add_argument("--stake", type=float, default=0.10)
     ap.add_argument("--coins", type=int, default=150)
@@ -83,28 +94,25 @@ def main():
                     help="EXPLICIT operator action: enable episode creation "
                          "after calibration passes. Refused while calibration "
                          "fails, and never moves an epoch already set.")
-    args = ap.parse_args()
+    return ap
 
+
+def make_app(args):
+    """Build the scan App from daemon-style args (shared, never copied)."""
     app_args = SimpleNamespace(
         stake=args.stake, coins=args.coins, interval=args.interval,
         universe_budget=args.coins, log_threshold=args.log_threshold,
         db=args.db, write_logs=True, use_v3=args.use_v3)
-    app = App(app_args)
-    sym_map = {}
-    last_collect = 0.0
-    last_resolve = 0.0
-    last_measure = 0.0
-    resolver_pool = ThreadPoolExecutor(max_workers=1,
-                                       thread_name_prefix="outcome-resolver")
-    resolve_future = None
-    measure_cfg = measuremod.measurement_config(
-        args.stake, args.log_threshold,
-        getattr(args, "leverage_cap", None))
+    return App(app_args)
 
-    # --- read-only status / explicit epoch activation (Task 6) ----------
-    # Both run before the daemon loop and exit. Epoch activation is an
-    # explicit operator action only: it is refused while calibration fails
-    # and can never move an epoch that is already set (spec §12).
+
+def maybe_handle_measure_status(app, args):
+    """Read-only status / explicit epoch activation; True when handled.
+
+    Runs before the loop and exits: epoch activation is an explicit
+    operator action only — refused while calibration fails and never
+    moving an epoch that is already set (spec §12).
+    """
     if args.measure_status or args.enable_measurement_epoch:
         stats = measuremod.cadence_stats(app.store)
         cal = stats["calibration"]
@@ -131,7 +139,59 @@ def main():
                 print("  epoch NOT enabled: calibration has not passed. Fix "
                       "the scheduler/universe and re-run calibration.")
         app.store.close()
-        return
+        return True
+    return False
+
+
+def record_completed_sweep(db_path, eligible_count, evaluated_count):
+    """Record one completed universe sweep.
+
+    Exactly one ``sweep.completed`` SSE event (via the service emitter)
+    plus one journal event + dashboard_snapshot row. The scan loop calls
+    this once per completed sweep; failures inside are reported, never
+    raised, so a sweep record can never break the loop.
+    """
+    from . import service as svc
+    svc.record_sweep_completed(eligible_count, evaluated_count)
+    import sqlite3
+    from . import watcher_journal as jmod
+    conn = sqlite3.connect(db_path, timeout=5)
+    try:
+        jmod.record_sweep(conn, eligible_count, evaluated_count)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
+    """The collection loop: scan + collect + resolve (+ measure cadence).
+
+    Owned here and imported by the service (move-by-import — never copied).
+    ``stop_event`` (a threading.Event) breaks the loop between sweeps and
+    cuts the inter-sweep sleep short for prompt shutdown. ``on_sweep`` is
+    called once per *completed* sweep as ``on_sweep(eligible, evaluated)``;
+    the default records the sweep (SSE + snapshot). ``app_box``, when
+    given, receives the App under ``app_box["app"]`` so the owner can
+    close sessions after the loop stops.
+    """
+    app = make_app(args)
+    if app_box is not None:
+        app_box["app"] = app
+    if on_sweep is None:
+        def on_sweep(eligible, evaluated, _db=args.db):
+            record_completed_sweep(_db, eligible, evaluated)
+    sym_map = {}
+    last_collect = 0.0
+    last_resolve = 0.0
+    last_measure = 0.0
+    resolver_pool = ThreadPoolExecutor(max_workers=1,
+                                       thread_name_prefix="outcome-resolver")
+    resolve_future = None
+    measure_cfg = measuremod.measurement_config(
+        args.stake, args.log_threshold,
+        getattr(args, "leverage_cap", None))
 
     run_id = f"{os.getpid()}-{int(time.time())}"
     n = 0
@@ -141,7 +201,10 @@ def main():
           f"resolve {args.resolve_every}s", flush=True)
     try:
         while args.iterations is None or n < args.iterations:
+            if stop_event is not None and stop_event.is_set():
+                break
             t0 = time.time()
+            sweep_ok = False
             if args.no_scan:
                 print(f"[{time.strftime('%H:%M:%S')}] no-scan mode: "
                       f"collector + resolver only", flush=True)
@@ -154,6 +217,7 @@ def main():
                           f"{len(app.cards)} cards failed {app.failed} "
                           f"rows {st['rows']} outcomes {st.get('outcomes', 0)}",
                           flush=True)
+                    sweep_ok = True
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] scan FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
@@ -244,10 +308,20 @@ def main():
                     print(f"[{time.strftime('%H:%M:%S')}] measure FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
             n += 1
+            if sweep_ok:
+                try:
+                    on_sweep(len(app.uni), len(app.cards))
+                except Exception as e:
+                    print(f"[{time.strftime('%H:%M:%S')}] sweep record "
+                          f"FAILED: {type(e).__name__}: {e}", flush=True)
             if args.iterations is not None and n >= args.iterations:
                 break
             sleep_for = max(5.0, args.interval - (time.time() - t0))
-            time.sleep(sleep_for)
+            if stop_event is not None:
+                if stop_event.wait(sleep_for):
+                    break
+            else:
+                time.sleep(sleep_for)
     except KeyboardInterrupt:
         pass
     finally:
@@ -259,4 +333,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
