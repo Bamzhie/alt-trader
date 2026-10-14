@@ -1,19 +1,19 @@
-# ALT RADAR systemd service and React dashboard design
+# ALT RADAR native desktop app and always-on backend design
 
 **Status:** Revised for review  
 **Date:** 2026-10-14
 
 ## Goal
 
-Run ALT RADAR as a user-level systemd service that starts with the machine, owns the scanner and API, and serves the React dashboard from the same loopback origin. The browser UI reads the service's live data; it does not start a second backend process. Python GUI launchers are no longer part of the supported normal workflow.
+Run the scanner and API as a user-level systemd service that starts with the machine. Provide a system-native desktop app, built with Tauri and the existing React frontend, that opens in its own desktop window and reads from that already-running backend. Normal use must not open a browser or start another backend process.
 
 ## Current context
 
-- `proto.service` already embeds the scanner and resolver, but the example unit passes `--no-scan`, so it currently runs without the full scan loop.
-- The service API binds to loopback on port `18741` and authenticates routes with a persistent bearer token stored at `~/.config/altradar/service.token`.
-- The React app in `app/` is currently served by Vite during development. Its production build is `app/dist`.
-- The current dashboard contains a development token constant. Production must not ship that token or bake the service token into the static bundle.
-- The existing Python GUI packages and their modules are outside this change; they become legacy launch paths rather than being deleted.
+- `proto.service` embeds the scanner and resolver, but `altradar.service.example` currently passes `--no-scan`; the unit must be scanner-enabled.
+- The service API binds to loopback on port `18741` and uses a persistent token at `~/.config/altradar/service.token`.
+- `app/` is a React/Vite frontend. `app/src-tauri/` is the intended native desktop shell.
+- The current Tauri design already describes the React shell and token access for a persistent service, but it also includes spawn-fallback behavior. That behavior conflicts with the required systemd-owned backend lifecycle and is removed here.
+- Python GUI modules remain in the repository as legacy code; this work changes the supported launch path rather than deleting those modules.
 
 ## Architecture
 
@@ -23,60 +23,73 @@ machine boot / user systemd
           ▼
 proto.service (one long-lived process)
   ├── scanner + resolver loop
-  ├── authenticated API and SSE at 127.0.0.1:18741
-  └── React static files from app/dist at the same origin
+  └── authenticated API + SSE at 127.0.0.1:18741
+          ▲
+          │ loopback HTTP/SSE; existing service token
           │
-          ▼
-browser: http://127.0.0.1:18741/
+Tauri desktop app (React UI in native window)
+          ▲
+          │ desktop launcher / application menu
+          └── user opens ALT RADAR
 ```
 
-The backend is the only runtime service. systemd owns its lifecycle and restarts it after failure. The dashboard launcher only checks service health and opens the browser; it never starts, stops, or supervises the backend.
+The backend service owns scanning, data collection, API, and restart behavior. The native app owns only the desktop window and presentation. It attaches to the service and never starts, stops, or supervises it. Closing the desktop window leaves the backend running.
 
-## Service and boot lifecycle
+## Backend service and boot lifecycle
 
-- Update `altradar.service.example` to run the scanner-enabled service. Remove `--no-scan`; retain the existing collection and resolution intervals unless implementation review finds they conflict with the current service defaults.
-- Keep the existing user-level unit model (`WantedBy=default.target`). Document installation, `systemctl --user enable --now altradar.service`, and `loginctl enable-linger <user>` so the user manager can start at boot and remain active after logout.
-- Keep loopback binding and the existing service token file and permissions. The dashboard and API are intended for the same machine, not LAN exposure.
-- The backend serves the built UI when `app/dist` exists. Make the path configurable, with the repository's `app/dist` as the development checkout default. Missing UI assets must produce a clear service log/error and leave health/API diagnostics available.
-- For systemd installations outside the checkout, document building the React app before enabling the service and verify the configured static asset path is readable by the service user.
+- Update `altradar.service.example` to run the scanner-enabled service by removing `--no-scan`. Retain collection and resolution intervals unless implementation review finds they conflict with current service defaults.
+- Keep the user-level systemd unit (`WantedBy=default.target`). Document installation, `systemctl --user enable --now altradar.service`, and `loginctl enable-linger <user>` so it starts at boot and remains active after logout.
+- Keep loopback binding, service token file location, and existing file permissions. Do not expose the API on LAN interfaces.
+- The native app performs a readiness check against the existing service. If unavailable, it shows a clear in-app message with `systemctl --user status altradar.service` and journal commands. It does not start a fallback backend.
+- The systemd service remains available if the native UI is closed, crashes, or is not installed.
 
-## Same-origin routing and authentication
+## Native desktop app
 
-- Serve `/`, frontend assets, and client-side routes from the React build. Serve API requests under `/api/` and map them to the service's existing route handlers without changing their response envelopes. Preserve query strings and streaming behavior for SSE.
-- Keep `GET /healthz` unauthenticated for service health checks. All other API routes remain authenticated. The backend serves a same-origin runtime bootstrap endpoint that returns the existing service token; the browser stores it in memory and uses it as a bearer token for API and SSE requests. Do not put the token in the static bundle, URL, persistent browser storage, or logs.
-- Restrict the bootstrap endpoint to loopback requests and the expected same-origin host/origin policy. The token remains protected by the local OS account boundary and existing file permissions; this design does not claim protection from other processes running as the same user.
-- Remove the hardcoded development token from the production dashboard path. Development may retain an explicit Vite-only mock/dev credential path, clearly separated from production runtime config.
-- Because the UI and API share one origin, production browser traffic does not require CORS. Keep the existing development CORS policy for Vite if the current developer workflow needs it.
+- Use Tauri 2 with the existing React/TypeScript/Vite app. Launching ALT RADAR from the desktop creates a native app window; do not launch the system browser or a web-server tab.
+- Provide an installable desktop entry/application menu item and Linux packaging (at minimum `.deb` and `.AppImage`, subject to build environment support). The desktop entry starts the packaged Tauri app, not Python GUI modules or the backend.
+- The app connects only to `http://127.0.0.1:18741`, checks liveness/readiness, and reads the existing snapshot, setups, metrics, and SSE APIs. UI state reflects service availability honestly; no mock production data is shown as live data.
+- Closing the window terminates the UI process only. It must not stop, signal, or restart the systemd service.
+- Vite remains available for development, with its proxy to the local service. Production UI assets are bundled into the Tauri app; the systemd backend does not serve the React bundle.
 
-## React build and launcher behavior
+## Authentication and origin security
 
-- `npm run build` creates `app/dist`; Node/Vite are build-time and development tools only, not production runtime dependencies.
-- Add or update a lightweight launcher (`run-app.sh`) that checks `http://127.0.0.1:18741/healthz`, opens `http://127.0.0.1:18741/` in the default browser, and reports a concise actionable error if the service is unavailable. It must not invoke Python GUI modules or start a server.
-- On an unavailable service, direct the user to `systemctl --user status altradar.service` and the service journal. Ctrl-C or closing the launcher must not stop the service.
-- Keep Vite available for frontend development, with its existing proxy targeting the local backend. Production use is through the systemd-served static bundle.
+- The desktop app obtains the persistent service token through a narrowly scoped Tauri Rust command that reads `~/.config/altradar/service.token` for the current OS user. Keep the token in frontend memory only and send it as a bearer token for protected API and SSE calls. Never embed it in frontend assets, command-line arguments, URLs, local storage, or logs.
+- Restrict the Rust command to the expected app context and return only the token needed by the frontend. Keep the file mode `0600` and loopback-only backend binding. Document that same-user processes are within the local trust boundary.
+- The API remains authenticated except `GET /healthz`; readiness and data endpoints require the bearer token. Preserve existing origin/host checks and permit only the Tauri asset origin plus the localhost Vite development origins needed for development.
+- Production desktop requests do not require CORS changes beyond the existing Tauri origin allowlist. Do not weaken checks to allow arbitrary origins.
+- Remove the hardcoded development token from the production path. Any development credential must be explicit and isolated to Vite/mock development.
 
-## Documentation and scope
+## Desktop launcher and setup
 
-- Update README quick-start and service setup to make systemd backend plus React browser UI the normal launch flow. Clearly label Tkinter/Qt launch commands as legacy/deprecated, and remove them from the primary quick-start instructions.
-- Do not delete Python GUI code, remove GUI dependencies, rewrite scanner behavior, alter API payload contracts, or change trading/strategy logic as part of this launcher work.
-- Do not add a second frontend daemon, Docker, a reverse proxy, remote binding, or LAN access.
+- Add or update a desktop launcher script only if needed for development. The supported user path is the installed ALT RADAR desktop entry, which opens the Tauri window.
+- Setup documentation installs/enables the user systemd service and installs the desktop app as separate components. It clearly explains that the app expects the service to be running and does not manage its lifecycle.
+- README quick-start makes the systemd service plus native React/Tauri app the normal workflow. Tkinter/Qt commands are labeled legacy and removed from the primary quick-start.
+- Do not add a browser launcher, a React static server, a second frontend daemon, Docker, reverse proxy, remote binding, or LAN access.
+
+## Scope boundaries
+
+- Do not delete Python GUI code or remove its dependencies in this task.
+- Do not rewrite scanner behavior, alter API payload contracts, or change trading/strategy logic.
+- Do not create a second scanner process or a UI-spawned backend fallback.
+- Do not migrate the existing database or change its schema under this launcher work.
 
 ## Verification criteria
 
-1. The example user unit starts one scanner-enabled `proto.service` process and systemd restarts it after a forced process exit.
-2. With a production React build present, `/` and static assets load from `127.0.0.1:18741`; direct navigation to client-side routes works.
-3. `/api/healthz` or the agreed health route is handled consistently, and authenticated API reads and SSE work through `/api/` on the same origin. The health check remains unauthenticated; protected routes reject missing/invalid tokens.
-4. The browser receives the token only through the runtime bootstrap, keeps it in memory, and sends it as a bearer token. No production artifact contains the development token or service token.
-5. Starting the launcher with the service active opens the dashboard. Starting it with the service down reports systemd diagnostics and does not spawn a backend process.
-6. Enabling lingering and the user unit makes the service start at boot and continue after logout; document that this requires the host's user-systemd environment.
-7. Vite development continues to work against the same backend, and existing API response contracts remain unchanged.
+1. The example user unit starts one scanner-enabled `proto.service`, and systemd restarts it after an unexpected exit.
+2. The user unit starts at boot and survives logout when linger is enabled.
+3. Launching ALT RADAR from the desktop opens a native Tauri window without opening a browser.
+4. With the service available, the UI obtains the service token through the Rust bridge and reads authenticated data and SSE from loopback.
+5. With the service stopped, the UI shows an actionable unavailable state and does not spawn a backend.
+6. Closing or crashing the UI does not stop or restart the backend; stopping the service leaves the UI safely disconnected.
+7. Production assets contain neither the service token nor the development token; API authentication and origin checks remain enforced.
+8. Vite development continues to work against the local service, and existing API response contracts remain unchanged.
 
 ## Open implementation details
 
-- Choose the concrete runtime-bootstrap route and exact static-file fallback/error behavior during implementation, preserving the security properties above.
-- Confirm systemd's working directory and static path resolution for both checkout-based development and the documented installed service setup.
-- Confirm the service's existing CORS/Origin gate accepts the production same-origin browser origin and does not weaken protections for other origins.
+- Confirm the current Tauri capability/permission model for the token-reading Rust command and restrict it to the app's main window.
+- Confirm packaging dependencies and supported Linux formats on the target development machine.
+- Confirm service readiness semantics and the exact UI status message for a running service before its first completed scan.
 
 ## Review gate
 
-This document is the revised design for review. After approval, write the implementation plan; do not begin implementation from this design alone.
+This revised document is for review. After approval, write an implementation plan; do not begin implementation from this design alone.
