@@ -1,0 +1,41 @@
+/* ALT RADAR theme — the 12 spec hexes as CSS vars (deep navy #0b0e17 family, dark).
+   Tailwind maps every color utility to these vars (see tailwind.config.ts). */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* surfaces */
+  --bg: #0b0e17;            /* page background — deep navy */
+  --bg-elevated: #0f1420;   /* sidebar / panels */
+  --card: #151b2b;          /* card surface */
+  --card-hover: #1b2338;    /* row hover */
+  /* lines */
+  --border: #232c42;
+  --border-strong: #2f3a57;
+  /* text */
+  --fg: #e7ecf5;            /* primary */
+  --muted: #8a94ab;         /* secondary */
+  /* signal */
+  --accent: #4f8cff;        /* brand blue */
+  --long: #2fbf71;          /* long / passed criteria */
+  --short: #e5484d;         /* short / failed criteria */
+  /* charts */
+  --chart-grid: #1e2637;
+
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
