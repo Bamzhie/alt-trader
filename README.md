@@ -20,8 +20,9 @@ no order code path anywhere in this repository.
   outcomes (1h/4h/24h/7d), stop/TP1/TP2 first touches, and episode-based
   cohorts with explicit denominators. No net-P&L is ever reported — the
   system reports touch rates and hit rates, honestly labeled.
-- **Displays** it all in a tkinter desktop GUI, a PySide6/Qt desktop GUI, or a
-  terminal UI.
+- **Displays** live service data in a React dashboard packaged as a native
+  Tauri desktop app. The scanner and API run independently under systemd;
+  closing the window does not stop collection.
 
 Current status: the detector is **unvalidated** — scores measure abnormal
 activity, not edge. The outcome log being collected is what will calibrate
@@ -33,7 +34,9 @@ audit of the pipeline, limitations included.
 - **Python 3.10+** (stdlib only for the core — zero pip dependencies)
 - **Linux** recommended (the 24/7 collector uses a systemd user service;
   anything POSIX works for interactive use)
-- **tkinter** for the default GUI — on Debian/Ubuntu: `sudo apt install python3-tk`
+- **systemd user services** for the always-on backend on Linux
+- **Rust, Node.js, and Linux WebKitGTK development libraries** only when
+  building the desktop app from source; end users can install its package
 - **Internet access** to MEXC and Bybit public REST endpoints (no accounts, no keys)
 - ~100 MB disk to start; data grows ~5 MB/day
 
@@ -43,20 +46,64 @@ audit of the pipeline, limitations included.
 git clone https://github.com/Bamzhie/alt-trader.git
 cd alt-trader
 python3 --version        # need 3.10+
-python3 -c "import tkinter; print('gui ok')"   # or: sudo apt install python3-tk
-```
-
-That's it for the core app. For the Qt interface (optional):
-
-```bash
-python3 -m venv .venv-qt
-.venv-qt/bin/pip install PySide6-Essentials
 ```
 
 ## Usage
 
+### Native desktop app and always-on backend (normal workflow)
+
+Install and start the user service once. Edit `WorkingDirectory` and
+`ExecStart` in the example unit to match your checkout and Python path.
+
 ```bash
-# Desktop GUI (tkinter, no extra installs)
+mkdir -p ~/.config/systemd/user
+cp altradar.service.example ~/.config/systemd/user/altradar.service
+systemctl --user daemon-reload
+systemctl --user enable --now altradar.service
+sudo loginctl enable-linger "$USER"
+systemctl --user status altradar.service
+journalctl --user -u altradar.service -f
+```
+
+Build the native app from source (requires Tauri's Linux build dependencies):
+
+```bash
+cd app
+npm install
+npm run tauri -- build --bundles deb
+```
+
+Install the generated `.deb` from `app/src-tauri/target/release/bundle/deb/`
+to add ALT RADAR to the desktop application menu. Launching the app opens a
+native window and connects to the systemd service; it does not open a browser
+or start another backend. AppImage packaging can be requested on machines
+with `linuxdeploy` installed using `npm run tauri -- build --bundles appimage`.
+On other Linux distributions, run the installer after the build to add a
+native launcher to the application menu and desktop:
+
+```bash
+bash app/install-user-app.sh
+```
+
+Search for **ALT RADAR** or **ALT Trader** in the application menu. The
+dashboard reads the existing local database and bar files. Its connection
+indicator reflects API reachability and the event stream; scanner first-sweep
+progress is separate, so a new scan does not hide data already on disk.
+
+To troubleshoot the backend:
+
+```bash
+systemctl --user status altradar.service
+journalctl --user -u altradar.service -n 100 --no-pager
+```
+
+### Legacy interfaces
+
+The Python interfaces remain in the repository for existing users, but are
+no longer the supported desktop launch path:
+
+```bash
+# Desktop GUI (tkinter)
 python3 -m gui
 
 # Desktop GUI (Qt, modern dark terminal look)
@@ -76,24 +123,6 @@ python3 -m proto.report --top20 --days 7     # daily top-20 review
 python3 -m proto.daemon
 python3 -m proto.daemon --no-scan            # collector + resolver only
 ```
-
-### 24/7 collection (systemd)
-
-A user service file is included (`altradar.service.example` — copy it to
-`~/.config/systemd/user/altradar.service` and edit the two paths), then:
-
-```bash
-cp altradar.service.example ~/.config/systemd/user/altradar.service
-# edit WorkingDirectory= and ExecStart= in that file to match your checkout
-systemctl --user daemon-reload
-systemctl --user enable --now altradar.service
-systemctl --user status altradar.service
-journalctl --user -u altradar.service -f
-```
-
-With `enable-linger` the service survives logout and starts at boot. Run it in
-`--no-scan` mode alongside an open GUI to avoid double-logged signals, or in
-full mode when the GUI is closed.
 
 ### Tests
 

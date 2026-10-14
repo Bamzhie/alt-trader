@@ -9,3 +9,9 @@ data/
 # runtime state
 .last_entries
 data/.last_entries
+
+# React/Tauri build output
+app/node_modules/
+app/dist/
+app/src-tauri/target/
+app/src-tauri/gen/

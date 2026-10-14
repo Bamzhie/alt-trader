@@ -144,7 +144,10 @@ function emptyBars(coin: string, tf: BarTimeframe): Bars {
 
 export function CoinDetail({ client: clientProp, blockingReason }: CoinDetailProps) {
   const client = useMemo(
-    () => clientProp ?? createClient({ baseUrl: "/api", token: "dev-token" }),
+  () => clientProp ?? createClient({
+    baseUrl: "/api",
+    token: import.meta.env.DEV ? "dev-token" : "",
+  }),
     [clientProp],
   );
 

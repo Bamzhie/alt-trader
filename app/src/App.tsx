@@ -13,6 +13,7 @@ import type { Page as PageKey } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { Dashboard } from "./pages/Dashboard";
 import { StubPage } from "./pages/StubPage";
+import { Watchlist } from "./pages/Watchlist";
 import { useDashboardStore } from "./store/dashboard";
 
 export type Page = PageKey;
@@ -23,7 +24,15 @@ function usePage(initial: Page): { page: Page; setPage(p: Page): void } {
   return { page, setPage };
 }
 
-export default function App() {
+export interface AppProps {
+  apiBaseUrl?: string;
+  serviceToken?: string;
+}
+
+export default function App({
+  apiBaseUrl = "/api",
+  serviceToken = import.meta.env.DEV ? "dev-token" : "",
+}: AppProps = {}) {
   const { page, setPage } = usePage("dashboard");
   const connection = useDashboardStore((s) => s.connection);
 
@@ -35,7 +44,9 @@ export default function App() {
         <ConnectionBanner connection={connection} />
         <main className="min-w-0 flex-1">
           {page === "dashboard" ? (
-            <Dashboard />
+            <Dashboard apiBaseUrl={apiBaseUrl} serviceToken={serviceToken} />
+          ) : page === "watchlist" ? (
+            <Watchlist apiBaseUrl={apiBaseUrl} serviceToken={serviceToken} />
           ) : (
             <StubPage
               name={

@@ -25,7 +25,7 @@ export interface TopSignalsTableProps {
   /** Closed 5m closes per coin, for the trend sparkline. */
   barsByCoin: Record<string, number[]>;
   /** UTC-seconds timestamp the countdowns are measured against. */
-  dataAsOf: number;
+  dataAsOf: number | null;
 }
 
 /** Display labels for setup inputs, matching the trade-plan indicator names. */
@@ -49,7 +49,8 @@ function formatPrice(p: number): string {
 }
 
 /** 24h change with an explicit sign; a true 0 stays neutral (muted). */
-function formatChange(v: number): { text: string; cls: string } {
+function formatChange(v: number | null): { text: string; cls: string } {
+  if (v === null) return { text: "unavailable", cls: "text-muted" };
   if (v === 0) return { text: "0.00%", cls: "text-muted" };
   const sign = v > 0 ? "+" : "";
   return {
@@ -59,7 +60,8 @@ function formatChange(v: number): { text: string; cls: string } {
 }
 
 /** Expiry countdown measured against the snapshot's data_as_of timestamp. */
-function formatCountdown(expiresTs: number, nowTs: number): string {
+function formatCountdown(expiresTs: number, nowTs: number | null): string {
+  if (nowTs === null) return "unavailable";
   const secs = expiresTs - nowTs;
   if (secs <= 0) return "expired";
   const days = Math.floor(secs / 86400);

@@ -137,11 +137,21 @@ def main():
         check("GET /healthz no-auth -> 200", st == 200, f"got {st}")
         check("GET /healthz body", ok_body, body[:120])
 
+        st, _, cors = req(port, "GET", "/healthz",
+                          origin="http://localhost:1420")
+        check("GET /healthz echoes allowlisted Origin",
+              st == 200 and cors == "http://localhost:1420", str(cors))
+
         st, _, _ = req(port, "GET", "/snapshot")
         check("GET /snapshot no token -> 401", st == 401, f"got {st}")
 
         st, _, _ = req(port, "GET", "/snapshot", token="wrong-token")
         check("GET /snapshot bad token -> 401", st == 401, f"got {st}")
+
+        st, _, cors = req(port, "GET", "/snapshot", token="wrong-token",
+                          origin="http://localhost:1420")
+        check("401 echoes allowlisted Origin",
+              st == 401 and cors == "http://localhost:1420", str(cors))
 
         st, _, _ = req(port, "GET", "/snapshot", token=TOKEN)
         check("GET /snapshot good token -> 200", st == 200, f"got {st}")

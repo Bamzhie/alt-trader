@@ -5,9 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# EDIT BOTH PATHS BELOW to your checkout location and Python:
-WorkingDirectory=/home/YOU/alt-trader
-ExecStart=/usr/bin/python3 -m proto.service --no-scan --collect-every 300 --resolve-every 3600
+# Edit both paths below to your checkout location and Python:
+WorkingDirectory=/home/YOU/alt-radar
+ExecStart=/usr/bin/python3 -m proto.service --collect-every 300 --resolve-every 3600
 Restart=always
 RestartSec=60
 

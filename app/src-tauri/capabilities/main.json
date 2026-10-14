@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "Permissions for the ALT RADAR desktop window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-get-service-token"
+  ]
+}

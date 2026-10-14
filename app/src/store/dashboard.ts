@@ -53,7 +53,7 @@ export interface DashboardActions {
   setBarTimeframe(tf: BarTimeframe): void;
   setMoversTab(m: MoversTab): void;
   setConnection(c: ConnectionState): void;
-  setDataAsOf(ts: number): void;
+  setDataAsOf(ts: number | null): void;
 }
 
 export type DashboardStore = DashboardState & DashboardActions;

@@ -11,7 +11,7 @@
 //   * Colors come from theme tokens (Tailwind token classes), never raw
 //     hexes — asserted on the active nav item and the banner.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "../src/App";
 import { useDashboardStore } from "../src/store/dashboard";
 import { healthzOk, readyzOk, sseStreamResponse, stubReadOnlyFetch } from "./sse_stub";
@@ -78,6 +78,44 @@ test("nav click moves the active item and swaps the page", () => {
     screen.getByRole("button", { name: "Dashboard" }),
   ).not.toHaveAttribute("aria-current", "page");
   expect(screen.getByRole("heading", { name: "Signals" })).toBeInTheDocument();
+});
+
+test("Watchlist renders live scanner coins without calling them setups", async () => {
+  const snapshot = {
+    ok: true,
+    data: {
+      snapshot_event_id: "000001", ts: 1792010000, data_as_of: 1792010000,
+      eligible_count: 1, evaluated_count: 1, active_setups: 0,
+      monitoring_coverage: null, new_setups_24h: 0, setups: [],
+      comparison_24h: { available: false, reason: "no history", prior_ts: null,
+        delta_active_setups: null, delta_new_setups_24h: null },
+      snapshot_history: [],
+      coins_without_setup: [{ coin: "ALT", name: "ALT",
+        blocking_reason: "watcher evaluation is not running", price: 2.5,
+        change_24h_pct: 4.2, quote_vol_24h: 2500000, last_seen: 1792010000 }],
+      market_overview: [], movers: [], recent_analysis: [], activity: [],
+      supported_timeframes: ["5m", "15m", "1H", "4H", "1D"],
+      event_kinds: [], unavailable: "watcher evaluation is not running",
+    },
+    error: null,
+  };
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/healthz")) return Promise.resolve(healthzOk());
+    if (url.endsWith("/readyz")) return Promise.resolve(readyzOk());
+    if (url.endsWith("/events")) {
+      return Promise.resolve(sseStreamResponse(init?.signal ?? null).response);
+    }
+    return Promise.resolve(new Response(JSON.stringify(snapshot), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    }));
+  });
+  render(<App />);
+  fireEvent.click(screen.getByRole("button", { name: "Watchlist" }));
+  expect(await screen.findByText("ALT")).toBeInTheDocument();
+  expect(screen.getByText("2.5")).toBeInTheDocument();
+  expect(screen.getAllByText("watcher evaluation is not running")).toHaveLength(2);
+  await waitFor(() => expect(screen.getByText("1 coins")).toBeInTheDocument());
 });
 
 test("active nav item is painted with the accent token, inactive with muted", () => {

@@ -1,8 +1,7 @@
 // ConnectionBanner — surfaces the SSE connection lifecycle.
 //
 // House rules:
-//   * "starting" shows "starting — first sweep in progress" (the service is
-//     alive but not yet ready).
+//   * "starting" shows while the local API event stream is connecting.
 //   * "connected" renders nothing at all.
 //   * "error" shows a contained fallback: the shell stays usable, the
 //     message states the condition and that a retry is in progress.
@@ -28,8 +27,8 @@ export function ConnectionBanner({ connection }: ConnectionBannerProps) {
       }
     >
       {isError
-        ? "connection error — retrying automatically; showing the last data received"
-        : "starting — first sweep in progress"}
+        ? "Connection error: ALT RADAR service unavailable — retrying. Check: systemctl --user status altradar.service; journalctl --user -u altradar.service -n 100 --no-pager"
+        : "connecting to ALT RADAR service…"}
     </div>
   );
 }

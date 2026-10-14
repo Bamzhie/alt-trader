@@ -115,6 +115,7 @@ def main():
     from proto.store import Store
     from proto import collector as colmod
     from proto import watcher as watchmod
+    from proto import watcher_journal as journal
 
     tmp = tempfile.mkdtemp(prefix="svc-routes-")
     db_path = os.path.join(tmp, "signals.db")
@@ -126,6 +127,13 @@ def main():
     store.log_plan(sid, SimpleNamespace(
         direction="LONG", entry_low=99.9, entry_high=100.1, stop=98.0,
         tp1=104.0, tp2=110.0, leverage=5, notional=100.0, max_loss=2.0))
+    for coin, px, change in (("BTC", 60000.0, 2.0),
+                             ("ETH", 3000.0, -1.0),
+                             ("ALT", 2.0, 5.0)):
+        card = fake_scorecard(coin, px)
+        card.change_24h_pct = change
+        store.upsert_current(card, True, None)
+    journal.write_snapshot(store.conn, 3, 3, 0, 0, None)
 
     # -- fixture: bars via the real collector writer -----------------------
     base = 1700000000 - (1700000000 % 300)  # aligned, long closed
@@ -162,6 +170,41 @@ def main():
         check("snapshot ts is UTC-seconds int",
               isinstance((body.get("data") or {}).get("ts"), int),
               str(body)[:160])
+        snap = body.get("data") or {}
+        check("snapshot setups is a list, not aggregate counts",
+              isinstance(snap.get("setups"), list), str(snap)[:240])
+        check("snapshot has the dashboard read-model fields",
+              {"data_as_of", "eligible_count", "evaluated_count",
+               "active_setups", "monitoring_coverage", "new_setups_24h",
+               "comparison_24h", "snapshot_history", "coins_without_setup",
+               "market_overview", "movers", "recent_analysis", "activity",
+               "supported_timeframes", "event_kinds", "unavailable"}
+              <= set(snap), str(sorted(snap))[:240])
+        first_setup = (snap.get("setups") or [{}])[0]
+        check("snapshot projects watcher rows into dashboard setup records",
+              snap.get("active_setups") == 510
+              and isinstance(first_setup, dict)
+              and {"id", "coin", "direction", "horizon", "price", "inputs",
+                  "criteria", "analysis", "unavailable_inputs"}
+              <= set(first_setup), str(first_setup)[:240])
+        check("snapshot includes latest completed scanner counts",
+              snap.get("eligible_count") == 3
+              and snap.get("evaluated_count") == 3
+              and isinstance(snap.get("data_as_of"), int), str(snap)[:240])
+        check("snapshot includes live BTC and ETH market overview",
+              [row.get("coin") for row in snap.get("market_overview", [])]
+              == ["BTC", "ETH"], str(snap.get("market_overview"))[:240])
+        check("snapshot includes current coins without promoting them to setups",
+              any(row.get("coin") == "ALT"
+                  for row in snap.get("coins_without_setup", []))
+              and all(row.get("coin") != "ALT"
+                      for row in snap.get("setups", [])),
+              str(snap.get("coins_without_setup"))[:240])
+        check("snapshot exposes real market movers",
+              any(row.get("coin") == "ALT" and
+                  row.get("change_24h_pct") == 5.0
+                  for row in snap.get("movers", [])),
+              str(snap.get("movers"))[:240])
 
         st, body = get(port, "/metrics?coin=NOPE")
         check("metrics unknown coin -> 404", st == 404, f"got {st}")

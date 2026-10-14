@@ -64,7 +64,7 @@ export interface Setup {
   emitted_ts: number;
   expires_ts: number;
   price: number;
-  change_24h_pct: number;
+  change_24h_pct: number | null;
   rule: string;
   criteria: SetupCriterion[];
   inputs: SetupInputs;
@@ -111,6 +111,10 @@ export interface CoinWithoutSetup {
   coin: string;
   name: string;
   blocking_reason: string;
+  price?: number | null;
+  change_24h_pct?: number | null;
+  quote_vol_24h?: number | null;
+  last_seen?: number | null;
 }
 
 export interface MarketOverviewRow {
@@ -148,9 +152,9 @@ export type JournalEntry = ActivityEntry;
 export interface Snapshot {
   snapshot_event_id: string;
   ts: number;
-  data_as_of: number;
-  eligible_count: number;
-  evaluated_count: number;
+  data_as_of: number | null;
+  eligible_count: number | null;
+  evaluated_count: number | null;
   active_setups: number;
   monitoring_coverage: number | null;
   new_setups_24h: number;
@@ -185,7 +189,7 @@ export interface Bars {
   bars: Bar[];
   closed_only: boolean;
   count: number;
-  data_as_of: number;
+  data_as_of: number | null;
   /** null = the feed answered; a reason string = section-level unavailability. */
   unavailable: string | null;
 }

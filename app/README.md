@@ -1,11 +1,10 @@
 # ALT RADAR — Dashboard (React frontend)
 
-Read-only dashboard for the ALT RADAR MEXC perpetual-futures scanner. Vite +
-React + TypeScript + Tailwind, talking to a stdlib mock service that
-implements the documented HTTP+SSE contract
-(`docs/superpowers/specs/2026-10-14-tauri-desktop-design.md` §1) with static
-fixtures. When the real `proto/service.py` lands, it drops in behind the
-identical client with zero frontend changes.
+Native desktop dashboard for the ALT RADAR MEXC perpetual-futures scanner.
+The production app is React + TypeScript + Tailwind inside a Tauri 2 window.
+It reads the persistent user service at `127.0.0.1:18741`; systemd owns the
+scanner/API lifecycle. Vite and the fixture mock remain available for UI
+development.
 
 **Hard rules enforced everywhere in this app:**
 
@@ -28,9 +27,10 @@ identical client with zero frontend changes.
   at runtime).
 - Tests mock `fetch` and stub no network — a loopback tripwire in
   `tests/setup.ts` fails any test that touches a non-loopback host.
-- Both servers bind `127.0.0.1` only. The scanner UI is never exposed.
+- The backend binds `127.0.0.1` only. The native UI talks to that loopback
+  service; it is not served as a browser page.
 
-## Quick start
+## Frontend development
 
 ```bash
 # Terminal 1 — the mock service (DEV ONLY, static fixtures, not live data)
@@ -43,23 +43,56 @@ npm install        # first time only
 npm run dev        # 127.0.0.1:5173, proxies /api -> 127.0.0.1:18741
 ```
 
-Open <http://127.0.0.1:5173/>.
+Open <http://127.0.0.1:5173/>. The Vite `/api` proxy targets the local mock
+or the real service.
 
-**Dev bearer token: `dev-token`** — the mock service's default token, printed
-once to stdout at startup. The frontend hard-codes it in `DEV_TOKEN`
-(`src/pages/Dashboard.tsx`) because the Dashboard only ever GETs; the
-production service injects a per-launch token the shell captures, so this
-constant is dev-scoped and is replaced when the Tauri shell lands. It is
-never written to the mock's request log.
+**Development bearer token: `dev-token`** — used only in Vite development and
+removed from the optimized production bundle. The native app reads the
+systemd service token through its Rust bridge and keeps it in frontend memory.
+
+## Native desktop app
+
+The supported desktop path is a Tauri window connected to the separately
+managed systemd backend. Build and launch a development window with:
+
+```bash
+cd app
+npm install
+npm run tauri -- dev
+```
+
+Build distributable Linux packages with:
+
+```bash
+npm run tauri -- build --bundles deb
+```
+
+Install the generated `.deb` on Debian/Ubuntu to add the application menu
+entry. On other Linux distributions, use `bash app/install-user-app.sh`
+from the repository root after building; it copies the native executable
+and icon into the user's local application directories, registers the
+application-menu entry, and updates `~/Desktop/ALT-RADAR.desktop`. Search
+the menu for **ALT RADAR** or **ALT Trader**.
+
+The app does not open a browser and does not start, stop, or supervise the
+backend. Its connection indicator tracks API liveness and the event stream;
+scanner first-sweep readiness is separate because saved data remains
+available during a scan. Chart requests return the latest 1000 closed bars
+by default (up to 5000), and recently requested bar files are cached in the
+service process until the collector updates them. If the service is down,
+the app shows systemd status and journal commands. The Rust bridge reads only
+`~/.config/altradar/service.token` and rejects files with group/world
+permissions or symlink targets.
 
 Other commands:
 
 ```bash
-npm run test        # vitest run — 176 tests, all mocked fetch
+npm run test        # vitest run — 177 tests, all mocked fetch
 npm run typecheck   # tsc --noEmit
 npm run lint        # eslint --max-warnings 0
 npm run build       # tsc --noEmit && vite build -> dist/
 npm run preview     # serve the built dist/ (still needs the mock for data)
+npm run tauri -- dev # native window in development
 
 # The mock service has its own test suite (stdlib unittest, no pytest):
 cd app/dev && python3 -m unittest test_mock_service    # 48 tests
@@ -80,7 +113,7 @@ Every authed route needs `Authorization: Bearer <token>`.
 | `GET /snapshot` | `snapshot_event_id`, `ts`, `data_as_of`, `eligible_count`, `evaluated_count`, `active_setups`, `monitoring_coverage`, `new_setups_24h`, `comparison_24h`, `setups[]`, `market_overview[]`, `movers[]`, `recent_analysis[]`, `activity[]`, `coins_without_setup[]` |
 | `GET /setups?state=&limit=&cursor=` | states `active`/`emitted`/`expired`/`invalidated`/`resolved`; default limit 100, max 500 |
 | `GET /setup/:id` | 404 `NOT_FOUND` for a coin with no setup |
-| `GET /bars?coin=&tf=` | closed bars only; `tf` ∈ 5m/15m/1H/4H/1D; `1m` → `BAD_REQUEST` |
+| `GET /bars?coin=&tf=&limit=` | closed OHLCV bars (default 1000, max 5000); `tf` ∈ 5m/15m/1H/4H/1D; `1m` → `BAD_REQUEST` |
 | `GET /metrics?coin=` | `rsi`, `macd`, `ema50`, `ema200`, `volume_pct`; explicit `null` when unavailable |
 | `GET /tradeplan/:id` | `entry_zone`, `stop`, `tp1`, `tp2`, `reference_notional_usdt: 100` — reference size, not a position; no leverage key |
 | `GET /events` | SSE, monotonic zero-padded ids, ring buffer 500 events / 30 min, 15s keepalive; honors `Last-Event-ID`; below-floor cursor → `resync` event; kinds `setup.emitted`, `setup.invalidated`, `setup.expired`, `setup.resolved`, `monitoring.unavailable`, `monitoring.ok`, `sweep.completed` |
@@ -120,12 +153,9 @@ the built `dist/` via `vite preview`). Fixtures:
       dashboard.
 - [x] **Top bar** — product name, `SCANNING` badge, live UTC clock, bell +
       gear; footer shows `API status`, `Exchange: MEXC`, `Account: Futures`.
-- [x] **Connection banner** — hidden once `/readyz` is true and the SSE
-      stream is open; "starting — first sweep in progress" while `/readyz`
-      is false (verified by `GET /dev/toggle-ready`, readyz then answers
-      `503 UNAVAILABLE` while the snapshot still renders from the
-      already-loaded data), then toggled back. Driven by `/healthz` +
-      `/readyz`, not by stream-open.
+- [x] **Connection banner** — reflects local API liveness and the SSE
+      connection. Scanner first-sweep readiness is separate because saved
+      dashboard data remains readable while a new sweep is running.
 - [x] **Stat cards** — ACTIVE SETUPS `6`; ELIGIBLE PERPS `132 of 150`
       ("evaluated of eligible"); MONITORING COVERAGE `98.4%` ("of the last
       sweep"); NEW SETUPS 24H `6` with the delta line reading **unavailable**
@@ -227,17 +257,14 @@ binding and were applied deliberately:
 The hook (`src/api/sse.ts`) and the store's `setConnection` are wired into
 the running app in `src/pages/Dashboard.tsx`:
 
-- The banner is driven by `/healthz` (alive) + `/readyz` (ready) — never
-  by the hook's stream-open flag. The service's `/events` route
-  authenticates but does not gate on readiness, so a stream can be open
-  while the first sweep is still running; treating stream-open as
-  "connected" would claim readiness before any data exists.
+- The banner is driven by `/healthz` (API process alive) and the hook's
+  event-stream connection. `/readyz` reports scanner first-sweep readiness;
+  it does not define whether the local API can serve persisted data.
 - An applied transition (id above `snapshot_event_id`) and a `resync`
   frame both re-snapshot, so the board reflects live transitions. The
   snapshot read coalesces, so a burst of events costs one extra GET.
 - `tests/test_sse_wiring.test.tsx` pins this end to end with mocked fetch
-  (no network): the banner reaches "connected" only when `/readyz` is
-  true, stays "starting" while `/readyz` is false even with the stream
-  delivering events, flips to "error" on a `/healthz` failure, and an
+  (no network): the banner reaches "connected" when the API is alive and
+  the event stream opens, and flips to "error" on a `/healthz` failure; an
   applied `sweep.completed` / `resync` re-snapshots while a below-watermark
   event does not.

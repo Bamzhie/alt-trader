@@ -60,7 +60,9 @@ export function StatCards({ snapshot }: StatCardsProps) {
       />
       <StatCard
         label="Eligible Perps"
-        value={`${snapshot.evaluated_count} of ${snapshot.eligible_count}`}
+        value={snapshot.evaluated_count === null || snapshot.eligible_count === null
+          ? "unavailable"
+          : `${snapshot.evaluated_count} of ${snapshot.eligible_count}`}
         footnote="evaluated of eligible"
       />
       <StatCard

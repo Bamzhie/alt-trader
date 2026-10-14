@@ -27,12 +27,6 @@ import { TopSignalsTable } from "../components/TopSignalsTable";
 import { useDashboardStore } from "../store/dashboard";
 import type { ConnectionState, MarketFilter, SortKey } from "../store/dashboard";
 
-// Dev bearer for the stdlib mock service (its default token, printed once
-// to stdout by dev/mock_service.py). The production service injects a
-// per-launch token the shell captures — never bundled — so this constant
-// stays dev-scoped and is replaced when the Tauri shell lands.
-const DEV_TOKEN = "dev-token";
-
 /** Formats a UTC-seconds int as "YYYY-MM-DD HH:MM:SS UTC". */
 function formatUtc(ts: number): string {
   const d = new Date(ts * 1000);
@@ -101,29 +95,20 @@ function useSnapshot(client: ApiClient): {
   return { snapshot, error, refetch: load };
 }
 
-/** How often the readiness probe re-checks /healthz + /readyz (ms). */
+/** How often the liveness probe re-checks the local API (ms). */
 const CONNECTION_PROBE_INTERVAL_MS = 5_000;
 
 /**
- * Drives the store's `connection` from the two probes — never from the SSE
- * hook's stream-open flag.
+ * Connection means the local API is reachable and its event stream opened.
+ * Scanner readiness is separate: the service can serve persisted data while
+ * a new scan runs, so /readyz's first-sweep state must not look disconnected.
  *
- * Why: the service's /events route authenticates but does NOT gate on
- * readiness, so a stream can be open and delivering while the first sweep
- * is still running. Treating stream-open as "connected" would claim
- * readiness before the data exists. §2 instead requires /healthz (alive)
- * + /readyz (ready):
+ *   * not alive → "error" (contained fallback, retrying)
+ *   * alive, stream up → "connected"
+ *   * alive, stream down → hold an established connection during brief
+ *     reconnects; show "starting" only before the first stream connects.
  *
- *   * not alive                → "error"     (contained fallback, retrying)
- *   * alive, not ready         → "starting"  (first sweep in progress)
- *   * alive, ready, stream up  → "connected"
- *   * alive, ready, stream down→ state unchanged (sticky). A reconnect
- *     blip is not a first sweep, so it must not print "starting"; the
- *     next successful probe re-confirms "connected".
- *
- * Probed on mount, on every stream open/close transition, and on a slow
- * interval so a mid-session readiness flip (the mock's /dev/toggle-ready)
- * is picked up without waiting for a stream event.
+ * Probed on mount, on stream transitions, and every five seconds.
  */
 function useConnectionStatus(
   client: ApiClient,
@@ -142,26 +127,14 @@ function useConnectionStatus(
         useDashboardStore.getState().setConnection("error");
         return;
       }
-      // readyz() rethrows non-UNAVAILABLE failures (e.g. NETWORK); a probe
-      // that cannot answer readiness is treated as not-ready, never as a
-      // crash.
-      let ready = false;
-      try {
-        ready = await client.readyz();
-      } catch {
-        ready = false;
-      }
-      if (cancelled) return;
       // Write only on a real transition: zustand notifies subscribers on
       // every set(), so re-setting the same value would re-render the
       // shell for nothing (and, in tests, for an act() warning per
       // probe).
       const current = useDashboardStore.getState().connection;
       let next: ConnectionState;
-      if (ready && streamOpenRef.current) {
+      if (streamOpenRef.current) {
         next = "connected";
-      } else if (!ready) {
-        next = "starting";
       } else {
         // Ready but the stream is down: a reconnect blip is not a first
         // sweep, so it must not print "starting" — hold the current state
@@ -270,13 +243,24 @@ function sortSetups(setups: Setup[], sort: SortKey): Setup[] {
       return rows.sort((a, b) => a.expires_ts - b.expires_ts);
     case "change24h":
       return rows.sort(
-        (a, b) => Math.abs(b.change_24h_pct) - Math.abs(a.change_24h_pct),
+        (a, b) => Math.abs(b.change_24h_pct ?? -1) - Math.abs(a.change_24h_pct ?? -1),
       );
   }
 }
 
-export function Dashboard() {
-  const client = useMemo(() => createClient({ baseUrl: "/api", token: DEV_TOKEN }), []);
+export interface DashboardProps {
+  apiBaseUrl?: string;
+  serviceToken?: string;
+}
+
+export function Dashboard({
+  apiBaseUrl = "/api",
+  serviceToken = import.meta.env.DEV ? "dev-token" : "",
+}: DashboardProps = {}) {
+  const client = useMemo(
+    () => createClient({ baseUrl: apiBaseUrl, token: serviceToken }),
+    [apiBaseUrl, serviceToken],
+  );
 
   const marketFilter = useDashboardStore((s) => s.marketFilter);
   const horizonFilter = useDashboardStore((s) => s.horizonFilter);
@@ -295,8 +279,8 @@ export function Dashboard() {
   // transition instead of waiting for the next full reload. The snapshot
   // read coalesces, so a burst costs one extra GET.
   const { connected: streamOpen } = useEvents({
-    url: "/api/events",
-    token: DEV_TOKEN,
+    url: `${apiBaseUrl.replace(/\/+$/, "")}/events`,
+    token: serviceToken,
     snapshotEventId: snapshot?.snapshot_event_id ?? null,
     onEvent: () => {
       refetch();
@@ -366,7 +350,9 @@ export function Dashboard() {
         <h1 className="text-lg font-semibold text-fg">Dashboard</h1>
         {snapshot ? (
           <span className="text-xs text-muted">
-            data as of {formatUtc(snapshot.data_as_of)}
+            data as of {snapshot.data_as_of === null
+              ? "unavailable"
+              : formatUtc(snapshot.data_as_of)}
           </span>
         ) : null}
       </div>
@@ -374,6 +360,12 @@ export function Dashboard() {
       {snapshot ? (
         <>
           <StatCards snapshot={snapshot} />
+
+          {snapshot.unavailable ? (
+            <p role="status" className="rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted">
+              {snapshot.unavailable}
+            </p>
+          ) : null}
 
           <FilterBar counts={counts} />
 

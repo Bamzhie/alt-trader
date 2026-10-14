@@ -19,6 +19,7 @@ import importlib
 import json
 import logging
 import os
+from collections import OrderedDict
 import queue
 import re
 import secrets
@@ -45,6 +46,14 @@ from .watcher_feed import (
 )
 
 LOG = logging.getLogger("proto.service")
+
+# Chart and metrics requests often ask for the same coin within seconds.
+# Gzip files cannot be efficiently tailed, so cache only a few recently read
+# contracts and invalidate each entry when the collector appends to its file.
+_BAR_READ_CACHE = OrderedDict()
+_BAR_READ_CACHE_LOCK = threading.Lock()
+_BAR_READ_INFLIGHT = {}
+_BAR_READ_CACHE_MAX = 4
 
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
@@ -431,6 +440,42 @@ def _resample_bars(bars5, tf_sec, now):
     return out
 
 
+def _read_service_bars(data_dir, coin):
+    """Read a recently requested coin's gzip bars once per file version."""
+    path = os.path.abspath(os.path.join(data_dir, f"{coin}.csv.gz"))
+    stat = os.stat(path)
+    key = (path, stat.st_mtime_ns, stat.st_size)
+    with _BAR_READ_CACHE_LOCK:
+        cached = _BAR_READ_CACHE.get(key)
+        if cached is not None:
+            _BAR_READ_CACHE.move_to_end(key)
+            return cached
+        load_lock = _BAR_READ_INFLIGHT.setdefault(key, threading.Lock())
+
+    with load_lock:
+        with _BAR_READ_CACHE_LOCK:
+            cached = _BAR_READ_CACHE.get(key)
+            if cached is not None:
+                _BAR_READ_CACHE.move_to_end(key)
+                return cached
+        try:
+            bars = read_bars(data_dir, coin)
+        except Exception:
+            with _BAR_READ_CACHE_LOCK:
+                _BAR_READ_INFLIGHT.pop(key, None)
+            raise
+        with _BAR_READ_CACHE_LOCK:
+            # Drop stale versions for this coin before keeping the new snapshot.
+            for old_key in tuple(_BAR_READ_CACHE):
+                if old_key[0] == path:
+                    del _BAR_READ_CACHE[old_key]
+            _BAR_READ_CACHE[key] = bars
+            while len(_BAR_READ_CACHE) > _BAR_READ_CACHE_MAX:
+                _BAR_READ_CACHE.popitem(last=False)
+            _BAR_READ_INFLIGHT.pop(key, None)
+        return bars
+
+
 def _setup_dict(row):
     return {
         "id": row["id"], "rule_id": row["rule_id"], "coin": row["coin"],
@@ -537,24 +582,25 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
             Returns the echoable Origin (or None) on success, else sends
             the 401/403 response and returns False.
             """
+            origin = self._cors_origin()
             auth = self.headers.get("Authorization") or ""
             scheme, _, presented = auth.partition(" ")
             good = (scheme.lower() == "bearer" and presented
                     and hmac.compare_digest(presented, token))
             if not good:
                 self._deny(401, "UNAUTH",
-                           "missing or invalid bearer token")
+                           "missing or invalid bearer token", origin=origin)
                 return False
-            origin = self.headers.get("Origin")
-            if origin is not None and not is_allowlisted_origin(origin):
+            request_origin = self.headers.get("Origin")
+            if request_origin is not None and origin is None:
                 self._deny(403, "FORBIDDEN",
                            "origin not allowlisted")
                 return False
             if not is_loopback_host(self.headers.get("Host")):
                 self._deny(403, "FORBIDDEN",
-                           "host not loopback")
+                           "host not loopback", origin=origin)
                 return False
-            return self._cors_origin()
+            return origin
 
         # -- routing ----------------------------------------------------
         def _route(self, is_options):
@@ -584,7 +630,8 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                 return
 
             if self.command == "GET" and path in ("", "/healthz", "/healthz/"):
-                self._send_json(200, {"ok": True, "alive": True})
+                self._send_json(200, {"ok": True, "alive": True},
+                                origin=self._cors_origin())
                 return
 
             gated = self._gate()
@@ -635,31 +682,195 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
         # -- Task 2 resource handlers (typed envelope) -------------------
         def _handle_snapshot(self, origin, store_path=cfg_store):
             now = int(time.time())
-            data = {"ts": now, "snapshot_event_id": head_event_id(),
-                    "setups": {}, "signals": None, "unavailable": []}
+            data = {
+                "ts": now, "data_as_of": None,
+                "snapshot_event_id": head_event_id(),
+                "eligible_count": None, "evaluated_count": None,
+                "active_setups": 0, "monitoring_coverage": None,
+                "new_setups_24h": 0, "setups": [],
+                "comparison_24h": {
+                    "available": False,
+                    "reason": "no persisted dashboard history",
+                    "prior_ts": None, "delta_active_setups": None,
+                    "delta_new_setups_24h": None,
+                },
+                "snapshot_history": [], "coins_without_setup": [],
+                "market_overview": [], "movers": [],
+                "recent_analysis": [], "activity": [],
+                "supported_timeframes": ["5m", "15m", "1H", "4H", "1D"],
+                "event_kinds": list(EVENT_KINDS),
+                "unavailable": None,
+            }
             try:
                 conn = _open_db(store_path)
             except sqlite3.Error:
-                data["unavailable"].append("database unavailable")
+                data["unavailable"] = "dashboard database unavailable"
                 self._send_json(200, envelope(True, data), origin=origin)
                 return
             try:
+                tables = {r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                # Sweep counts and history are persisted independently from
+                # watcher setups. Read them so a healthy scanner does not
+                # look like an empty/unavailable service in the dashboard.
+                if "dashboard_snapshot" in tables:
+                    snap_cols = {r[1] for r in conn.execute(
+                        "PRAGMA table_info(dashboard_snapshot)")}
+                    required = {"ts", "eligible_count", "evaluated_count",
+                                "active_setups", "new_setups_24h",
+                                "monitoring_coverage"}
+                    if required <= snap_cols:
+                        hist = conn.execute(
+                            "SELECT ts, eligible_count, evaluated_count, "
+                            "active_setups, new_setups_24h, "
+                            "monitoring_coverage FROM dashboard_snapshot "
+                            "ORDER BY ts DESC, rowid DESC LIMIT 200"
+                        ).fetchall()
+                        if hist:
+                            latest = hist[0]
+                            data.update({
+                                "data_as_of": latest[0],
+                                "eligible_count": latest[1],
+                                "evaluated_count": latest[2],
+                                "new_setups_24h": latest[4],
+                                "monitoring_coverage": latest[5],
+                            })
+                            data["snapshot_history"] = [
+                                {"ts": r[0], "eligible_count": r[1],
+                                 "evaluated_count": r[2],
+                                 "active_setups": r[3],
+                                 "new_setups_24h": r[4],
+                                 "monitoring_coverage": r[5],
+                                 "covers_24h": r[0] <= now - 86400}
+                                for r in reversed(hist)]
+                            prior = conn.execute(
+                                "SELECT ts, active_setups, new_setups_24h "
+                                "FROM dashboard_snapshot WHERE ts<=? "
+                                "ORDER BY ts DESC, rowid DESC LIMIT 1",
+                                (now - 86400,)).fetchone()
+                            if prior:
+                                data["comparison_24h"] = {
+                                    "available": True, "reason": None,
+                                    "prior_ts": prior[0],
+                                    "delta_active_setups": (
+                                        latest[3] - prior[1]),
+                                    "delta_new_setups_24h": (
+                                        latest[4] - prior[2]),
+                                }
+
+                watcher_available = "watcher_setup" in tables
+                projected = []
                 try:
-                    for state, n in conn.execute(
-                            "SELECT state, COUNT(*) FROM watcher_setup"
-                            " GROUP BY state"):
-                        data["setups"][state] = n
+                    rows = (conn.execute(
+                        "SELECT * FROM watcher_setup ORDER BY src_bar_ts"
+                    ).fetchall() if watcher_available else [])
+                    for row in rows:
+                        r = dict(row)
+                        state = r.get("state") or "active"
+                        n_bars = int(r.get("N_bars") or 0)
+                        src_ts = int(r.get("src_bar_ts") or 0)
+                        created = int(r.get("created_at") or src_ts)
+                        active = state == "active"
+                        if active:
+                            data["active_setups"] += 1
+                        if created >= now - 86400:
+                            data["new_setups_24h"] += 1
+                        horizon = ({48: "4h", 288: "24h"}.get(
+                            n_bars, f"{n_bars * 5}m"))
+                        projected.append({
+                            "id": r.get("id"), "coin": r.get("coin"),
+                            "direction": r.get("direction"),
+                            "horizon": horizon,
+                            "state": state, "emitted_ts": created,
+                            "expires_ts": src_ts + n_bars * 300,
+                            "price": r.get("entry"),
+                            "change_24h_pct": None,
+                            "rule": r.get("rule_id"),
+                            "criteria": [],
+                            "inputs": {"rsi": None, "macd": None,
+                                       "ema50": None, "ema200": None,
+                                       "volume_pct": None},
+                            "unavailable_inputs": [
+                                "change_24h_pct", "rsi", "macd", "ema50",
+                                "ema200", "volume_pct"],
+                            "analysis": [
+                                f"{r.get('src') or r.get('rule_id')} watcher setup",
+                                f"stop {r.get('stop_px')}; target {r.get('tgt_px')}"],
+                            "tradeplan_id": None,
+                        })
+                    data["setups"] = projected
+                    data["active_setups"] = sum(
+                        1 for row in projected if row["state"] == "active")
+                    latest_data_ts = max(
+                        [0] + [int(r.get("last_eval_bar") or
+                                   r.get("src_bar_ts") or 0)
+                               for r in map(dict, rows)])
+                    if latest_data_ts:
+                        data["data_as_of"] = max(
+                            data["data_as_of"] or 0, latest_data_ts)
+                    if not watcher_available:
+                        data["unavailable"] = (
+                            "watcher evaluation is not running; scanner "
+                            "market data is shown, but no quant setups can "
+                            "be emitted yet")
                 except sqlite3.Error:
-                    data["unavailable"].append("setups unavailable")
-                try:
-                    total = conn.execute(
-                        "SELECT COUNT(*) FROM signal_log").fetchone()[0]
-                    flagged = conn.execute(
-                        "SELECT COUNT(*) FROM signal_log WHERE flagged=1"
-                        ).fetchone()[0]
-                    data["signals"] = {"rows": total, "flagged": flagged}
-                except sqlite3.Error:
-                    data["unavailable"].append("signals unavailable")
+                    data["unavailable"] = (
+                        "watcher setup storage is unavailable; scanner "
+                        "market data may still be shown")
+
+                # The scanner's current market state is useful as universe
+                # context, but it is never promoted into a watcher setup.
+                if "coin_state" in tables:
+                    cols = {r[1] for r in conn.execute(
+                        "PRAGMA table_info(coin_state)")}
+                    needed = {"coin", "price", "change_24h_pct",
+                              "quote_vol_24h", "last_seen", "veto_codes"}
+                    if needed <= cols:
+                        fresh = conn.execute(
+                            "SELECT coin, price, change_24h_pct, "
+                            "quote_vol_24h, last_seen, veto_codes "
+                            "FROM coin_state WHERE last_seen>=? "
+                            "AND change_24h_pct IS NOT NULL "
+                            "ORDER BY quote_vol_24h DESC",
+                            (now - 900,)).fetchall()
+                        active_coins = {s["coin"] for s in projected
+                                        if s["state"] == "active"}
+                        data["coins_without_setup"] = [
+                            {"coin": r[0], "name": r[0],
+                             "blocking_reason": (
+                                 "watcher evaluation is not running"
+                                 if not watcher_available else
+                                 ("veto: " + r[5] if r[5] else
+                                  "no qualifying watcher setup")),
+                             "price": r[1], "change_24h_pct": r[2],
+                             "quote_vol_24h": r[3], "last_seen": r[4]}
+                            for r in fresh if r[0] not in active_coins]
+                        by_coin = {r[0]: r for r in fresh}
+                        names = {"BTC": "Bitcoin", "ETH": "Ethereum"}
+                        data["market_overview"] = [
+                            {"coin": coin, "name": names[coin],
+                             "price": by_coin[coin][1],
+                             "change_24h_pct": by_coin[coin][2],
+                             "last_bar_ts": None}
+                            for coin in ("BTC", "ETH") if coin in by_coin]
+                        gainers = sorted(
+                            (r for r in fresh if r[2] > 0),
+                            key=lambda r: r[2], reverse=True)[:5]
+                        losers = sorted(
+                            (r for r in fresh if r[2] < 0),
+                            key=lambda r: r[2])[:5]
+                        movers = {r[0]: {"coin": r[0], "name": r[0],
+                                         "change_24h_pct": r[2]}
+                                  for r in gainers + losers}
+                        data["movers"] = list(movers.values())
+
+                if "watcher_events" in tables:
+                    data["activity"] = [
+                        {"ts": r[0], "kind": r[1],
+                         "coin": r[2] or None, "text": r[3]}
+                        for r in conn.execute(
+                            "SELECT ts, kind, coin, text FROM watcher_events "
+                            "ORDER BY ts DESC, rowid DESC LIMIT 50")]
             finally:
                 conn.close()
             self._send_json(200, envelope(True, data), origin=origin)
@@ -783,18 +994,38 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                 self._deny(404, "NOT_FOUND", f"no bars for {coin}",
                            origin=origin)
                 return
+            raw_limit = (qs.get("limit") or ["1000"])[0]
             try:
-                bars5 = read_bars(data_dir, coin)
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                self._deny(400, "BAD_REQUEST", "limit must be an integer",
+                           origin=origin)
+                return
+            if limit < 1 or limit > 5000:
+                self._deny(400, "BAD_REQUEST",
+                           "limit must be between 1 and 5000", origin=origin)
+                return
+            try:
+                bars5 = _read_service_bars(data_dir, coin)
             except Exception:
                 self._deny(503, "UNAVAILABLE", "bars unavailable",
                            origin=origin)
                 return
             now = int(time.time())
-            bars = _resample_bars(bars5, ALLOWED_TFS[tf], now)
-            last_ts = bars[-1]["ts"] if bars else None
+            bars = _resample_bars(bars5, ALLOWED_TFS[tf], now)[-limit:]
+            # Match the frontend's typed OHLCV contract and make the
+            # closed-bar guarantee explicit for CandleChart.
+            chart_bars = [{
+                "ts": b["ts"], "open": b["o"], "high": b["h"],
+                "low": b["l"], "close": b["c"],
+                "volume": b.get("vol") or 0, "closed": True,
+            } for b in bars]
+            last_ts = chart_bars[-1]["ts"] if chart_bars else None
             self._send_json(200, envelope(
-                True, {"coin": coin, "tf": tf, "bars": bars,
-                       "last_ts": last_ts}), origin=origin)
+                True, {"coin": coin, "tf": tf, "bars": chart_bars,
+                       "closed_only": True, "count": len(chart_bars),
+                       "data_as_of": last_ts, "last_ts": last_ts,
+                       "unavailable": None}), origin=origin)
 
         def _handle_metrics(self, origin, qs, data_dir):
             coin = (qs.get("coin") or [None])[0]
@@ -807,7 +1038,7 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                            origin=origin)
                 return
             try:
-                bars5 = read_bars(data_dir, coin)
+                bars5 = _read_service_bars(data_dir, coin)
             except Exception:
                 bars5 = []
             now = int(time.time())
