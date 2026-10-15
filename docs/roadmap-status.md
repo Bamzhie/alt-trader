@@ -163,9 +163,8 @@ Verified against code/data, not inherited summaries.
   - Provisional-vs-closed DECIDED: closed-only stays; forming bar
     dropped at ingest; `/bars` reports `closed_only`. No provisional
     tier without per-bar markers and scorer re-validation.
-- Remaining: scan-phase duration instrumentation inside `scan_once()`
-  (sweep-level covers the loop's end-to-end cost); the 15 stale coins
-  are RESOLVED as MEXC delistings (see WS1 — no collector defect).
+- Remaining: the 15 stale coins are RESOLVED as MEXC delistings (see
+  WS1 — no collector defect).
 - Delivered (2026-10-15, R2, commit 478489f): scan-phase durations in
   `scan_once()` — `self.last_scan_phases` with `universe_refresh_s`,
   `score_s`, `log_s`, `total_s` (all `>= 0`, monotonic clock, recorded
@@ -289,7 +288,7 @@ Verified against code/data, not inherited summaries.
 |  NOTE: no raw archive was ever rewritten in any stage.
 |- Stage F (roadmap push 2, complete 2026-10-15): R1 live-service
 |  deploy-verification (restart → /scanner-health healthy, funding
-|  archive (absent) → 569 files); R2 scan-phase durations (478489f);
+|  archive (absent) → 569 files); R2 scan-phase timing (478489f);
 |  R3 stale-15 = MEXC delistings, no fix (a1e4734); R4 decision log +
 |  validator (47ff908); WS5-1 registry + validator (9d74b29) with
 |  illustrative HYD-0001 example + decision-log wiring (this commit).
@@ -350,7 +349,7 @@ Verified against code/data, not inherited summaries.
 - WS7: decision log file + validator DELIVERED (empty log awaits first
   entry); still pending: champion/candidate objects + outcome-based
   comparison (needs WS5) — evaluation delivered, persistence pending.
-- WS3: scan-phase duration instrumentation; 1m design stage (venue
-  probe + request budget + archive decision); stale-coins uptime look.
+- WS3: 1m design stage (venue probe + request budget + archive
+  decision); stale-coins uptime look.
 - The overall quantitative research system is NOT complete: WS4–WS6
   remain, and WS5/WS7 need outcome evidence.
