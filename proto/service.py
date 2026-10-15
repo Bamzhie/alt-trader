@@ -898,6 +898,11 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
             """Scanner lifecycle state — distinct from /healthz (process
             alive) and /readyz (first sweep done). 503 UNAVAILABLE when no
             health source is wired: never claim health we cannot read.
+
+            ``status`` is healthy / restarting / failed (see run_service
+            for the exact transitions); ``restart_count`` /
+            ``last_restart_ts`` count restart attempts begun after crashes
+            (the initial start and crash detections are not restarts).
             """
             if scanner_health is None:
                 self._deny(503, "UNAVAILABLE",
@@ -1485,9 +1490,9 @@ def close_sessions(app=None):
 def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
                 lock_path=None, daemon_argv=None, stop_event=None,
                 install_signals=True, on_serving=None, on_health=None,
-                backoff_base_s=DEFAULT_BACKOFF_BASE_S,
-                backoff_max_s=DEFAULT_BACKOFF_MAX_S,
-                max_scanner_retries=MAX_SCANNER_RETRIES):
+                backoff_base_s: float = DEFAULT_BACKOFF_BASE_S,
+                backoff_max_s: float = DEFAULT_BACKOFF_MAX_S,
+                max_scanner_retries: int = MAX_SCANNER_RETRIES):
     """Run the HTTP server plus the embedded daemon loop; return a result.
 
     ``daemon_argv`` is parsed by the daemon parser (imported, never
@@ -1500,14 +1505,28 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
 
     Scanner resilience (WS2): a crash of the embedded loop is retried with
     capped exponential backoff (``backoff_base_s`` doubling up to
-    ``backoff_max_s``, at most ``max_scanner_retries`` retries) while the
-    HTTP server stays reachable the whole time — /healthz keeps answering
-    200, /readyz keeps reporting first-sweep readiness, and /scanner-health
-    reports the scanner lifecycle (healthy / failed / restarting). A finite
-    ``--iterations`` run that completes normally is completion, not a
-    crash: it is never restarted. When retries are exhausted the loop
-    parks in FAILED (server still up) until ``stop_event`` — the process
-    is not torn down by a dead scanner.
+    ``backoff_max_s``, at most ``max_scanner_retries`` restart attempts)
+    while the HTTP server stays reachable the whole time — /healthz keeps
+    answering 200, /readyz keeps reporting first-sweep readiness, and
+    /scanner-health reports the scanner lifecycle:
+
+    - ``healthy``    — the first attempt is running, OR a restart has
+                       completed an actual sweep (the explicit recovery
+                       signal: ``on_sweep`` moves RESTARTING -> HEALTHY),
+                       OR a run finished normally.
+    - ``restarting`` — a restart attempt after a crash is in progress;
+                       it stays in this state until a sweep completes.
+    - ``failed``     — the last attempt crashed; persists through the
+                       backoff wait and after retries are exhausted.
+
+    ``restart_count`` / ``last_restart_ts`` count restart ATTEMPTS BEGUN
+    (the initial start is not a restart; a crash is not a restart — the
+    counter moves only when attempt N>1 begins), so a parked scanner
+    reports exactly the retries it attempted. A finite ``--iterations``
+    run that completes normally is completion, not a crash: it is never
+    restarted. When retries are exhausted the loop parks in FAILED
+    (server still up) until ``stop_event`` — the process is not torn
+    down by a dead scanner.
 
     ``on_health`` is called once with a callable returning the current
     scanner health dict (for embedded callers that need to surface health
@@ -1535,6 +1554,15 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
         sweep_done = threading.Event()
 
         def _on_sweep(eligible, evaluated):
+            # Explicit recovery signal: a completed sweep proves the
+            # scanner is working again. A retry that was RESTARTING becomes
+            # HEALTHY; no other state is touched (a sweep cannot fire while
+            # FAILED — on_sweep only runs inside the loop). This runs
+            # before the bookkeeping so a recording failure never masks a
+            # real recovery.
+            with scanner_lock:
+                if scanner_state["status"] == SCANNER_RESTARTING:
+                    scanner_state["status"] = SCANNER_HEALTHY
             _daemon_mod.record_completed_sweep(db, eligible, evaluated)
             sweep_done.set()
 
@@ -1565,16 +1593,20 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
 
         def _run_loop():
             backoff_s = backoff_base_s
+            attempt = 0
             while not stop.is_set():
-                # An attempt is about to run. After a crash the scanner is
-                # RESTARTING (a retry in progress); a first attempt with no
-                # prior crash is HEALTHY. FAILED is set on a crash and
-                # persists through the backoff wait, so it is observable.
+                attempt += 1
                 with scanner_lock:
-                    scanner_state["status"] = (
-                        SCANNER_RESTARTING
-                        if scanner_state["restart_count"] > 0
-                        else SCANNER_HEALTHY)
+                    if attempt == 1:
+                        # First run: the scanner is starting up healthy.
+                        scanner_state["status"] = SCANNER_HEALTHY
+                    else:
+                        # This attempt is an actual restart after a crash:
+                        # restart_count / last_restart_ts describe restart
+                        # attempts begun, not crash detections.
+                        scanner_state["status"] = SCANNER_RESTARTING
+                        scanner_state["restart_count"] += 1
+                        scanner_state["last_restart_ts"] = int(time.time())
                     scanner_state["last_error"] = None
                 try:
                     _daemon_mod.run_daemon_loop(
@@ -1593,23 +1625,21 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
                     with scanner_lock:
                         scanner_state["status"] = SCANNER_FAILED
                         scanner_state["last_error"] = err_msg
-                        scanner_state["restart_count"] += 1
-                        scanner_state["last_restart_ts"] = int(time.time())
                     print(f"service: loop FAILED: {err_msg}", flush=True)
                     # Don't retry on finite runs (user expected a clean exit)
                     if loop_args.iterations is not None:
                         return
-                    # Cap on restart count; park in FAILED with the server
-                    # up rather than tearing the process down.
-                    if scanner_state["restart_count"] > max_scanner_retries:
-                        print(f"service: scanner exceeded "
+                    # Cap on restarts actually attempted; park in FAILED
+                    # with the server up rather than tearing it down.
+                    if scanner_state["restart_count"] >= max_scanner_retries:
+                        print(f"service: scanner exhausted "
                               f"{max_scanner_retries} retries; parking "
                               f"in FAILED (server stays up)",
                               flush=True)
                         while not stop.is_set():
                             stop.wait(1.0)
                         return
-                    # Exponential backoff before next restart
+                    # Exponential backoff before the next restart attempt
                     wait_s = min(backoff_s, backoff_max_s)
                     print(f"service: scanner backoff {wait_s}s", flush=True)
                     backoff_s = min(backoff_s * 2, backoff_max_s)

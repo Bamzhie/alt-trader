@@ -448,6 +448,7 @@ def main():
     tmp2 = tempfile.mkdtemp(prefix="svc-resilience-")
     try:
         real_loop = dmod.run_daemon_loop
+        real_collect = dmod.colmod.collect_full_universe
         loop_calls = {"n": 0}
         fail_mode = {"mode": "none"}  # "none" | "one" | "all"
 
@@ -506,6 +507,12 @@ def main():
                   str(res_fin.get("shutdown_order")))
 
             # -- scanner crash: failed state visible via API, then recover --
+            # The retry runs the REAL loop and must demonstrate recovery
+            # with an actual completed sweep: collect_every=0 fires a
+            # collect cycle on the retry's first iteration (collector
+            # patched offline), and only that sweep may move the scanner
+            # RESTARTING -> HEALTHY. A 1s backoff keeps the FAILED window
+            # wide enough for the reachability checks to observe it.
             db_crash = os.path.join(tmp2, "crash.db")
             lock_crash = os.path.join(tmp2, "locks_crash", "scanner.lock")
             svc.reset_events()
@@ -513,7 +520,10 @@ def main():
             fail_mode["mode"] = "one"  # fail exactly the first attempt
             box_crash = {}
             stop_crash = threading.Event()
-            health_seen = {}
+            # Patch the collector offline for the retry's real loop
+            # (tripwire-safe; restored in the outer finally).
+            dmod.colmod.collect_full_universe = (
+                lambda *a, **k: {"BTC": 3, "ETH": 1})
 
             def _run_crash():
                 box_crash["result"] = svc.run_service(
@@ -521,11 +531,11 @@ def main():
                     data_dir=os.path.join(tmp2, "bars_crash"),
                     lock_path=lock_crash,
                     daemon_argv=["--no-scan", "--interval", "60",
-                                 "--collect-every", str(HUGE),
+                                 "--collect-every", "0",
                                  "--resolve-every", str(HUGE),
                                  "--measure-every", str(HUGE)],
                     stop_event=stop_crash, install_signals=False,
-                    backoff_base_s=0.05, backoff_max_s=0.1,
+                    backoff_base_s=1.0, backoff_max_s=1.0,
                     max_scanner_retries=3,
                     on_serving=lambda s, p: box_crash.setdefault("port", p),
                     on_health=lambda getter: box_crash.setdefault(
@@ -583,27 +593,32 @@ def main():
             check("/readyz stays 503 while scanner failed (distinct signal)",
                   status == 503, f"status={status}")
 
-            # First attempt failed -> recover; the retry (second invocation)
-            # runs the real loop and parks. No fail_mode change needed: the
-            # "one" mode already consumed itself on the first invocation.
+            # Recovery must be DEMONSTRATED: the retry's first completed
+            # sweep is the only thing that moves the scanner from
+            # RESTARTING to HEALTHY. Waiting for HEALTHY (never accepting
+            # RESTARTING) proves the recovery signal fired.
             recovered = None
             deadline = time.time() + 30
             while time.time() < deadline:
                 status, body = _get("/scanner-health")
                 recovered = body.get("data", {}).get("status")
-                if recovered in (svc.SCANNER_HEALTHY, svc.SCANNER_RESTARTING):
+                if recovered == svc.SCANNER_HEALTHY:
                     break
                 time.sleep(0.02)
-            check("scanner recovers to a non-failed state",
-                  recovered in (svc.SCANNER_HEALTHY, svc.SCANNER_RESTARTING),
-                  f"status={recovered}")
+            check("scanner recovers to HEALTHY after a completed sweep",
+                  recovered == svc.SCANNER_HEALTHY,
+                  f"status={recovered} (restarting is not recovery)")
             getter = box_crash.get("health")
             check("on_health callback delivers a readable health getter",
                   callable(getter) and isinstance(getter(), dict)
                   and "status" in getter(), str(getter))
-            check("health getter counts the crash as one restart",
-                  getter().get("restart_count") == 1,
-                  str(getter()))
+            snap = getter() if callable(getter) else None
+            if isinstance(snap, dict):
+                check("health getter counts the restart attempt "
+                      "(not the crash)",
+                      snap.get("restart_count") == 1, str(snap))
+                check("health getter records when the restart attempt began",
+                      snap.get("last_restart_ts", 0) > 0, str(snap))
             stop_crash.set()
             w2.join(timeout=60)
             res_crash = box_crash.get("result", {})
@@ -674,6 +689,9 @@ def main():
             check("parked scanner health still reports failed",
                   (body.get("data") or {}).get("status")
                   == svc.SCANNER_FAILED, str(body))
+            check("parked restart_count equals the retry cap",
+                  (body.get("data") or {}).get("restart_count") == 2,
+                  str(body))
             stop_cap.set()
             w3.join(timeout=60)
             res_cap = box_cap.get("result", {})
@@ -683,6 +701,7 @@ def main():
                   str(res_cap.get("shutdown_order")))
         finally:
             dmod.run_daemon_loop = real_loop
+            dmod.colmod.collect_full_universe = real_collect
             fail_mode["mode"] = "none"
     finally:
         shutil.rmtree(tmp2, ignore_errors=True)
