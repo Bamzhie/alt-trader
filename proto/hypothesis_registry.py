@@ -8,6 +8,7 @@ Read-only: never writes, never deletes.
 """
 
 import datetime
+import math
 import os
 import re
 
@@ -53,15 +54,20 @@ def _as_number(value):
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        num = float(value)
+        return num if math.isfinite(num) else None
     if isinstance(value, str):
         text = _unquote(value).strip()
         if INT_RE.match(text):
-            return float(int(text))
+            try:
+                return float(int(text))
+            except (ValueError, OverflowError):
+                return None
         try:
-            return float(text)
-        except ValueError:
+            num = float(text)
+        except (ValueError, OverflowError):
             return None
+        return num if math.isfinite(num) else None
     return None
 
 
@@ -73,7 +79,10 @@ def _as_int(value):
     if isinstance(value, str):
         text = _unquote(value).strip()
         if INT_RE.match(text):
-            return int(text)
+            try:
+                return int(text)
+            except (ValueError, OverflowError):
+                return None
     return None
 
 
@@ -165,10 +174,16 @@ def _parse_block(filename, lines, close_idx, errors):
 
 def _coerce_scalar(text):
     if INT_RE.match(text):
-        return int(text)
+        try:
+            return int(text)
+        except (ValueError, OverflowError):
+            # Oversized digit strings (int-string conversion cap):
+            # keep the raw text — numeric consumers degrade to
+            # "not a number" instead of raising out of validation.
+            return text
     try:
         return float(text)
-    except ValueError:
+    except (ValueError, OverflowError):
         return text
 
 
@@ -331,14 +346,18 @@ def validate(entry):
                 f"ordering: {first} {parsed[first]} > "
                 f"{second} {parsed[second]}")
 
-    embargo_days = 7 if horizon == "7d" else 1
-    for first, second, label in (("dev_end", "val_start", "dev/val"),
-                                 ("val_end", "holdout_start", "val/holdout")):
-        if first in parsed and second in parsed:
-            gap = (parsed[second] - parsed[first]).days
-            if gap < embargo_days:
-                errors.append(
-                    f"embargo: {label} gap {gap}d < {embargo_days}d")
+    # Embargo needs a resolved horizon: with a missing/invalid horizon
+    # there is no embargo to check against (required-field already fires
+    # for registered+), so skip rather than silently defaulting to 1 day.
+    if horizon in HORIZONS:
+        embargo_days = 7 if horizon == "7d" else 1
+        for first, second, label in (("dev_end", "val_start", "dev/val"),
+                                     ("val_end", "holdout_start", "val/holdout")):
+            if first in parsed and second in parsed:
+                gap = (parsed[second] - parsed[first]).days
+                if gap < embargo_days:
+                    errors.append(
+                        f"embargo: {label} gap {gap}d < {embargo_days}d")
 
     return errors
 
@@ -360,8 +379,13 @@ def load_and_validate(directory):
         for violation in validate(entry):
             errors.append(f"{filename}: {violation}")
         entry_id = entry.get("id")
-        if isinstance(entry_id, str) and entry_id:
-            seen.setdefault(entry_id, []).append(filename)
+        # Group by the same normalized id validate() checks (unquoted +
+        # stripped), so a quoted/padded spelling still collides instead
+        # of silently missing the duplicate.
+        if isinstance(entry_id, str):
+            group_key = _unquote(entry_id).strip()
+            if group_key:
+                seen.setdefault(group_key, []).append(filename)
     for entry_id in sorted(seen):
         files = sorted(seen[entry_id])
         if len(files) > 1:

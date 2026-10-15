@@ -9,7 +9,7 @@ dev_start: 2025-10-01
 dev_end: 2025-12-01
 val_start: 2025-12-05
 val_end: 2026-02-01
-holdout_start: 2026-02-10
+holdout_start: 2026-11-01
 metric: median_forward_return_24h
 threshold: 0.001
 denominator: resolved_episodes
@@ -43,10 +43,12 @@ evaluation must account for multiple comparisons.
 
 Half-open day intervals per the registry spec: dev covers
 [2025-10-01, 2025-12-01), validation [2025-12-05, 2026-02-01), holdout
-starts 2026-02-10 with no end date (open means unseen future data).
-Ordering holds (2025-12-01 <= 2025-12-05 <= 2026-02-01 <= 2026-02-10)
-and both gaps (4d dev/val, 9d val/holdout) clear the 1-day embargo for
-the 24h horizon.
+starts 2026-11-01 with no end date (open means unseen future data —
+holdout must postdate the present, so the start was set after the
+example's frozen dev/val windows, not adjacent to them).
+Ordering holds (2025-12-01 <= 2025-12-05 <= 2026-02-01 <= 2026-11-01)
+and both gaps (4d dev/val, 273d val/holdout) clear the 1-day embargo
+for the 24h horizon.
 
 ## Version pins
 

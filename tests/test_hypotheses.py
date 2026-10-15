@@ -239,5 +239,70 @@ try:
 finally:
     os.unlink(bad_path)
 
+print("\n=== numeric robustness ===")
+
+
+def _registered_base(**over):
+    entry = {"id": "HYD-0001", "title": "t", "status": "registered",
+             "prediction": "p", "universe": "u", "horizon": "24h",
+             "dev_start": "2024-01-01", "dev_end": "2024-02-01",
+             "val_start": "2024-02-05", "val_end": "2024-03-01",
+             "holdout_start": "2024-03-10", "metric": "m",
+             "threshold": 0.52, "denominator": "d", "costs": "c",
+             "comparisons": 3}
+    entry.update(over)
+    return entry
+
+
+check("registered base fixture is clean",
+      hr.validate(_registered_base()) == [],
+      str(hr.validate(_registered_base())))
+
+nan_errs = hr.validate(_registered_base(threshold=float("nan")))
+check("NaN threshold rejected as non-numeric",
+      any("threshold" in e for e in nan_errs), str(nan_errs))
+
+inf_errs = hr.validate(_registered_base(threshold=float("inf")))
+check("inf threshold rejected as non-numeric",
+      any("threshold" in e for e in inf_errs), str(inf_errs))
+
+inf_str_errs = hr.validate(_registered_base(threshold="1e999"))
+check("overflowing numeric string threshold rejected",
+      any("threshold" in e for e in inf_str_errs), str(inf_str_errs))
+
+BIG = "9" * 5000
+check("oversized integer string coerces without raising",
+      hr._coerce_scalar(BIG) == BIG,
+      str(hr._coerce_scalar(BIG))[:40])
+check("oversized integer string is not an int",
+      hr._as_int(BIG) is None, str(hr._as_int(BIG)))
+check("oversized integer string is not a number",
+      hr._as_number(BIG) is None, str(hr._as_number(BIG)))
+big_errs = hr.validate(_registered_base(comparisons=BIG))
+check("oversized comparisons value fails validation without raising",
+      any("comparisons" in e for e in big_errs), str(big_errs))
+
+no_horizon = {"id": "HYD-0001", "title": "t", "status": "proposed",
+              "prediction": "p", "dev_start": "2024-01-01",
+              "dev_end": "2024-01-01", "val_start": "2024-01-01",
+              "val_end": "2024-02-01", "holdout_start": "2024-02-02"}
+no_horizon_errs = hr.validate(no_horizon)
+check("missing horizon skips embargo (no silent default)",
+      not any(e.startswith("embargo:") for e in no_horizon_errs),
+      str(no_horizon_errs))
+check("missing horizon keeps within-window teeth",
+      any(e.startswith("within-window:") for e in no_horizon_errs),
+      str(no_horizon_errs))
+
+tmp2 = tempfile.mkdtemp()
+variant(tmp2, "HYD-0001-a.md", BASE_FIELDS)
+variant(tmp2, "HYD-0001-b.md",
+        BASE_FIELDS.replace("id: HYD-0001", 'id: " HYD-0001 "'))
+_, dup_norm_errs = hr.load_and_validate(tmp2)
+check("whitespace-padded quoted id still groups duplicates",
+      any("duplicate-id" in e and "HYD-0001-a.md" in e
+          and "HYD-0001-b.md" in e for e in dup_norm_errs),
+      str(dup_norm_errs))
+
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)
