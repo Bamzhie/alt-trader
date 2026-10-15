@@ -275,7 +275,7 @@ Verified against code/data, not inherited summaries.
 ## Outstanding (NOT in this plan — kept visible)
 
 - WS3 beyond R2/R3: 1m/venue-probe design stage; provisional-bar tier (decided against, needs per-bar markers + scorer re-validation to reopen).
-- WS4 beyond funding observations: funding SETTLEMENT history, mark/index archive, book/spread history, OI series, service route for the funding series.
+- WS4 beyond funding observations: funding SETTLEMENT history, mark/index archive, book/spread history, OI series, service route for the funding series (code delivered 858201c, deploy pending live-verify).
 - WS5 beyond increment 1: evaluation harness, estimators, competing outcomes, calibrated probabilities (proposal §3–§5).
 - WS6 evidence UI: sample-n / CI / calibration / coverage / validation-status display (blocked on WS5 outputs).
 - WS7 beyond the decision log: champion/candidate persistence, outcome-based comparison (blocked on WS5).
