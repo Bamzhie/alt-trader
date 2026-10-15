@@ -20,6 +20,7 @@ Run:  python3 tests/test_service_lifecycle.py   -> ALL PASS, exit 0
 
 import http.client
 import io
+import json
 import os
 import shutil
 import signal
@@ -438,6 +439,277 @@ def main():
               "proto.daemon" not in unit)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- WS2: scanner resilience (focused lifecycle coverage) ---------------
+    # Distinct signals: /healthz = process alive; /readyz = first sweep done;
+    # /scanner-health = scanner lifecycle state. The API must stay reachable
+    # while the scanner is down; a finite --iterations run that completes
+    # normally is completion, not a crash, and must not be restarted.
+    tmp2 = tempfile.mkdtemp(prefix="svc-resilience-")
+    try:
+        real_loop = dmod.run_daemon_loop
+        loop_calls = {"n": 0}
+        fail_mode = {"mode": "none"}  # "none" | "one" | "all"
+
+        def _counting_loop(args, stop_event=None, on_sweep=None,
+                           app_box=None):
+            loop_calls["n"] += 1
+            if fail_mode["mode"] == "all":
+                raise RuntimeError("scanner boom")
+            if fail_mode["mode"] == "one":
+                # Fail exactly the first invocation of this scenario,
+                # deterministically — no dependence on backoff timing.
+                fail_mode["mode"] = "none"
+                raise RuntimeError("scanner boom")
+            return real_loop(args, stop_event=stop_event, on_sweep=on_sweep,
+                             app_box=app_box)
+        dmod.run_daemon_loop = _counting_loop
+        try:
+            # -- finite run completes once, is not restarted ---------------
+            db_fin = os.path.join(tmp2, "finite.db")
+            lock_fin = os.path.join(tmp2, "locks_fin", "scanner.lock")
+            svc.reset_events()
+            box_fin = {}
+            stop_fin = threading.Event()
+
+            def _run_finite():
+                box_fin["result"] = svc.run_service(
+                    port=0, token="finite-token", db=db_fin,
+                    data_dir=os.path.join(tmp2, "bars_fin"),
+                    lock_path=lock_fin,
+                    daemon_argv=["--no-scan", "--iterations", "1",
+                                 "--interval", "60",
+                                 "--collect-every", str(HUGE),
+                                 "--resolve-every", str(HUGE),
+                                 "--measure-every", str(HUGE)],
+                    stop_event=stop_fin, install_signals=False,
+                    on_serving=lambda s, p: box_fin.setdefault("port", p))
+
+            w = threading.Thread(target=_run_finite, name="svc-finite-test")
+            w.start()
+            port_fin = None
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                port_fin = box_fin.get("port")
+                if port_fin:
+                    break
+                time.sleep(0.05)
+            w.join(timeout=60)
+            res_fin = box_fin.get("result", {})
+            check("finite --iterations run completes once (no restart)",
+                  loop_calls["n"] == 1, f"loop invocations: {loop_calls['n']}")
+            check("finite run result ok", res_fin.get("ok") is True,
+                  str(res_fin.get("loop_error")))
+            check("finite run shuts down in order",
+                  res_fin.get("shutdown_order")
+                  == ["loop", "server", "sessions"],
+                  str(res_fin.get("shutdown_order")))
+
+            # -- scanner crash: failed state visible via API, then recover --
+            db_crash = os.path.join(tmp2, "crash.db")
+            lock_crash = os.path.join(tmp2, "locks_crash", "scanner.lock")
+            svc.reset_events()
+            loop_calls["n"] = 0  # per-scenario counter
+            fail_mode["mode"] = "one"  # fail exactly the first attempt
+            box_crash = {}
+            stop_crash = threading.Event()
+            health_seen = {}
+
+            def _run_crash():
+                box_crash["result"] = svc.run_service(
+                    port=0, token="crash-token", db=db_crash,
+                    data_dir=os.path.join(tmp2, "bars_crash"),
+                    lock_path=lock_crash,
+                    daemon_argv=["--no-scan", "--interval", "60",
+                                 "--collect-every", str(HUGE),
+                                 "--resolve-every", str(HUGE),
+                                 "--measure-every", str(HUGE)],
+                    stop_event=stop_crash, install_signals=False,
+                    backoff_base_s=0.05, backoff_max_s=0.1,
+                    max_scanner_retries=3,
+                    on_serving=lambda s, p: box_crash.setdefault("port", p),
+                    on_health=lambda getter: box_crash.setdefault(
+                        "health", getter))
+
+            w2 = threading.Thread(target=_run_crash, name="svc-crash-test")
+            w2.start()
+            port_crash = None
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                port_crash = box_crash.get("port")
+                if port_crash:
+                    break
+                time.sleep(0.05)
+
+            def _get(path, token="crash-token"):
+                if not port_crash:
+                    raise RuntimeError("crash-test service never bound")
+                conn = http.client.HTTPConnection("127.0.0.1", port_crash,
+                                                  timeout=5)
+                headers = {"Authorization": f"Bearer {token}"}
+                conn.request("GET", path, headers=headers)
+                resp = conn.getresponse()
+                body = resp.read()
+                conn.close()
+                return resp.status, json.loads(body.decode("utf-8"))
+
+            # The first attempt fails (fail_mode "one" armed above); after
+            # the backoff the retry succeeds and the loop parks until stop.
+            failed_status = None
+            failed_body = None
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                status, body = _get("/scanner-health")
+                failed_status = body.get("data", {}).get("status")
+                if failed_status == svc.SCANNER_FAILED:
+                    failed_body = body
+                    break
+                time.sleep(0.02)
+            check("scanner failure is readable via /scanner-health",
+                  failed_status == svc.SCANNER_FAILED,
+                  f"status={failed_status}")
+            check("failed scanner health reports last_error",
+                  ((failed_body or {}).get("data") or {}).get("last_error")
+                  and "boom"
+                  in str(((failed_body or {}).get("data") or {})
+                         .get("last_error")),
+                  str(failed_body))
+            # API stays reachable while the scanner is down; readiness is
+            # the distinct first-sweep signal (no sweep ever ran).
+            status, body = _get("/healthz")
+            check("/healthz stays 200 while scanner failed",
+                  status == 200, f"status={status}")
+            status, body = _get("/readyz")
+            check("/readyz stays 503 while scanner failed (distinct signal)",
+                  status == 503, f"status={status}")
+
+            # First attempt failed -> recover; the retry (second invocation)
+            # runs the real loop and parks. No fail_mode change needed: the
+            # "one" mode already consumed itself on the first invocation.
+            recovered = None
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                status, body = _get("/scanner-health")
+                recovered = body.get("data", {}).get("status")
+                if recovered in (svc.SCANNER_HEALTHY, svc.SCANNER_RESTARTING):
+                    break
+                time.sleep(0.02)
+            check("scanner recovers to a non-failed state",
+                  recovered in (svc.SCANNER_HEALTHY, svc.SCANNER_RESTARTING),
+                  f"status={recovered}")
+            getter = box_crash.get("health")
+            check("on_health callback delivers a readable health getter",
+                  callable(getter) and isinstance(getter(), dict)
+                  and "status" in getter(), str(getter))
+            check("health getter counts the crash as one restart",
+                  getter().get("restart_count") == 1,
+                  str(getter()))
+            stop_crash.set()
+            w2.join(timeout=60)
+            res_crash = box_crash.get("result", {})
+            check("crash/recovery run shuts down in order",
+                  res_crash.get("shutdown_order")
+                  == ["loop", "server", "sessions"],
+                  str(res_crash.get("shutdown_order")))
+
+            # -- retry cap exhausted: server stays up, scanner parked -------
+            db_cap = os.path.join(tmp2, "cap.db")
+            lock_cap = os.path.join(tmp2, "locks_cap", "scanner.lock")
+            svc.reset_events()
+            loop_calls["n"] = 0  # per-scenario counter
+            fail_mode["mode"] = "all"  # every attempt fails
+            box_cap = {}
+            stop_cap = threading.Event()
+
+            def _run_cap():
+                box_cap["result"] = svc.run_service(
+                    port=0, token="cap-token", db=db_cap,
+                    data_dir=os.path.join(tmp2, "bars_cap"),
+                    lock_path=lock_cap,
+                    daemon_argv=["--no-scan", "--interval", "60",
+                                 "--collect-every", str(HUGE),
+                                 "--resolve-every", str(HUGE),
+                                 "--measure-every", str(HUGE)],
+                    stop_event=stop_cap, install_signals=False,
+                    backoff_base_s=0.05, backoff_max_s=0.1,
+                    max_scanner_retries=2,
+                    on_serving=lambda s, p: box_cap.setdefault("port", p))
+
+            w3 = threading.Thread(target=_run_cap, name="svc-cap-test")
+            w3.start()
+            port_cap = None
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                port_cap = box_cap.get("port")
+                if port_cap:
+                    break
+                time.sleep(0.05)
+
+            def _get_cap(path):
+                conn = http.client.HTTPConnection("127.0.0.1", port_cap,
+                                                  timeout=5)
+                conn.request("GET", path,
+                             headers={"Authorization": "Bearer cap-token"})
+                resp = conn.getresponse()
+                body = resp.read()
+                conn.close()
+                return resp.status, json.loads(body.decode("utf-8"))
+
+            # Every attempt fails (fail_mode "all" armed above); poll until
+            # the cap is exhausted and the scanner is parked FAILED.
+            parked = None
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                status, body = _get_cap("/scanner-health")
+                parked = body.get("data", {}).get("status")
+                if parked == svc.SCANNER_FAILED and loop_calls["n"] >= 3:
+                    break
+                time.sleep(0.05)
+            check("retry cap gives up after the capped attempts",
+                  loop_calls["n"] == 3, f"loop invocations: {loop_calls['n']}")
+            status, body = _get_cap("/healthz")
+            check("server stays up after scanner gives up",
+                  status == 200, f"status={status}")
+            status, body = _get_cap("/scanner-health")
+            check("parked scanner health still reports failed",
+                  (body.get("data") or {}).get("status")
+                  == svc.SCANNER_FAILED, str(body))
+            stop_cap.set()
+            w3.join(timeout=60)
+            res_cap = box_cap.get("result", {})
+            check("give-up run shuts down in order",
+                  res_cap.get("shutdown_order")
+                  == ["loop", "server", "sessions"],
+                  str(res_cap.get("shutdown_order")))
+        finally:
+            dmod.run_daemon_loop = real_loop
+            fail_mode["mode"] = "none"
+    finally:
+        shutil.rmtree(tmp2, ignore_errors=True)
+
+    # -- unwired server: /scanner-health must not claim health ------------
+    tmp3 = tempfile.mkdtemp(prefix="svc-unwired-")
+    try:
+        server_u = svc.serve(0, "unwired-token", lambda: {})
+        try:
+            port_u = server_u.server_address[1]
+            conn = http.client.HTTPConnection("127.0.0.1", port_u, timeout=5)
+            conn.request("GET", "/scanner-health",
+                         headers={"Authorization": "Bearer unwired-token"})
+            resp = conn.getresponse()
+            body = resp.read()
+            conn.close()
+            check("unwired /scanner-health answers 503, not 500",
+                  resp.status == 503, f"status={resp.status}")
+            payload = json.loads(body.decode("utf-8"))
+            check("unwired /scanner-health envelope is UNAVAILABLE",
+                  (payload.get("error") or {}).get("code") == "UNAVAILABLE",
+                  str(payload))
+        finally:
+            server_u.shutdown()
+            server_u.server_close()
+    finally:
+        shutil.rmtree(tmp3, ignore_errors=True)
 
     # -- tripwire self-check: non-loopback connect must raise -------------
     try:

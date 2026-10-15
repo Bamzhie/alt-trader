@@ -526,7 +526,7 @@ def load_or_create_token(path):
 
 
 def _make_handler(token, ready, store_path=None, data_dir=None,
-                  is_ready=None):
+                  is_ready=None, scanner_health=None):
     cfg_store = store_path or os.path.join("data", "signals.db")
     cfg_data = data_dir or os.path.join("data", "bars")
 
@@ -648,6 +648,10 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
 
             if self.command == "GET" and path == "/readyz":
                 self._handle_readyz(gated, _ready_ok, cfg_store)
+                return
+
+            if self.command == "GET" and path == "/scanner-health":
+                self._handle_scanner_health(gated, scanner_health)
                 return
 
             if self.command == "GET" and path == "/setups":
@@ -889,6 +893,33 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                 return
             self._send_json(200, envelope(True, {"ready": True, "ts": now}),
                             origin=origin)
+
+        def _handle_scanner_health(self, origin, scanner_health):
+            """Scanner lifecycle state — distinct from /healthz (process
+            alive) and /readyz (first sweep done). 503 UNAVAILABLE when no
+            health source is wired: never claim health we cannot read.
+            """
+            if scanner_health is None:
+                self._deny(503, "UNAVAILABLE",
+                           "scanner health not exposed", origin=origin)
+                return
+            try:
+                state = (scanner_health() if callable(scanner_health)
+                         else scanner_health)
+            except Exception:
+                self._deny(503, "UNAVAILABLE",
+                           "scanner health unavailable", origin=origin)
+                return
+            if not isinstance(state, dict):
+                self._deny(503, "UNAVAILABLE",
+                           "scanner health unavailable", origin=origin)
+                return
+            self._send_json(200, envelope(True, {
+                "status": state.get("status"),
+                "last_error": state.get("last_error"),
+                "restart_count": state.get("restart_count", 0),
+                "last_restart_ts": state.get("last_restart_ts", 0),
+            }), origin=origin)
 
         def _handle_setups(self, origin, qs, store_path):
             state = (qs.get("state") or [None])[0]
@@ -1283,16 +1314,21 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
 
 
 def serve(port, token, ready, store_path=None, data_dir=None,
-          is_ready=None):
+          is_ready=None, scanner_health=None):
     """Bind 127.0.0.1:port and serve in a daemon thread; return the server.
 
     `ready` is the Task 1 sweep callback (also the default readiness
     signal); `store_path`/`data_dir` locate the Store DB and bar archive
-    the resource routes read; `is_ready` optionally overrides readiness.
-    All three are optional so Task 1 callers keep working unchanged.
+    the resource routes read; `is_ready` optionally overrides readiness;
+    `scanner_health` optionally supplies the scanner lifecycle state for
+    `GET /scanner-health` (a callable returning a dict, or a dict). All
+    are optional so Task 1 callers keep working unchanged; when
+    `scanner_health` is absent the route answers 503 UNAVAILABLE — it
+    never claims health it cannot read.
     """
     handler = _make_handler(token, ready, store_path=store_path,
-                            data_dir=data_dir, is_ready=is_ready)
+                            data_dir=data_dir, is_ready=is_ready,
+                            scanner_health=scanner_health)
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever,
@@ -1319,6 +1355,19 @@ SCANNER_LOCK_NAME = "scanner.lock"
 LOCK_REFUSED_EXIT = 1
 DEFAULT_TOKEN_FILE = os.path.join("~", ".config", "altradar",
                                   "service.token")
+
+# Scanner state for health monitoring and recovery
+SCANNER_HEALTHY = "healthy"
+SCANNER_FAILED = "failed"
+SCANNER_RESTARTING = "restarting"
+
+# Default exponential backoff parameters for scanner recovery
+DEFAULT_BACKOFF_BASE_S = 5
+DEFAULT_BACKOFF_MAX_S = 300
+# Hard cap on recovery retries before giving up (server stays alive; scanner
+# stays in FAILED state). A crash with --iterations=None (infinite mode) will
+# retry up to this count; a finite --iterations run terminates normally.
+MAX_SCANNER_RETRIES = 12
 
 
 class ScannerAlreadyRunning(Exception):
@@ -1435,7 +1484,10 @@ def close_sessions(app=None):
 
 def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
                 lock_path=None, daemon_argv=None, stop_event=None,
-                install_signals=True, on_serving=None):
+                install_signals=True, on_serving=None, on_health=None,
+                backoff_base_s=DEFAULT_BACKOFF_BASE_S,
+                backoff_max_s=DEFAULT_BACKOFF_MAX_S,
+                max_scanner_retries=MAX_SCANNER_RETRIES):
     """Run the HTTP server plus the embedded daemon loop; return a result.
 
     ``daemon_argv`` is parsed by the daemon parser (imported, never
@@ -1445,6 +1497,21 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
     ``result["shutdown_order"]``. A held lockfile returns
     ``{"refused": True, "exit_code": LOCK_REFUSED_EXIT}`` without starting
     any scanning.
+
+    Scanner resilience (WS2): a crash of the embedded loop is retried with
+    capped exponential backoff (``backoff_base_s`` doubling up to
+    ``backoff_max_s``, at most ``max_scanner_retries`` retries) while the
+    HTTP server stays reachable the whole time — /healthz keeps answering
+    200, /readyz keeps reporting first-sweep readiness, and /scanner-health
+    reports the scanner lifecycle (healthy / failed / restarting). A finite
+    ``--iterations`` run that completes normally is completion, not a
+    crash: it is never restarted. When retries are exhausted the loop
+    parks in FAILED (server still up) until ``stop_event`` — the process
+    is not torn down by a dead scanner.
+
+    ``on_health`` is called once with a callable returning the current
+    scanner health dict (for embedded callers that need to surface health
+    outside the HTTP routes).
     """
     result = {"ok": False, "refused": False, "exit_code": 0, "port": None,
               "shutdown_order": [], "loop_error": None}
@@ -1471,28 +1538,83 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
             _daemon_mod.record_completed_sweep(db, eligible, evaluated)
             sweep_done.set()
 
+        # Scanner state tracking - shared with the /scanner-health route
+        # (readable by any API consumer) and with on_health callers.
+        scanner_state = {"status": SCANNER_HEALTHY, "last_error": None,
+                         "restart_count": 0, "last_restart_ts": 0}
+        scanner_lock = threading.Lock()
+
+        def _scanner_health():
+            with scanner_lock:
+                return dict(scanner_state)
+
         server, bound = serve_with_fallback(
             port, token, lambda: {"sweep_done": sweep_done.is_set()},
             store_path=db, data_dir=data_dir,
-            is_ready=sweep_done.is_set)
+            is_ready=sweep_done.is_set,
+            scanner_health=_scanner_health)
         result["port"] = bound
         print(f"service: listening on 127.0.0.1:{bound} db={db} "
               f"lock={lock_path}", flush=True)
         if on_serving is not None:
             on_serving(server, bound)
+        if on_health is not None:
+            on_health(_scanner_health)
 
         app_box = {}
 
         def _run_loop():
-            try:
-                _daemon_mod.run_daemon_loop(
-                    loop_args, stop_event=stop, on_sweep=_on_sweep,
-                    app_box=app_box)
-            except Exception as e:  # never lose the server on loop failure
-                result["loop_error"] = f"{type(e).__name__}: {e}"
-                print(f"service: loop FAILED: {result['loop_error']}",
-                      flush=True)
-                stop.set()
+            backoff_s = backoff_base_s
+            while not stop.is_set():
+                # An attempt is about to run. After a crash the scanner is
+                # RESTARTING (a retry in progress); a first attempt with no
+                # prior crash is HEALTHY. FAILED is set on a crash and
+                # persists through the backoff wait, so it is observable.
+                with scanner_lock:
+                    scanner_state["status"] = (
+                        SCANNER_RESTARTING
+                        if scanner_state["restart_count"] > 0
+                        else SCANNER_HEALTHY)
+                    scanner_state["last_error"] = None
+                try:
+                    _daemon_mod.run_daemon_loop(
+                        loop_args, stop_event=stop, on_sweep=_on_sweep,
+                        app_box=app_box)
+                    # Normal completion: a finite --iterations run consumed
+                    # its cap — completion, not a crash; never restart it.
+                    # An infinite-mode loop only returns when stop is set,
+                    # so returning here also means shutdown.
+                    with scanner_lock:
+                        scanner_state["status"] = SCANNER_HEALTHY
+                    return
+                except Exception as e:  # keep server alive on loop failure
+                    err_msg = f"{type(e).__name__}: {e}"
+                    result["loop_error"] = err_msg
+                    with scanner_lock:
+                        scanner_state["status"] = SCANNER_FAILED
+                        scanner_state["last_error"] = err_msg
+                        scanner_state["restart_count"] += 1
+                        scanner_state["last_restart_ts"] = int(time.time())
+                    print(f"service: loop FAILED: {err_msg}", flush=True)
+                    # Don't retry on finite runs (user expected a clean exit)
+                    if loop_args.iterations is not None:
+                        return
+                    # Cap on restart count; park in FAILED with the server
+                    # up rather than tearing the process down.
+                    if scanner_state["restart_count"] > max_scanner_retries:
+                        print(f"service: scanner exceeded "
+                              f"{max_scanner_retries} retries; parking "
+                              f"in FAILED (server stays up)",
+                              flush=True)
+                        while not stop.is_set():
+                            stop.wait(1.0)
+                        return
+                    # Exponential backoff before next restart
+                    wait_s = min(backoff_s, backoff_max_s)
+                    print(f"service: scanner backoff {wait_s}s", flush=True)
+                    backoff_s = min(backoff_s * 2, backoff_max_s)
+                    if stop.wait(wait_s):  # interrupted by stop event
+                        return
 
         loop_thread = threading.Thread(target=_run_loop,
                                        name="daemon-loop", daemon=True)
