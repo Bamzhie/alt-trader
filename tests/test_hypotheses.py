@@ -287,12 +287,36 @@ no_horizon = {"id": "HYD-0001", "title": "t", "status": "proposed",
               "dev_end": "2024-01-01", "val_start": "2024-01-01",
               "val_end": "2024-02-01", "holdout_start": "2024-02-02"}
 no_horizon_errs = hr.validate(no_horizon)
-check("missing horizon skips embargo (no silent default)",
-      not any(e.startswith("embargo:") for e in no_horizon_errs),
+check("missing horizon fails embargo closed when windows supplied",
+      any(e.startswith("embargo:") for e in no_horizon_errs),
       str(no_horizon_errs))
 check("missing horizon keeps within-window teeth",
       any(e.startswith("within-window:") for e in no_horizon_errs),
       str(no_horizon_errs))
+
+bare_proposed = {"id": "HYD-0001", "title": "t", "status": "proposed",
+                 "prediction": "p"}
+check("bare proposed entry with no windows passes window rules",
+      hr.validate(bare_proposed) == [], str(hr.validate(bare_proposed)))
+
+with_horizon = dict(no_horizon, horizon="24h", dev_end="2024-01-05",
+                    val_start="2024-01-05")
+with_horizon_errs = hr.validate(with_horizon)
+check("supplied windows with valid horizon evaluate embargo normally",
+      any(e.startswith("embargo:") for e in with_horizon_errs),
+      str(with_horizon_errs))
+
+bad_horizon = _registered_base(horizon="9h")
+bad_horizon_errs = hr.validate(bad_horizon)
+check("invalid horizon reports required-field and embargo",
+      any("horizon" in e and e.startswith("required-field")
+          for e in bad_horizon_errs)
+      and any(e.startswith("embargo:") for e in bad_horizon_errs),
+      str(bad_horizon_errs))
+
+big_int_errs = hr.validate(_registered_base(threshold=10 ** 5000))
+check("large int threshold degrades without raising",
+      any("threshold" in e for e in big_int_errs), str(big_int_errs))
 
 tmp2 = tempfile.mkdtemp()
 variant(tmp2, "HYD-0001-a.md", BASE_FIELDS)

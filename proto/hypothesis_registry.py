@@ -37,6 +37,14 @@ def _unquote(value):
     return value
 
 
+def _safe_repr(value):
+    """repr() that cannot raise on oversized ints (digit-cap ValueError)."""
+    try:
+        return repr(value)
+    except (ValueError, OverflowError):
+        return f"<{type(value).__name__} too large to display>"
+
+
 def _present(value):
     """A value counts as present unless None or empty/whitespace (post-quote-strip)."""
     if value is None:
@@ -54,7 +62,12 @@ def _as_number(value):
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        num = float(value)
+        try:
+            num = float(value)
+        except (ValueError, OverflowError):
+            # Large Python ints overflow float(): not a usable number,
+            # never an exception out of validation.
+            return None
         return num if math.isfinite(num) else None
     if isinstance(value, str):
         text = _unquote(value).strip()
@@ -253,7 +266,7 @@ def validate(entry):
         errors.append("required-field: status is required")
         required = list(BASE_FIELDS)
     elif status not in STATUSES:
-        errors.append(f"unknown-status: {status_raw!r} is not a known status")
+        errors.append(f"unknown-status: {_safe_repr(status_raw)} is not a known status")
         required = list(BASE_FIELDS)
     elif status == "proposed":
         required = list(BASE_FIELDS)
@@ -273,14 +286,14 @@ def validate(entry):
     if not _present(id_raw):
         errors.append("required-field: id is required")
     elif not (isinstance(id_raw, str) and ID_RE.match(_unquote(id_raw).strip())):
-        errors.append(f"bad-id: {id_raw!r} does not match ^HYD-[0-9]{{4}}$")
+        errors.append(f"bad-id: {_safe_repr(id_raw)} does not match ^HYD-[0-9]{{4}}$")
 
     if "threshold" in required:
         if not _present(fields.get("threshold")):
             errors.append("required-field: threshold is required")
         elif _as_number(fields.get("threshold")) is None:
             errors.append(
-                f"required-field: threshold {fields.get('threshold')!r} "
+                f"required-field: threshold {_safe_repr(fields.get('threshold'))} "
                 "must be numeric")
 
     if "comparisons" in required:
@@ -288,7 +301,7 @@ def validate(entry):
             if _present(fields.get("comparisons")) else None
         if comp is None or comp < 1:
             errors.append(
-                f"required-field: comparisons {fields.get('comparisons')!r} "
+                f"required-field: comparisons {_safe_repr(fields.get('comparisons'))} "
                 "must be an integer >= 1")
 
     horizon = None
@@ -301,7 +314,7 @@ def validate(entry):
             horizon = None
         elif horizon not in HORIZONS:
             errors.append(
-                f"required-field: horizon {horizon_raw!r} must be one of "
+                f"required-field: horizon {_safe_repr(horizon_raw)} must be one of "
                 "1h, 4h, 24h, 7d")
             horizon = None
 
@@ -313,7 +326,7 @@ def validate(entry):
         day = _parse_date(value)
         if day is None:
             errors.append(
-                f"bad-date: {field} {value!r} is not a YYYY-MM-DD calendar day")
+                f"bad-date: {field} {_safe_repr(value)} is not a YYYY-MM-DD calendar day")
         else:
             parsed[field] = day
 
@@ -346,18 +359,27 @@ def validate(entry):
                 f"ordering: {first} {parsed[first]} > "
                 f"{second} {parsed[second]}")
 
-    # Embargo needs a resolved horizon: with a missing/invalid horizon
-    # there is no embargo to check against (required-field already fires
-    # for registered+), so skip rather than silently defaulting to 1 day.
+    # Embargo needs a resolved horizon. With a missing/invalid horizon
+    # and complete window pairs, fail closed: a silent 1-day default
+    # would let entries pass embargo validation that was never evaluated.
+    # (Missing/invalid horizon is separately a required-field error for
+    # registered+; bare proposed entries with no windows pass vacuously.)
+    embargo_pairs = (("dev_end", "val_start", "dev/val"),
+                     ("val_end", "holdout_start", "val/holdout"))
     if horizon in HORIZONS:
         embargo_days = 7 if horizon == "7d" else 1
-        for first, second, label in (("dev_end", "val_start", "dev/val"),
-                                     ("val_end", "holdout_start", "val/holdout")):
+        for first, second, label in embargo_pairs:
             if first in parsed and second in parsed:
                 gap = (parsed[second] - parsed[first]).days
                 if gap < embargo_days:
                     errors.append(
                         f"embargo: {label} gap {gap}d < {embargo_days}d")
+    else:
+        for first, second, label in embargo_pairs:
+            if first in parsed and second in parsed:
+                errors.append(
+                    f"embargo: {label} cannot evaluate "
+                    "without a valid horizon")
 
     return errors
 

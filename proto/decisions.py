@@ -101,7 +101,11 @@ def validate_log(path, known_ids):
                 continue
             try:
                 obj = json.loads(raw)
-            except json.JSONDecodeError:
+            except ValueError:
+                # JSONDecodeError subclasses ValueError, as does the
+                # int-string digit cap on oversized JSON integers: both
+                # are per-line data defects, never an exception out of
+                # validation. The affected line is named.
                 errors.append(f"line {lineno}: bad-json")
                 continue
             if not isinstance(obj, dict):

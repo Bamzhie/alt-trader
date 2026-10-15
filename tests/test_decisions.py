@@ -140,5 +140,14 @@ try:
 finally:
     os.unlink(unhash_path)
 
+big_path = write_log(['{"id": "DEC-0010", "ts": ' + "9" * 5000 + "}"])
+try:
+    logged, errs = decisions.validate_log(big_path, KNOWN)
+    check("oversized JSON integer reported as bad-json with line (no raise)",
+          errs == ["line 1: bad-json"] and logged == [],
+          f"{logged!r} {errs!r}")
+finally:
+    os.unlink(big_path)
+
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)
