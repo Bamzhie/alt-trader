@@ -191,10 +191,29 @@ Verified against code/data, not inherited summaries.
     same canon/is_synthetic filter so coin names match the bar archives.
   - Audit reuse: the CLI gained `--tf-sec` so observation archives at any
     cadence audit correctly (default 300 = 5m bars).
+- Delivered (2026-10-16, WS4e, commit 858201c): **service route for the
+  funding series** — `GET /funding` over the observation archive
+  (`proto/service.py` handler + dispatch, `funding_dir` threaded through
+  `_make_handler`/`serve`/`run_service`/`--funding-dir`, the same
+  configuration surface that sets the bars dir). Contract mirrors
+  `/bars`: bearer gate → `coin` required → allowlist (`^[A-Za-z0-9_-]+$`,
+  before any filesystem access) → 404 when unarchived → limit 1–5000
+  (never clamped) → 503 on unreadable (never a stack trace); ascending
+  rows, `count == len(rows)`, `data_as_of == last_ts`.
+  - Verification: `tests/test_funding_route.py` → ALL PASS (39 checks);
+    `tests/run_all.py` → ALL SUITES PASS (66 files).
+  - Deploy status PENDING (no restart performed — it recycles the 24/7
+    collector, so it waits on user go-ahead): the running backend (pid
+    200835, started 2026-10-15 22:59 WAT) predates commit 858201c
+    (2026-10-16 00:53 WAT), so the live process cannot serve the route
+    yet. After `systemctl --user restart altradar.service`, live-verify
+    with `curl` on an observed coin (expect 200, ascending rows,
+    `count == len(rows)`).
 - Remaining: funding SETTLEMENT history (settle times + settled amounts —
   needs the per-coin funding endpoint or settlement events, a separate
-  design); mark/index archive; book/spread history; OI series; a service
-  route to read the funding series (UI evidence is WS6). Only 5m OHLCV +
+  design); mark/index archive; book/spread history; OI series; DEPLOY +
+  live-verify the funding read route (delivered in code, pending restart
+  — see above). UI evidence is WS6. Only 5m OHLCV +
   funding observations are persisted today.
 
 ### 5. Quantitative research foundation — INCREMENT 1 DELIVERED (registry + split discipline)
