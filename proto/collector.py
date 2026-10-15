@@ -18,6 +18,10 @@ def read_bars(data_dir, coin):
             out.append({"ts": int(r["ts"]), "o": float(r["o"]), "h": float(r["h"]),
                         "l": float(r["l"]), "c": float(r["c"]),
                         "vol": float(r["vol"]), "amount": float(r["amount"])})
+    # Sort by timestamp to ensure chronological order - necessary because
+    # batches are appended in sorted order but a sorted batch can be appended
+    # after newer timestamps already exist in the archive.
+    out.sort(key=lambda b: b["ts"])
     return out
 
 def append_bars(data_dir, coin, bars):

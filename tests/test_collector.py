@@ -22,6 +22,47 @@ check("read back 5", len(rows)==5, str(len(rows)))
 check("vol+amount present", all("vol" in r and "amount" in r for r in rows))
 
 
+def test_read_bars_sorts_on_read_without_rewriting_archives():
+    """WS1 remediation: archives on disk keep their append order (never
+    rewritten), but read_bars returns chronological rows. An older batch
+    appended after a newer batch — the exact real-archive shape — must
+    come back sorted, with no archive mutation (file bytes unchanged)."""
+    print("=== test_read_bars_sorts_on_read_without_rewriting_archives ===")
+    import hashlib
+    import gzip as _gz
+    import csv as _csv
+    tdir = tempfile.mkdtemp()
+    # newest batch first (ts 1000..1900), then a strictly older batch
+    # appended after it (ts -200..700) — the real-archive shape.
+    new_batch = [{"ts": 1000 + i * 300, "o": 1.0, "h": 1.1, "l": 0.9,
+                  "c": 2.0, "vol": 1.0, "amount": 1.0} for i in range(4)]
+    old_batch = [{"ts": -200 + i * 300, "o": 1.0, "h": 1.1, "l": 0.9,
+                  "c": 1.0, "vol": 1.0, "amount": 1.0} for i in range(4)]
+    col.append_bars(tdir, "SORT", new_batch)
+    col.append_bars(tdir, "SORT", old_batch)
+
+    path = os.path.join(tdir, "SORT.csv.gz")
+    before = hashlib.sha256(open(path, "rb").read()).hexdigest()
+
+    rows = col.read_bars(tdir, "SORT")
+    ts = [r["ts"] for r in rows]
+    check("read_bars returns chronological rows despite append order",
+          ts == sorted(ts), str(ts))
+    check("read_bars keeps every row (no data loss)", len(rows) == 8,
+          str(len(rows)))
+    check("oldest batch first after sort", ts[0] == -200, str(ts[0]))
+
+    after = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    check("archive file bytes unchanged (no rewrite)", before == after,
+          "archive was mutated by read_bars")
+    # direct on-disk order check via gzip (independent of read_bars)
+    with _gz.open(path, "rt", newline="") as f:
+        disk_ts = [int(r["ts"]) for r in _csv.DictReader(f)]
+    check("on-disk order unchanged: newer batch before older batch",
+          disk_ts == [1000, 1300, 1600, 1900, -200, 100, 400, 700],
+          str(disk_ts))
+
+
 def test_collect_full_universe_covers_every_coin():
     """collect_full_universe(data_dir) -> counts for EVERY universe coin,
     not the 150-coin rotation: build_universe called with stake=inf,
@@ -70,6 +111,7 @@ def run(fn):
         FAILURES.append(fn.__name__)
 
 
+run(test_read_bars_sorts_on_read_without_rewriting_archives)
 run(test_collect_full_universe_covers_every_coin)
 
 print("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED")
