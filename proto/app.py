@@ -109,7 +109,12 @@ class App:
     def scan_once(self):
         # The 90s gate covers the per-coin fetch+score ONLY; the universe
         # feed above is cached 10 minutes and excluded from that budget.
+        # Phase timing (monotonic so NTP steps cannot skew it): read off
+        # self.last_scan_phases after the call. No behavior change.
+        total_t0 = time.monotonic()
+        t_uni = time.monotonic()
         self.maybe_refresh_universe()
+        universe_refresh_s = time.monotonic() - t_uni
         t0 = time.time()
         ranked = sorted(
             self.uni,
@@ -122,6 +127,7 @@ class App:
         def _progress(done, total):
             self.sweep_progress = (done, total)
 
+        t_score = time.monotonic()
         cards = score_universe(ranked, self.det, self.tk, self.args.stake,
                                errors=errors,
                                stagger=scanmod.STAGGER_S,
@@ -131,6 +137,7 @@ class App:
                                    self.args, "leverage_cap",
                                    pl.MAX_LEVERAGE),
                                progress_fn=_progress)
+        score_s = time.monotonic() - t_score
 
         # Log: flagged rows AND shadow rows (vetoed / sub-threshold). SS6.1a.
         # Flagged = stake-aware actionable AND above threshold (selective,
@@ -139,6 +146,7 @@ class App:
         # so stop/TP1/TP2 hits become measurable facts, not estimates.
         # Log write failures are counted too - never swallowed silently.
         log_errors = 0
+        t_log = time.monotonic()
         if self.args.write_logs:
             for sc in cards:
                 score_val = sc.score_v3 if (self.use_v3 and sc.score_v3 is not None) else sc.score
@@ -167,6 +175,7 @@ class App:
                         self.store.upsert_current(sc, flagged, sid, tier=2)
                 except Exception:
                     log_errors += 1
+        log_s = time.monotonic() - t_log
 
         self.failed = len(errors)
         self.last_errors = errors
@@ -189,6 +198,12 @@ class App:
                        + (f" · universe ERROR {self.universe_error}"
                           if self.universe_error else "")
                        + self.degraded_text())
+        self.last_scan_phases = {
+            "universe_refresh_s": float(universe_refresh_s),
+            "score_s": float(score_s),
+            "log_s": float(log_s),
+            "total_s": float(time.monotonic() - total_t0),
+        }
 
     def visible(self):
         """Ranked rows: non-vetoed only. Vetoes get their own section (SS6)."""
