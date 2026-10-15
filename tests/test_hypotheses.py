@@ -1,18 +1,22 @@
-"""Hypothesis registry reader + validator (WS5-1a).
+"""Hypothesis registry reader + validator (WS5-1a/1b).
 
 Self-checking script: `python3 tests/test_hypotheses.py`.
 Covers flat-mapping parse incl. quoted ':'/'#', the eight parse
 rejections, validator fixtures (ordering-touching-but-embargo-fail,
 reversed window, missing denominator, bad status, duplicate id,
-non-UTF8/CRLF, missing/unclosed front-matter), and empty dir.
+non-UTF8/CRLF, missing/unclosed front-matter), empty dir, the shipped
+`docs/hypotheses/HYD-0001` example validating clean, and the
+Task 4 <-> Task 5 wiring (`load_registry` ids fed into `validate_log`).
 """
 
+import json
 import os
 import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from proto import decisions as dec
 from proto import hypothesis_registry as hr
 
 FAILURES = []
@@ -192,6 +196,48 @@ check("sibling of unclosed file still validates",
 tmp = tempfile.mkdtemp()
 entries, errors = hr.load_and_validate(tmp)
 check("empty dir -> ([], [])", entries == [] and errors == [], str((entries, errors)))
+
+print("\n=== shipped example + cross-module wiring ===")
+HERE = os.path.dirname(os.path.abspath(__file__))
+SHIP_DIR = os.path.join(os.path.dirname(HERE), "docs", "hypotheses")
+entries, errors = hr.load_and_validate(SHIP_DIR)
+check("shipped registry validates clean", errors == [], str(errors))
+check("example HYD-0001 present with status testing",
+      any(e.get("id") == "HYD-0001" and e.get("status") == "testing"
+          for e in entries),
+      str([(e.get("id"), e.get("status")) for e in entries]))
+
+known_ids = [e["id"] for e in hr.load_registry(SHIP_DIR)]
+
+
+def _wiring_decision(hyp_id):
+    return {"id": "DEC-0001", "ts": 1700000000, "hypothesis_id": hyp_id,
+            "decision": "hold", "reasons": ["registry wiring check"],
+            "checks": {}, "decided_by": "registry-wiring-check"}
+
+
+def _wiring_log(obj):
+    fd, path = tempfile.mkstemp(suffix=".jsonl")
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(obj) + "\n")
+    return path
+
+
+ok_path = _wiring_log(_wiring_decision("HYD-0001"))
+try:
+    _, ok_errs = dec.validate_log(ok_path, known_ids)
+    check("decision citing HYD-0001 accepted by validate_log",
+          ok_errs == [], str(ok_errs))
+finally:
+    os.unlink(ok_path)
+
+bad_path = _wiring_log(_wiring_decision("HYD-9999"))
+try:
+    _, bad_errs = dec.validate_log(bad_path, known_ids)
+    check("decision citing HYD-9999 rejected with unknown-hypothesis",
+          any("unknown-hypothesis" in e for e in bad_errs), str(bad_errs))
+finally:
+    os.unlink(bad_path)
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)

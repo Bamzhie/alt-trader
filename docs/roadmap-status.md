@@ -4,7 +4,7 @@ Product goal: quantitative research and analysis for MEXC altcoin perpetual
 futures. Rules support quant analysis; heuristic scores are not evidence of
 edge. Read-only; no order execution. BTC is labeled market context only.
 
-Last updated: 2026-10-15 (evening — status reviewed; deployment gap found, see below).
+Last updated: 2026-10-15 (late — R1–R4 + WS5-1 closed, full suite green).
 Verified against code/data, not inherited summaries.
 
 ## Deployment gap (verified 2026-10-15 ~22:05 UTC, live system)
@@ -20,6 +20,22 @@ Verified against code/data, not inherited summaries.
   `/scanner-health` (expect 200 with lifecycle state) and
   `data/funding/*.csv.gz` after one collect cadence. Restart not performed
   — it recycles the 24/7 collector, so it waits on user go-ahead.
+
+## Deployment gap RESOLVED (R1 verified 2026-10-15, post-restart)
+
+- Restart performed (`systemctl --user restart altradar.service`,
+  exit 0; new pid 200835, exactly one listener on 127.0.0.1:18741).
+- `GET /scanner-health` answers 200 `{"ok": true, "data":
+  {"status": "healthy", ...}}` (pre-restart probe confirmed the old
+  code: `NOT_FOUND no such route`).
+- Funding archive grew from baseline `(absent)` — `data/funding/` did
+  not exist pre-restart — to 569 files / 41,615 bytes with header
+  `ts,rate,cap` (spot-check `BTC.csv.gz`: one data row). Growth, not
+  mere existence. First collect took ~10min (universe refresh + slow
+  first scan/measure), slower than the nominal 300s cadence.
+- Note: the old process needed SIGKILL after SIGTERM timed out
+  (mid-measure-cycle); pre-existing shutdown behavior, new process
+  acquired the lock cleanly.
 
 ## Workstream status
 
@@ -150,6 +166,11 @@ Verified against code/data, not inherited summaries.
 - Remaining: scan-phase duration instrumentation inside `scan_once()`
   (sweep-level covers the loop's end-to-end cost); the 15 stale coins
   are RESOLVED as MEXC delistings (see WS1 — no collector defect).
+- Delivered (2026-10-15, R2, commit 478489f): scan-phase durations in
+  `scan_once()` — `self.last_scan_phases` with `universe_refresh_s`,
+  `score_s`, `log_s`, `total_s` (all `>= 0`, monotonic clock, recorded
+  on the empty-universe path too; no scoring/logging behavior change).
+  Verification: `tests/test_scan_phases.py` → ALL PASS.
 
 ### 4. Point-in-time coverage (funding/mark/book/OI) — IN PROGRESS (funding archive delivered)
 - Deps: WS1 audit pattern (reused), WS3 timeliness signals.
@@ -177,14 +198,26 @@ Verified against code/data, not inherited summaries.
   route to read the funding series (UI evidence is WS6). Only 5m OHLCV +
   funding observations are persisted today.
 
-### 5. Quantitative research foundation — PROPOSAL ONLY
+### 5. Quantitative research foundation — INCREMENT 1 DELIVERED (registry + split discipline)
 - Deps: WS1 (PIT truth), WS4 (funding/cost inputs).
 - Complete: episode lifecycle + calibration gate + cost stub + explicit
   denominators + no-net-P&L prohibition (`proto/measurement.py`,
   `proto/episode_report.py`); heuristic scores labeled UNVALIDATED,
   shadow score read-only (`proto/scorer.py:97-99,506-528`).
+- Delivered (2026-10-15, WS5-1, commits 9d74b29 + this plan):
+  `proto/hypothesis_registry.py` (stdlib reader + validator, read-only)
+  with `load_registry` / `validate` / `load_and_validate`; split
+  discipline enforced (half-open windows, ordering + embargo from the
+  hypothesis's own horizon, status-gated required fields); plus the
+  illustrative `testing`-status example
+  `docs/hypotheses/HYD-0001-funding-quintile-drift.md` (self-consistent
+  windows, `>=` threshold with explicit denominator, costs referencing
+  the funding archive, pinned rule/config refs).
+  Verification: `tests/test_hypotheses.py` → ALL PASS (parse + fixtures
+  + shipped example + decision-log wiring); `tests/run_all.py` → ALL
+  SUITES PASS (65 files).
 - Remaining: everything in `docs/quant-analytics-system-proposal.md`
-  §3–§5 (hypothesis registry, purge/embargo splits, Hurst/MF-DFA,
+  §3–§5 beyond the registry (evaluation harness, Hurst/MF-DFA,
   competing outcomes, calibrated probs, clustered uncertainty) is unbuilt.
 
 ### 6. Evidence communication in app — NOT STARTED
@@ -209,10 +242,25 @@ Verified against code/data, not inherited summaries.
   states `outcome_evidence: "not evaluated (WS5 inputs unbuilt)"` —
   no confidence/probability language (test-enforced). 16 checks in
   `tests/test_promotion.py`.
-- Remaining: champion/candidate OBJECTS persisted in the Store, the
-  decision LOG (append-only, who/when/why), and outcome-based
-  comparison once WS5 lands (competing outcomes, calibrated
-  probabilities — proposal §3–§5).
+- Remaining: champion/candidate OBJECTS persisted in the Store,
+  decision-log ENTRIES (the log file + validator exist; no decisions
+  recorded yet), and outcome-based comparison once WS5 lands
+  (competing outcomes, calibrated probabilities — proposal §3–§5).
+- Delivered (2026-10-15, R4, commit 47ff908): `proto/decisions.py` —
+  `validate_decision` + `validate_log` (stdlib, never writes the log)
+  over the human-owned append-only `docs/decisions/log.jsonl`
+  (empty file is valid). Wiring to the real registry proven in
+  `tests/test_hypotheses.py`: registry ids fed into `validate_log`
+  accept `HYD-0001` and reject `HYD-9999` with `unknown-hypothesis`.
+  Verification: `tests/test_decisions.py` → ALL PASS.
+
+## Outstanding (NOT in this plan — kept visible)
+
+- WS3 beyond R2/R3: 1m/venue-probe design stage; provisional-bar tier (decided against, needs per-bar markers + scorer re-validation to reopen).
+- WS4 beyond funding observations: funding SETTLEMENT history, mark/index archive, book/spread history, OI series, service route for the funding series.
+- WS5 beyond increment 1: evaluation harness, estimators, competing outcomes, calibrated probabilities (proposal §3–§5).
+- WS6 evidence UI: sample-n / CI / calibration / coverage / validation-status display (blocked on WS5 outputs).
+- WS7 beyond the decision log: champion/candidate persistence, outcome-based comparison (blocked on WS5).
 
 ## Stage log
 |- Stage 1 (WS1, complete): bar-archive audit library + CLI + tests (3 commits:
@@ -239,6 +287,13 @@ Verified against code/data, not inherited summaries.
 |  daemon-wired on the collect cadence, funding failure isolated from
 |  the bars sweep); audit CLI --tf-sec for observation cadences.
 |  NOTE: no raw archive was ever rewritten in any stage.
+|- Stage F (roadmap push 2, complete 2026-10-15): R1 live-service
+|  deploy-verification (restart → /scanner-health healthy, funding
+|  archive (absent) → 569 files); R2 scan-phase durations (478489f);
+|  R3 stale-15 = MEXC delistings, no fix (a1e4734); R4 decision log +
+|  validator (47ff908); WS5-1 registry + validator (9d74b29) with
+|  illustrative HYD-0001 example + decision-log wiring (this commit).
+|  run_all.py ALL SUITES PASS (65 files).
 
 ## Handoff (uncommitted / untracked — NOT part of committed stages)
 
@@ -279,16 +334,21 @@ Verified against code/data, not inherited summaries.
 - Stage 1 audit: `8073b63`, `0bd1938`, `f11b789` (carried forward, untouched)
 
 ### Next priorities by workstream
-- WS4 (point-in-time coverage): funding/mark/book/OI archives — NOT
-  STARTED. The audit pattern (`proto/bar_quality.py`) is directly
-  reusable for new archives once collection exists.
-- WS5 (research foundation): hypothesis registry, purge/embargo splits,
+- WS4 (point-in-time coverage): funding/mark/book/OI archives — R1 has
+  now verified the funding observation archive IS accumulating live
+  (569 files); still NOT STARTED as archives: funding SETTLEMENT
+  history, mark/index, book/spread history, OI series, service route
+  for the funding series. The audit pattern (`proto/bar_quality.py`) is
+  directly reusable for new archives once collection exists.
+- WS5 (research foundation): hypothesis registry DELIVERED (this plan);
+  still NOT STARTED: evaluation harness, purge/embargo splits usage,
   competing outcomes, calibrated probabilities (proposal §3–§5) — NOT
   STARTED. The promotion gate already states its outcome inputs are
   unbuilt rather than inventing them.
 - WS6 (evidence-focused UI): sample-n / CI / calibration / coverage /
   validation-status display — NOT STARTED.
-- WS7: champion/candidate objects + decision log + outcome-based
+- WS7: decision log file + validator DELIVERED (empty log awaits first
+  entry); still pending: champion/candidate objects + outcome-based
   comparison (needs WS5) — evaluation delivered, persistence pending.
 - WS3: scan-phase duration instrumentation; 1m design stage (venue
   probe + request budget + archive decision); stale-coins uptime look.
