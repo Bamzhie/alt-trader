@@ -1,6 +1,6 @@
 # ALT RADAR native desktop app and always-on backend design
 
-**Status:** Revised for review  
+**Status:** Implemented architecture reference (2026-10-14)  
 **Date:** 2026-10-14
 
 ## Goal
@@ -9,7 +9,7 @@ Run the scanner and API as a user-level systemd service that starts with the mac
 
 ## Current context
 
-- `proto.service` embeds the scanner and resolver, but `altradar.service.example` currently passes `--no-scan`; the unit must be scanner-enabled.
+- `proto.service` embeds the scanner and resolver. The checked-in `altradar.service.example` is scanner-enabled.
 - The service API binds to loopback on port `18741` and uses a persistent token at `~/.config/altradar/service.token`.
 - `app/` is a React/Vite frontend. `app/src-tauri/` is the intended native desktop shell.
 - The current Tauri design already describes the React shell and token access for a persistent service, but it also includes spawn-fallback behavior. That behavior conflicts with the required systemd-owned backend lifecycle and is removed here.
@@ -37,7 +37,7 @@ The backend service owns scanning, data collection, API, and restart behavior. T
 
 ## Backend service and boot lifecycle
 
-- Update `altradar.service.example` to run the scanner-enabled service by removing `--no-scan`. Retain collection and resolution intervals unless implementation review finds they conflict with current service defaults.
+- Keep `altradar.service.example` scanner-enabled. Retain collection and resolution intervals unless implementation review finds they conflict with current service defaults.
 - Keep the user-level systemd unit (`WantedBy=default.target`). Document installation, `systemctl --user enable --now altradar.service`, and `loginctl enable-linger <user>` so it starts at boot and remains active after logout.
 - Keep loopback binding, service token file location, and existing file permissions. Do not expose the API on LAN interfaces.
 - The native app performs a readiness check against the existing service. If unavailable, it shows a clear in-app message with `systemctl --user status altradar.service` and journal commands. It does not start a fallback backend.

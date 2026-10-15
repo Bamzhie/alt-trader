@@ -18,9 +18,9 @@ import { healthzOk, readyzOk, sseStreamResponse, stubReadOnlyFetch } from "./sse
 
 beforeEach(() => {
   useDashboardStore.setState({ connection: "starting" });
-  // The wired Dashboard opens /events and probes /healthz + /readyz on
-  // mount (Task 11 fix round 1). Chrome-level tests here don't exercise
-  // the data path, but an unstubbed fetch would leave those probes
+  // The wired Dashboard opens /events and probes /healthz on mount.
+  // Chrome-level tests here don't exercise the data path, but an unstubbed
+  // fetch would leave those probes
   // resolving after the test body (state updates outside act) — so every
   // render gets the minimal read-only stub. The one test that asserts the
   // request shape installs its own stub.
@@ -55,7 +55,7 @@ test("shell shows all six nav items and stubs for non-dashboard pages", () => {
 test("starting connection shows banner", () => {
   useDashboardStore.setState({ connection: "starting" });
   render(<App />);
-  expect(screen.getByText(/first sweep in progress/i)).toBeInTheDocument();
+  expect(screen.getByText(/connecting to ALT RADAR service/i)).toBeInTheDocument();
 });
 
 // --- sidebar --------------------------------------------------------------
@@ -182,7 +182,7 @@ test("bell and gear are labelled placeholders that do not navigate", () => {
 test("banner is hidden once connected", () => {
   useDashboardStore.setState({ connection: "connected" });
   render(<App />);
-  expect(screen.queryByText(/first sweep in progress/i)).toBeNull();
+  expect(screen.queryByText(/connecting to ALT RADAR service/i)).toBeNull();
 });
 
 test("error connection shows a contained fallback message", () => {

@@ -25,9 +25,21 @@ no order code path anywhere in this repository.
   closing the window does not stop collection.
 
 Current status: the detector is **unvalidated** — scores measure abnormal
-activity, not edge. The outcome log being collected is what will calibrate
-thresholds. See `docs/quantitative-audit-2026-10-09.md` for an independent
-audit of the pipeline, limitations included.
+activity, not edge. The quant-analytic system is the proposed next direction,
+not an implemented capability. Its current design is in
+`docs/quant-analytics-system-proposal.md`; it treats trading rules as support
+for quantitative analysis and requires backtests and hypothesis tests before
+promoting changes.
+
+## Current project context
+
+- This README describes the implemented backend and desktop architecture.
+- [`app/README.md`](app/README.md) covers the React/Tauri frontend.
+- [`docs/superpowers/specs/2026-10-14-react-backend-launch-design.md`](docs/superpowers/specs/2026-10-14-react-backend-launch-design.md) records the systemd-owned backend and native desktop boundary.
+- [`docs/quant-analytics-system-proposal.md`](docs/quant-analytics-system-proposal.md) is the forward-looking quant research proposal; it is not implemented yet.
+
+Older implementation plans, task reports, and superseded designs have been
+removed so they are not mistaken for current requirements.
 
 ## Requirements
 
@@ -133,34 +145,28 @@ python3 tests/test_app.py    # live venue smoke test (needs internet)
 
 ## How it works (30-second version)
 
-`feeds → universe → scorer → planner → interfaces + SQLite`
+`systemd → proto.service (scanner + collector + resolver + API) → SQLite and bar archive → Tauri/React dashboard`
 
-- `proto/mexc.py`, `proto/bybit.py` — public REST adapters with envelope,
-  shape, timestamp-order, and OHLC validation. MEXC supplies price/candles/
-  book; Bybit supplies open-interest history for shared symbols.
-- `proto/scan.py` — stake-aware universe rotation (tradeable-first + degen
-  tail + sweep), per-coin fetch/score with counted (never silent) failures.
-- `proto/scorer.py` — signal-quality score + symmetric LONG/SHORT lean, plus
-  the logged-only shadow score `score-v3-dis` (docs/grok-review.md). The
-  shadow never affects the flag, ranking, plans or episodes.
-- `proto/planner.py` — computed (never defaulted) leverage, risk-capped size,
-  funding-aware costs, surfaced warnings.
-- `proto/measurement.py` — episode lifecycle (signal episodes as the unit of
-  performance), gated behind an explicit calibration epoch that is **off by
-  default** and refuses to enable until cadence calibration passes.
-- `proto/outcomes.py`, `proto/collector.py`, `proto/report.py`,
-  `proto/episode_report.py` — forward outcomes, 5m bar archive, hit-rate and
-  cohort reports.
-- `gui/`, `qtgui/` — tkinter and Qt front ends over the same engine.
+- `proto/service.py` runs as the systemd-owned backend and serves the local
+  authenticated HTTP/SSE API. It embeds the scanner, collector, and resolver.
+- `proto/scan.py`, `proto/scorer.py`, and `proto/planner.py` are the current
+  legacy signal pipeline. Its scores are not validated estimates of edge.
+- `proto/collector.py`, `proto/outcomes.py`, and `proto/measurement.py`
+  maintain bar history and outcome measurements used for research.
+- `app/` is the supported React frontend; `app/src-tauri/` packages it as a
+  native desktop window. It reads the existing service and does not own its
+  lifecycle.
+- The intended quant-first direction and staged validation requirements are
+  in `docs/quant-analytics-system-proposal.md`. That proposal is not yet an
+  implemented quant engine.
 
 ## Project layout
 
 ```
-proto/      scanner engine, planner, measurement, daemon, reports
-gui/        tkinter desktop app (stdlib only)
-qtgui/      PySide6 desktop app (needs .venv-qt)
-tests/      24 self-checking suites (run_all.py aggregates them)
-docs/       manual (GUI_MANUAL.md), independent audit, design specs
+proto/      scanner service, collectors, measurement, reports
+app/        React frontend and Tauri native desktop shell
+tests/      offline test suites
+docs/       current quant-analysis proposal and systemd/Tauri design reference
 data/       SQLite DB + bar archive (created at runtime, git-ignored)
 ```
 

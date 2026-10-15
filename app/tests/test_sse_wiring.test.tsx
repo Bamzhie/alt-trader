@@ -1,15 +1,11 @@
 // SSE wiring integration tests (Task 11 fix round 1).
 //
-// The hook (src/api/sse.ts useEvents) and the store's setConnection were
-// unit-tested but imported by NOTHING in src/ — so in the running app the
-// ConnectionBanner was permanently stuck on "starting — first sweep in
-// progress" and live SSE transitions never reached the dashboard.
+// These tests pin the wired path: live SSE transitions reach the dashboard,
+// while connection status reflects API liveness and stream availability.
 //
-// These tests pin the wired path end to end: the banner must be driven by
-// /healthz (alive) + /readyz (ready) — NOT by the hook's stream-open flag,
-// because the mock's /events route only checks auth, so a stream can open
-// while the service is still not ready — and an applied transition must
-// re-snapshot the dashboard.
+// Scanner readiness (/readyz) is separate from API connectivity. An alive
+// API with an open event stream is connected even during the first sweep.
+// Applied transitions must also re-snapshot the dashboard.
 //
 // HARD RULES under test (see app/src/api/types.ts header):
 //   * fetch is stubbed; the socket tripwire in tests/setup.ts guards every
@@ -84,8 +80,7 @@ interface Stub {
 
 /**
  * Fetch stub for the whole wired path. GETs answer the contract routes the
- * Dashboard now touches: /healthz (non-envelope liveness), /readyz
- * (readiness; 503 UNAVAILABLE while the first sweep runs), /snapshot, and
+ * Dashboard now touches: /healthz (non-envelope liveness), /snapshot, and
  * /events as a test-driven ReadableStream (recorded in `streams`, in
  * connect order). Any POST throws — the read-only rule.
  */
@@ -245,29 +240,28 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("connection state is driven by /healthz + /readyz", () => {
-  test("banner reaches connected only when readyz is true and the stream is open", async () => {
+describe("connection state separates API connectivity from scanner readiness", () => {
+  test("an alive API with an open stream is connected", async () => {
     const stub = installStub({ ready: true });
     render(<App />);
 
-    // The stream opens…
     await waitFor(() => expect(stub.streams.length).toBe(1));
-    // …and the readiness probe has actually run.
-    await waitFor(() => expect(stub.readyzCalls).toBeGreaterThan(0));
-
     await waitFor(() =>
       expect(useDashboardStore.getState().connection).toBe("connected"),
     );
-    expect(screen.queryByText(/first sweep in progress/i)).toBeNull();
+    expect(stub.readyzCalls).toBe(0);
+    expect(screen.queryByText(/connecting to ALT RADAR service/i)).toBeNull();
     expect(stub.calls.some((u) => u.endsWith("/healthz"))).toBe(true);
   });
 
-  test("banner stays starting while readyz is false, even with the stream open and delivering events", async () => {
+  test("first-sweep readiness does not mark an alive API with an open stream disconnected", async () => {
     const stub = installStub({ ready: false });
     render(<App />);
 
     await waitFor(() => expect(stub.streams.length).toBe(1));
-    await waitFor(() => expect(stub.readyzCalls).toBeGreaterThan(0));
+    await waitFor(() =>
+      expect(useDashboardStore.getState().connection).toBe("connected"),
+    );
 
     // The stream is genuinely live — an applied transition re-snapshots.
     await act(async () => {
@@ -275,12 +269,10 @@ describe("connection state is driven by /healthz + /readyz", () => {
     });
     await waitFor(() => expect(stub.snapshotCalls.length).toBeGreaterThan(1));
 
-    // …yet the banner must NOT claim connected: the mock's /events route
-    // only checks auth, so stream-open alone says nothing about readiness.
-    expect(useDashboardStore.getState().connection).toBe("starting");
-    expect(
-      screen.getByText(/first sweep in progress/i),
-    ).toBeInTheDocument();
+    // Readiness isn't part of connection state, and isn't probed here.
+    expect(useDashboardStore.getState().connection).toBe("connected");
+    expect(stub.readyzCalls).toBe(0);
+    expect(screen.queryByText(/connecting to ALT RADAR service/i)).toBeNull();
   });
 
   test("healthz failure flips the banner to error", async () => {
