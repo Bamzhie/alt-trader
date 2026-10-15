@@ -7,6 +7,9 @@ detection and out-of-order tracking. The compact set of unique timestamps is
 then sorted on its own (never the rows) to compute gaps and coverage.
 """
 
+import csv
+import gzip
+import os
 import time
 
 from typing import Dict, Iterable, List, Mapping, Optional
@@ -166,4 +169,148 @@ def audit_bar_sequence(bars: Iterable[Mapping],
             "expected": expected,
             "ratio": ratio,
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Task 2: streaming archive file audit + incoming check
+# ---------------------------------------------------------------------------
+
+# Matches proto/collector.py HEADER and _path naming.
+_BAR_HEADER = ("ts", "o", "h", "l", "c", "vol", "amount")
+
+
+def archive_max_ts(data_dir, coin):
+    """Return ``(max_ts, row_count)`` for a coin's gzip bar archive.
+
+    Streams the file exactly once in file order — no list materialization of
+    the full archive, no sorting. ``(None, 0)`` is returned when the file does
+    not exist or cannot be read; non-integer ``ts`` rows are skipped (and
+    still counted toward ``row_count`` for visibility).
+    """
+    path = os.path.join(data_dir, f"{coin}.csv.gz")
+    if not os.path.exists(path):
+        return None, 0
+    max_ts = None
+    n = 0
+    try:
+        with gzip.open(path, "rt", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                n += 1
+                ts = row.get("ts")
+                if ts is None:
+                    continue
+                try:
+                    ts = int(ts)
+                except (TypeError, ValueError):
+                    continue
+                if max_ts is None or ts > max_ts:
+                    max_ts = ts
+    except (OSError, gzip.BadGzipFile, csv.Error):
+        return None, 0
+    return max_ts, n
+
+
+def audit_archive_file(data_dir, coin, *, tf_sec=300, now=None, max_examples=50):
+    """Audit a single coin's persisted gzip bar archive.
+
+    Streams the file once (file order, never sorted/reordered on disk), feeds
+    the row list to :func:`audit_bar_sequence`, then caps the three example
+    lists to ``max_examples``. Missing files return the empty audit shape
+    (``count: 0``) with the coin/path keys attached — never raises.
+    """
+    path = os.path.join(data_dir, f"{coin}.csv.gz")
+    result_base = audit_bar_sequence([], tf_sec=tf_sec, now=now)
+    if not os.path.exists(path):
+        result_base["coin"] = coin
+        result_base["path"] = path
+        return result_base
+    rows = []
+    invalid_rows = 0
+    with gzip.open(path, "rt", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            ts = row.get("ts")
+            if ts is None:
+                invalid_rows += 1
+                continue
+            try:
+                ts = int(ts)
+            except (TypeError, ValueError):
+                invalid_rows += 1
+                continue
+            rows.append({
+                "ts": ts,
+                "o": float(row["o"]) if row.get("o") is not None else None,
+                "h": float(row["h"]) if row.get("h") is not None else None,
+                "l": float(row["l"]) if row.get("l") is not None else None,
+                "c": float(row["c"]) if row.get("c") is not None else None,
+                "vol": float(row["vol"]) if row.get("vol") is not None else None,
+                "amount": float(row["amount"]) if row.get("amount") is not None else None,
+            })
+    result = audit_bar_sequence(rows, tf_sec=tf_sec, now=now)
+    result["count"] = result.get("count", 0)
+    # Preserve invalid_rows surfaced by audit_bar_sequence if it saw them.
+    if invalid_rows:
+        result["invalid_rows"] = result.get("invalid_rows", 0) + invalid_rows
+    # Cap the three example lists to max_examples.
+    for key in ("duplicates", "out_of_order", "gaps"):
+        if key in result:
+            result[key] = result[key][:max_examples]
+    result["coin"] = coin
+    result["path"] = path
+    return result
+
+
+def check_incoming(archive_max_ts, bars):
+    """Classify a fresh list of incoming bars against the archive's max ts.
+
+    O(len(bars)), no archive I/O. ``archive_max_ts`` of ``None`` means the
+    archive is empty/absent, so every bar is considered new.
+
+    Returns ``{"new": [...], "at_or_below_max": [...],
+    "internal_duplicates": [...], "internal_out_of_order": [...]}``.
+
+    A bar whose ts is <= ``archive_max_ts`` is reported as
+    ``at_or_below_max`` with reason ``"duplicate_or_reorder"`` — without a full
+    set we cannot distinguish a genuine duplicate from an out-of-order
+    arrival, and we never invent that distinction.
+    """
+    new = []
+    at_or_below_max = []
+    internal_duplicates = []
+    internal_out_of_order = []
+    seen = set()
+    prev_ts = None
+    for idx, bar in enumerate(bars):
+        ts = bar.get("ts")
+        if ts is None:
+            continue
+        try:
+            ts = int(ts)
+        except (TypeError, ValueError):
+            continue
+        # Incoming-internal duplicate detection.
+        if ts in seen:
+            if ts not in internal_duplicates:
+                internal_duplicates.append(ts)
+        else:
+            seen.add(ts)
+        # Incoming-internal out-of-order.
+        if prev_ts is not None and ts < prev_ts:
+            internal_out_of_order.append({"index": idx, "ts": ts, "prev_ts": prev_ts})
+        prev_ts = ts
+        # Against-archive classification.
+        if archive_max_ts is None:
+            new.append(ts)
+        elif ts > archive_max_ts:
+            new.append(ts)
+        else:
+            at_or_below_max.append({"ts": ts, "reason": "duplicate_or_reorder"})
+    return {
+        "new": new,
+        "at_or_below_max": at_or_below_max,
+        "internal_duplicates": internal_duplicates,
+        "internal_out_of_order": internal_out_of_order,
     }

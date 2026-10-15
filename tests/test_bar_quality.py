@@ -18,7 +18,11 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from proto.bar_quality import audit_bar_sequence
+from proto.bar_quality import (audit_bar_sequence, archive_max_ts,
+                               audit_archive_file, check_incoming)
+import csv
+import gzip
+import tempfile
 
 FAILURES = []
 
@@ -164,6 +168,80 @@ check("empty coverage None fields",
       and cov8["span_s"] == 0 and cov8["unique"] == 0
       and cov8["expected"] is None and cov8["ratio"] is None,
       str(cov8))
+
+# ---------------------------------------------------------------------------
+# Task 2: streaming archive audit + incoming check
+# ---------------------------------------------------------------------------
+def _write_csv_gz(path, bars, header=None):
+    """Write bars (list of dicts) to a gzip CSV; returns the path."""
+    hdr = header or ["ts", "o", "h", "l", "c", "vol", "amount"]
+    with gzip.open(path, "wt", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=hdr)
+        w.writeheader()
+        for b in bars:
+            w.writerow(b)
+    return path
+
+
+print("\n=== task 2: archive_max_ts + audit_archive_file parity ===")
+tmpdir = tempfile.mkdtemp()
+# Build a defective sequence: a duplicate ts with a conflicting close.
+defects = _grid(n=10)
+defects.insert(5, dict(defects[4]))  # duplicate ts, same values as index 4
+defects[6]["c"] = 999.0              # same ts as index 5, different close -> conflicting
+_write_csv_gz(os.path.join(tmpdir, "DEF.csv.gz"), defects)
+max_ts, max_cnt = archive_max_ts(tmpdir, "DEF")
+check("archive_max_ts returns max ts", max_ts == defects[-1]["ts"], str((max_ts, defects[-1]["ts"])))
+check("archive_max_ts returns count", max_cnt == len(defects), str(max_cnt))
+audit = audit_archive_file(tmpdir, "DEF", now=defects[-1]["ts"] + 300)
+# Same rows handed to audit_bar_sequence directly must match (minus coin/path).
+direct = audit_bar_sequence(defects, now=defects[-1]["ts"] + 300)
+check("archive count matches direct", audit["count"] == direct["count"], str(audit["count"]))
+check("archive duplicates match direct", audit["duplicates"] == direct["duplicates"], str(audit["duplicates"]))
+check("archive out_of_order match direct", audit["out_of_order"] == direct["out_of_order"])
+check("archive gaps match direct", audit["gaps"] == direct["gaps"])
+check("archive has coin key", audit["coin"] == "DEF")
+check("archive has path key", audit["path"].endswith("DEF.csv.gz"))
+check("archive lists capped at max_examples (50)", len(audit["duplicates"]) <= 50 and len(audit["out_of_order"]) <= 50 and len(audit["gaps"]) <= 50)
+# missing file -> empty shape, never raises
+missing = audit_archive_file(tmpdir, "NOPE")
+check("missing file count 0", missing["count"] == 0, str(missing))
+check("missing file no raise: coin/path present", missing["coin"] == "NOPE" and missing["path"].endswith("NOPE.csv.gz"))
+check("missing file: not found -> (None, 0)", archive_max_ts(tmpdir, "NOPE") == (None, 0))
+# 20k-row synthetic clean file parity
+big = [_bar(1_700_000_000 + i * 300, c=100.0 + i) for i in range(20000)]
+_write_csv_gz(os.path.join(tmpdir, "BIG.csv.gz"), big)
+big_audit = audit_archive_file(tmpdir, "BIG", now=big[-1]["ts"] + 300)
+check("20k parity count", big_audit["count"] == 20000, str(big_audit["count"]))
+check("20k parity coverage unique", big_audit["coverage"]["unique"] == 20000, str(big_audit["coverage"]))
+check("20k parity coverage expected", big_audit["coverage"]["expected"] == 20000, str(big_audit["coverage"]))
+check("20k parity coverage ratio", big_audit["coverage"]["ratio"] == 1.0, str(big_audit["coverage"]["ratio"]))
+check("20k parity missing_count 0", big_audit["missing_count"] == 0, str(big_audit["missing_count"]))
+# malformed ts row: counted in invalid_rows, skipped, file completes
+mal = _grid(n=5)
+mal.append({"ts": "not-a-number", "o": 1, "h": 1, "l": 1, "c": 1, "vol": 1, "amount": 1})
+_write_csv_gz(os.path.join(tmpdir, "MAL.csv.gz"), mal)
+mal_audit = audit_archive_file(tmpdir, "MAL")
+check("malformed ts -> invalid_rows 1", mal_audit["invalid_rows"] == 1, str(mal_audit["invalid_rows"]))
+check("malformed ts -> count 5 (skipped)", mal_audit["count"] == 5, str(mal_audit["count"]))
+
+print("\n=== task 2: check_incoming ===")
+# archive_max_ts=1000: incoming ts > 1000 are new; ts <= 1000 are at_or_below_max
+# (a bar at/below the archive ceiling cannot extend history without a full set,
+#  so it is honestly "duplicate_or_reorder").
+inc_bars = [{"ts": 900}, {"ts": 1100}, {"ts": 1100}, {"ts": 1050}]
+inc = check_incoming(1000, inc_bars)
+check("incoming: 1100 and 1050 are new (above archive max)", inc["new"] == [1100, 1100, 1050], str(inc["new"]))
+check("incoming: 900 at_or_below_max (archive ceiling)", len(inc["at_or_below_max"]) == 1 and inc["at_or_below_max"][0]["ts"] == 900 and inc["at_or_below_max"][0]["reason"] == "duplicate_or_reorder", str(inc["at_or_below_max"]))
+check("incoming: internal_duplicates [1100]", inc["internal_duplicates"] == [1100], str(inc["internal_duplicates"]))
+check("incoming: internal_out_of_order flagged", len(inc["internal_out_of_order"]) == 1, str(inc["internal_out_of_order"]))
+check("incoming: ooo index/ts/prev_ts", inc["internal_out_of_order"][0] == {"index": 3, "ts": 1050, "prev_ts": 1100}, str(inc["internal_out_of_order"][0]))
+# archive_max_ts=None: all new
+inc2 = check_incoming(None, [{"ts": 900}, {"ts": 1000}, {"ts": 1100}])
+check("incoming None max: all new", inc2["new"] == [900, 1000, 1100], str(inc2["new"]))
+check("incoming None max: no at_or_below", inc2["at_or_below_max"] == [], str(inc2["at_or_below_max"]))
+check("incoming None max: no internal dupes", inc2["internal_duplicates"] == [], str(inc2["internal_duplicates"]))
+check("incoming None max: no ooo", inc2["internal_out_of_order"] == [], str(inc2["internal_out_of_order"]))
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)
