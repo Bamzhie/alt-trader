@@ -12,6 +12,7 @@ GUI (p) or close it while the daemon owns collection.
 """
 
 import argparse
+import inspect
 import os
 import sys
 import time
@@ -167,6 +168,26 @@ def record_completed_sweep(db_path, eligible_count, evaluated_count):
             pass
 
 
+def _accepts_duration_kwarg(fn):
+    """True when *fn* can be called as ``fn(eligible, evaluated,
+    duration_s=...)``.
+
+    Decided by signature inspection, ONCE, before the loop — never by
+    catching TypeError at the call site: a TypeError raised INSIDE the
+    callback after it already did work would trigger a second invocation
+    (recording one sweep twice) and mask the real error.
+    """
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):  # non-introspectable callable
+        return False
+    try:
+        sig.bind(1, 1, duration_s=0.0)
+    except TypeError:
+        return False
+    return True
+
+
 def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
     """The collection loop: scan + collect + resolve (+ measure cadence).
 
@@ -179,9 +200,14 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
     where scans are disabled — a successful collect cycle (with
     evaluated=0, honestly measured, never invented). The first successful
     data cycle of either kind therefore marks readiness downstream.
-    ``duration_s`` is the measured wall-clock seconds the sweep's work
-    took (WS3 timeliness: scan lag/duration), passed as a keyword so
-    older two-argument callbacks keep working. ``app_box``, when given,
+    ``duration_s`` is the measured seconds the sweep's work took (WS3
+    timeliness: scan lag/duration), elapsed on the monotonic clock so a
+    wall-clock adjustment cannot distort it. The callback's call shape
+    is decided ONCE by signature inspection before the loop: callbacks
+    that accept the keyword receive it; older two-argument callbacks are
+    called without it. An exception raised inside the callback is a real
+    error — reported, never retried.
+    ``app_box``, when given,
     receives the App under ``app_box["app"]`` so the owner can close
     sessions after the loop stops.
     """
@@ -191,6 +217,10 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
     if on_sweep is None:
         def on_sweep(eligible, evaluated, duration_s=None, _db=args.db):
             record_completed_sweep(_db, eligible, evaluated)
+    # Decide the callback's call shape ONCE by signature inspection: a
+    # TypeError from inside the callback must never be mistaken for a
+    # legacy signature and trigger a second, duplicate call.
+    sweep_takes_duration = _accepts_duration_kwarg(on_sweep)
     sym_map = {}
     last_collect = 0.0
     last_resolve = 0.0
@@ -212,7 +242,10 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
         while args.iterations is None or n < args.iterations:
             if stop_event is not None and stop_event.is_set():
                 break
-            t0 = time.time()
+            # Elapsed-time anchor on the MONOTONIC clock: both the WS3
+            # sweep duration and the inter-sweep sleep budget derive from
+            # it, so a wall-clock adjustment can distort neither.
+            t0 = time.monotonic()
             sweep_ok = False
             # Sweep definition: one data-collection pass (scan OR collect).
             # In --no-scan mode scans never run, so a successful collect
@@ -334,26 +367,25 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                 # 0 (no scan evaluated anything) — never invented.
                 sweep_counts = (collect_coins, 0)
             if sweep_counts is not None:
-                # WS3 timeliness: measured wall-clock seconds this sweep's
-                # work took (scan lag/duration). Passed as a keyword so
-                # two-argument callbacks keep working unchanged.
-                duration_s = time.time() - t0
+                # WS3 timeliness: measured seconds this sweep's work took.
+                # Elapsed time on the MONOTONIC clock — a wall-clock
+                # adjustment (NTP step) must never yield a negative or
+                # distorted duration. The call shape was decided once by
+                # signature inspection; any exception the callback raises
+                # is a real error, reported here and never retried.
+                duration_s = time.monotonic() - t0
                 try:
-                    on_sweep(*sweep_counts, duration_s=duration_s)
-                except TypeError:
-                    # Backward compatibility: a callback that predates the
-                    # duration keyword (tests, embedded callers).
-                    try:
+                    if sweep_takes_duration:
+                        on_sweep(*sweep_counts, duration_s=duration_s)
+                    else:
+                        # Callback predates the duration keyword.
                         on_sweep(*sweep_counts)
-                    except Exception as e:
-                        print(f"[{time.strftime('%H:%M:%S')}] sweep record "
-                              f"FAILED: {type(e).__name__}: {e}", flush=True)
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] sweep record "
                           f"FAILED: {type(e).__name__}: {e}", flush=True)
             if args.iterations is not None and n >= args.iterations:
                 break
-            sleep_for = max(5.0, args.interval - (time.time() - t0))
+            sleep_for = max(5.0, args.interval - (time.monotonic() - t0))
             if stop_event is not None:
                 if stop_event.wait(sleep_for):
                     break

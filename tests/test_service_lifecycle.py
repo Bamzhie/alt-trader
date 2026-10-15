@@ -660,6 +660,68 @@ def main():
                   res_crash.get("final_status") == svc.SCANNER_HEALTHY,
                   str(res_crash))
 
+            # -- callback contract: TypeError is never a retry signal -------
+            # A duration_s-aware callback that raises TypeError from INSIDE
+            # its body (after doing work) must be called exactly once.
+            # Deciding the call shape by catching TypeError would re-invoke
+            # it and record the sweep twice (or hide the real error).
+            contract_seen = []
+
+            def _boom_callback(eligible, evaluated, duration_s=None):
+                contract_seen.append((eligible, evaluated, duration_s))
+                raise TypeError("boom from inside a duration_s callback")
+
+            real_loop(daemon_args(os.path.join(tmp2, "contract.db"),
+                                  no_scan=True, iterations=1,
+                                  collect_every=0),
+                      on_sweep=_boom_callback)
+            check("duration_s-aware callback called exactly once "
+                  "(TypeError is not a retry signal)",
+                  len(contract_seen) == 1, str(contract_seen))
+            check("callback still receives the sweep counts + duration",
+                  contract_seen and contract_seen[0][0] == 2
+                  and contract_seen[0][1] == 0
+                  and isinstance(contract_seen[0][2], (int, float)),
+                  str(contract_seen))
+
+            # -- duration uses a monotonic clock ------------------------------
+            # A wall-clock adjustment (NTP step) mid-sweep must not produce
+            # a negative or distorted sweep duration.
+            mono_seen = []
+
+            def _mono_callback(eligible, evaluated, duration_s=None):
+                mono_seen.append(duration_s)
+
+            class _BackwardTime:
+                """time-module proxy: the wall clock steps BACK 1h on every
+                successive read (an NTP step during the sweep). monotonic,
+                sleep and strftime stay real, so elapsed time measured on
+                the monotonic clock is unaffected."""
+
+                def __init__(self, real):
+                    self._real = real
+                    self._reads = 0
+
+                def __getattr__(self, name):
+                    return getattr(self._real, name)
+
+                def time(self):
+                    self._reads += 1
+                    return self._real.time() - 3600 * (self._reads - 1)
+
+            real_time_mod = dmod.time
+            dmod.time = _BackwardTime(real_time_mod)
+            try:
+                real_loop(daemon_args(os.path.join(tmp2, "mono.db"),
+                                      no_scan=True, iterations=1,
+                                      collect_every=0),
+                          on_sweep=_mono_callback)
+            finally:
+                dmod.time = real_time_mod
+            check("sweep duration stays >= 0 under a backward clock jump",
+                  len(mono_seen) == 1 and mono_seen[0] is not None
+                  and mono_seen[0] >= 0, str(mono_seen))
+
             # -- retry cap exhausted: server stays up, scanner parked -------
             db_cap = os.path.join(tmp2, "cap.db")
             lock_cap = os.path.join(tmp2, "locks_cap", "scanner.lock")
