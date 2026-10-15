@@ -919,11 +919,23 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                 self._deny(503, "UNAVAILABLE",
                            "scanner health unavailable", origin=origin)
                 return
+            now = int(time.time())
+            last_sweep_ts = state.get("last_sweep_ts")
+            data_lag_s = (None if last_sweep_ts is None
+                          else max(0, int(now - last_sweep_ts)))
             self._send_json(200, envelope(True, {
                 "status": state.get("status"),
                 "last_error": state.get("last_error"),
                 "restart_count": state.get("restart_count", 0),
                 "last_restart_ts": state.get("last_restart_ts", 0),
+                # WS3 timeliness — all measured from completed sweeps,
+                # None until their first real observation (never invented).
+                "sweep_count": state.get("sweep_count", 0),
+                "last_sweep_ts": last_sweep_ts,
+                "last_sweep_duration_s": state.get("last_sweep_duration_s"),
+                "observed_sweep_interval_s":
+                    state.get("observed_sweep_interval_s"),
+                "data_lag_s": data_lag_s,
             }), origin=origin)
 
         def _handle_setups(self, origin, qs, store_path):
@@ -1568,23 +1580,41 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
         loop_args.db = db
         sweep_done = threading.Event()
 
-        def _on_sweep(eligible, evaluated):
+        def _on_sweep(eligible, evaluated, duration_s=None):
             # Explicit recovery signal: a completed sweep proves the
             # scanner is working again. A retry that was RESTARTING becomes
             # HEALTHY; no other state is touched (a sweep cannot fire while
             # FAILED — on_sweep only runs inside the loop). This runs
             # before the bookkeeping so a recording failure never masks a
             # real recovery.
+            now_s = time.time()
             with scanner_lock:
                 if scanner_state["status"] == SCANNER_RESTARTING:
                     scanner_state["status"] = SCANNER_HEALTHY
+                # WS3 timeliness: observed cadence (interval between
+                # consecutive completed sweeps) and measured duration,
+                # from real observations only.
+                prev_ts = scanner_state["last_sweep_ts"]
+                if prev_ts is not None:
+                    scanner_state["observed_sweep_interval_s"] = (
+                        now_s - prev_ts)
+                scanner_state["sweep_count"] += 1
+                scanner_state["last_sweep_ts"] = now_s
+                if duration_s is not None:
+                    scanner_state["last_sweep_duration_s"] = duration_s
             _daemon_mod.record_completed_sweep(db, eligible, evaluated)
             sweep_done.set()
 
         # Scanner state tracking - shared with the /scanner-health route
         # (readable by any API consumer) and with on_health callers.
+        # WS3 timeliness fields: sweep cadence/lag/duration are measured
+        # from completed sweeps (the daemon passes duration_s), never
+        # invented — fields stay None until their first real observation.
         scanner_state = {"status": SCANNER_HEALTHY, "last_error": None,
-                         "restart_count": 0, "last_restart_ts": 0}
+                         "restart_count": 0, "last_restart_ts": 0,
+                         "sweep_count": 0, "last_sweep_ts": None,
+                         "last_sweep_duration_s": None,
+                         "observed_sweep_interval_s": None}
         scanner_lock = threading.Lock()
 
         def _scanner_health():

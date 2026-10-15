@@ -173,20 +173,23 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
     Owned here and imported by the service (move-by-import — never copied).
     ``stop_event`` (a threading.Event) breaks the loop between sweeps and
     cuts the inter-sweep sleep short for prompt shutdown. ``on_sweep`` is
-    called once per *completed* sweep as ``on_sweep(eligible, evaluated)``;
-    the default records the sweep (SSE + snapshot). A sweep is one
-    data-collection pass: a scan cycle, or — in --no-scan mode, where
-    scans are disabled — a successful collect cycle (with evaluated=0,
-    honestly measured, never invented). The first successful data cycle
-    of either kind therefore marks readiness downstream. ``app_box``,
-    when given, receives the App under ``app_box["app"]`` so the owner
-    can close sessions after the loop stops.
+    called once per *completed* sweep as ``on_sweep(eligible, evaluated,
+    duration_s)``; the default records the sweep (SSE + snapshot). A sweep
+    is one data-collection pass: a scan cycle, or — in --no-scan mode,
+    where scans are disabled — a successful collect cycle (with
+    evaluated=0, honestly measured, never invented). The first successful
+    data cycle of either kind therefore marks readiness downstream.
+    ``duration_s`` is the measured wall-clock seconds the sweep's work
+    took (WS3 timeliness: scan lag/duration), passed as a keyword so
+    older two-argument callbacks keep working. ``app_box``, when given,
+    receives the App under ``app_box["app"]`` so the owner can close
+    sessions after the loop stops.
     """
     app = make_app(args)
     if app_box is not None:
         app_box["app"] = app
     if on_sweep is None:
-        def on_sweep(eligible, evaluated, _db=args.db):
+        def on_sweep(eligible, evaluated, duration_s=None, _db=args.db):
             record_completed_sweep(_db, eligible, evaluated)
     sym_map = {}
     last_collect = 0.0
@@ -331,8 +334,20 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                 # 0 (no scan evaluated anything) — never invented.
                 sweep_counts = (collect_coins, 0)
             if sweep_counts is not None:
+                # WS3 timeliness: measured wall-clock seconds this sweep's
+                # work took (scan lag/duration). Passed as a keyword so
+                # two-argument callbacks keep working unchanged.
+                duration_s = time.time() - t0
                 try:
-                    on_sweep(*sweep_counts)
+                    on_sweep(*sweep_counts, duration_s=duration_s)
+                except TypeError:
+                    # Backward compatibility: a callback that predates the
+                    # duration keyword (tests, embedded callers).
+                    try:
+                        on_sweep(*sweep_counts)
+                    except Exception as e:
+                        print(f"[{time.strftime('%H:%M:%S')}] sweep record "
+                              f"FAILED: {type(e).__name__}: {e}", flush=True)
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] sweep record "
                           f"FAILED: {type(e).__name__}: {e}", flush=True)

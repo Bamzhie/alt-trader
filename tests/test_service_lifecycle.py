@@ -619,6 +619,24 @@ def main():
                       snap.get("restart_count") == 1, str(snap))
                 check("health getter records when the restart attempt began",
                       snap.get("last_restart_ts", 0) > 0, str(snap))
+            # WS3 timeliness: the recovery sweep (collect_every=0 fires one
+            # on the retry's first iteration) must be observable through the
+            # health endpoint — sweep count, last sweep ts, measured
+            # duration, observed cadence, and data lag.
+            status, body = _get("/scanner-health")
+            hdata = body.get("data") or {}
+            check("health exposes sweep_count after a completed sweep",
+                  hdata.get("sweep_count") == 1, str(hdata))
+            check("health exposes last_sweep_ts after a completed sweep",
+                  hdata.get("last_sweep_ts", 0) > 0, str(hdata))
+            check("health exposes last_sweep_duration_s (measured, >= 0)",
+                  isinstance(hdata.get("last_sweep_duration_s"), (int, float))
+                  and hdata["last_sweep_duration_s"] >= 0, str(hdata))
+            check("health exposes observed_sweep_interval_s (None until 2nd)",
+                  hdata.get("observed_sweep_interval_s") is None, str(hdata))
+            check("health exposes data_lag_s (now - last sweep, small)",
+                  isinstance(hdata.get("data_lag_s"), (int, float))
+                  and hdata["data_lag_s"] < 30, str(hdata))
             stop_crash.set()
             w2.join(timeout=60)
             res_crash = box_crash.get("result", {})
