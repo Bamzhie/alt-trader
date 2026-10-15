@@ -33,6 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from .collector import read_bars
+from .funding import read_funding
 from . import daemon as _daemon_mod
 from .planner import REFERENCE_NOTIONAL, reference_plan
 from . import watcher as _watcher_mod
@@ -347,6 +348,10 @@ def _apply_trigger(store_path, rule, disabled):
 # the existing detail_metrics / reference_plan (never copied).
 
 ALLOWED_TFS = {"5m": 300, "15m": 900, "1H": 3600, "4H": 14400, "1D": 86400}
+# Safe-coin allowlist for the /funding route only: checked BEFORE any
+# filesystem access so traversal names never reach the archive dir.
+# (/bars joins its coin unchecked — untouched by design.)
+_SAFE_FUNDING_COIN = re.compile(r"^[A-Za-z0-9_-]+$")
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 SETUP_STATES = frozenset({"active", "invalidated", "expired", "resolved"})
@@ -526,9 +531,14 @@ def load_or_create_token(path):
 
 
 def _make_handler(token, ready, store_path=None, data_dir=None,
-                  is_ready=None, scanner_health=None):
+                   funding_dir=None, is_ready=None, scanner_health=None):
     cfg_store = store_path or os.path.join("data", "signals.db")
     cfg_data = data_dir or os.path.join("data", "bars")
+    # Resolved once here (per server), never per request. Default: the
+    # funding archive sibling of the bars dir (data/funding beside
+    # data/bars, matching proto.funding.FUNDING_DIR).
+    cfg_funding = (funding_dir or os.path.join(
+        os.path.dirname(cfg_data), "funding"))
 
     def _ready_ok():
         if is_ready is not None:
@@ -664,6 +674,10 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
 
             if self.command == "GET" and path == "/bars":
                 self._handle_bars(gated, qs, cfg_data)
+                return
+
+            if self.command == "GET" and path == "/funding":
+                self._handle_funding(gated, qs, cfg_funding)
                 return
 
             if self.command == "GET" and path == "/metrics":
@@ -1075,6 +1089,46 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                        "data_as_of": last_ts, "last_ts": last_ts,
                        "unavailable": None}), origin=origin)
 
+        def _handle_funding(self, origin, qs, funding_dir):
+            coin = (qs.get("coin") or [None])[0]
+            if not coin:
+                self._deny(400, "BAD_REQUEST",
+                           "coin is required", origin=origin)
+                return
+            if not _SAFE_FUNDING_COIN.match(coin):
+                self._deny(400, "BAD_REQUEST",
+                           "invalid coin name", origin=origin)
+                return
+            if not os.path.exists(os.path.join(funding_dir,
+                                               f"{coin}.csv.gz")):
+                self._deny(404, "NOT_FOUND", f"no funding for {coin}",
+                           origin=origin)
+                return
+            raw_limit = (qs.get("limit") or ["1000"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                self._deny(400, "BAD_REQUEST", "limit must be an integer",
+                           origin=origin)
+                return
+            if limit < 1 or limit > 5000:
+                self._deny(400, "BAD_REQUEST",
+                           "limit must be between 1 and 5000", origin=origin)
+                return
+            try:
+                rows = read_funding(funding_dir, coin)
+            except Exception:
+                self._deny(503, "UNAVAILABLE", "funding unavailable",
+                           origin=origin)
+                return
+            rows = rows[-limit:]
+            last_ts = rows[-1]["ts"] if rows else None
+            self._send_json(200, envelope(
+                True, {"coin": coin, "rows": rows,
+                       "count": len(rows),
+                       "data_as_of": last_ts, "last_ts": last_ts}),
+                origin=origin)
+
         def _handle_metrics(self, origin, qs, data_dir):
             coin = (qs.get("coin") or [None])[0]
             if not coin:
@@ -1331,12 +1385,14 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
 
 
 def serve(port, token, ready, store_path=None, data_dir=None,
-          is_ready=None, scanner_health=None):
+           funding_dir=None, is_ready=None, scanner_health=None):
     """Bind 127.0.0.1:port and serve in a daemon thread; return the server.
 
     `ready` is the Task 1 sweep callback (also the default readiness
     signal); `store_path`/`data_dir` locate the Store DB and bar archive
-    the resource routes read; `is_ready` optionally overrides readiness;
+    the resource routes read; `funding_dir` locates the funding archive
+    the /funding route reads (default: funding sibling of `data_dir`);
+    `is_ready` optionally overrides readiness;
     `scanner_health` optionally supplies the scanner lifecycle state for
     `GET /scanner-health` (a callable returning a dict, or a dict). All
     are optional so Task 1 callers keep working unchanged; when
@@ -1344,7 +1400,8 @@ def serve(port, token, ready, store_path=None, data_dir=None,
     never claims health it cannot read.
     """
     handler = _make_handler(token, ready, store_path=store_path,
-                            data_dir=data_dir, is_ready=is_ready,
+                            data_dir=data_dir, funding_dir=funding_dir,
+                            is_ready=is_ready,
                             scanner_health=scanner_health)
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
     server.daemon_threads = True
@@ -1500,6 +1557,7 @@ def close_sessions(app=None):
 
 
 def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
+                funding_dir=None,
                 lock_path=None, daemon_argv=None, stop_event=None,
                 install_signals=True, on_serving=None, on_health=None,
                 backoff_base_s: float = DEFAULT_BACKOFF_BASE_S,
@@ -1624,6 +1682,7 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
         server, bound = serve_with_fallback(
             port, token, lambda: {"sweep_done": sweep_done.is_set()},
             store_path=db, data_dir=data_dir,
+            funding_dir=funding_dir,
             is_ready=sweep_done.is_set,
             scanner_health=_scanner_health)
         result["port"] = bound
@@ -1752,6 +1811,9 @@ def build_service_parser():
                     help="single-scanner lockfile (default: beside the DB)")
     ap.add_argument("--data-dir", default=None,
                     help="bar archive dir for /bars and /metrics")
+    ap.add_argument("--funding-dir", default=None,
+                    help="funding archive dir for /funding "
+                         "(default: funding sibling of --data-dir)")
     return ap
 
 
@@ -1784,6 +1846,7 @@ def main(argv=None):
             daemon_argv += [flag, str(value)]
     result = run_service(port=args.port, token=token, db=args.db,
                          data_dir=data_dir,
+                         funding_dir=args.funding_dir,
                          lock_path=args.lock_file,
                          daemon_argv=daemon_argv)
     return result.get("exit_code", 0)
