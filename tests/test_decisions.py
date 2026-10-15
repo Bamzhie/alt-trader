@@ -70,6 +70,12 @@ check("bad-ts fires on future epoch",
 check("unknown-hypothesis fires",
       "unknown-hypothesis" in decisions.validate_decision(
           valid(hypothesis_id="HYD-9999"), KNOWN))
+check("unknown-hypothesis fires on unhashable list (no TypeError)",
+      "unknown-hypothesis" in decisions.validate_decision(
+          valid(hypothesis_id=["HYD-0001"]), KNOWN))
+check("unknown-hypothesis fires on unhashable dict (no TypeError)",
+      "unknown-hypothesis" in decisions.validate_decision(
+          valid(hypothesis_id={"id": "HYD-0001"}), KNOWN))
 check("bad-decision fires",
       "bad-decision" in decisions.validate_decision(valid(decision="maybe"), KNOWN))
 check("empty-reasons fires on []",
@@ -125,6 +131,14 @@ try:
           f"{logged!r} {errs!r}")
 finally:
     os.unlink(ok_path)
+
+unhash_path = write_log([json.dumps(valid(id="DEC-0009", hypothesis_id=["HYD-0001"]))])
+try:
+    logged, errs = decisions.validate_log(unhash_path, KNOWN)
+    check("validate_log reports unknown-hypothesis on unhashable id (no raise)",
+          errs == ["line 1: unknown-hypothesis"], f"{logged!r} {errs!r}")
+finally:
+    os.unlink(unhash_path)
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)

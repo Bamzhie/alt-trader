@@ -59,7 +59,8 @@ def validate_decision(obj, known_ids):
     if isinstance(ts, bool) or not isinstance(ts, int) or ts > time.time():
         errors.append("bad-ts")
 
-    if obj.get("hypothesis_id") not in known:
+    hid = obj.get("hypothesis_id")
+    if not isinstance(hid, str) or hid not in known:
         errors.append("unknown-hypothesis")
 
     if obj.get("decision") not in DECISIONS:

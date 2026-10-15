@@ -138,8 +138,8 @@ Verified against code/data, not inherited summaries.
   RED-verified: removing the recovery signal fails the recovery check.
 - Commits: 80991bb (resilience implementation), 1e34cd2 (recovery
   reporting fix — sweep-driven healthy + restart-attempt counters).
-- Remaining: scan-lag/duration metrics (WS3); nothing structural left in
-  WS2.
+- Remaining: nothing structural left in WS2 (sweep-level lag/duration
+  delivered WS3 6fb0356; scan-phase timing delivered R2 478489f).
 
 ### 3. Timely MEXC alt-perp updates — IN PROGRESS (lag/duration delivered; 1m deferred by design)
 - Deps: WS1 (bar validity), WS2 (survives scan faults) — both complete.
@@ -294,32 +294,28 @@ Verified against code/data, not inherited summaries.
 |  illustrative HYD-0001 example + decision-log wiring (this commit).
 |  run_all.py ALL SUITES PASS (65 files).
 
-## Handoff (uncommitted / untracked — NOT part of committed stages)
+## Handoff (committed-state reference — NOT part of the stage log above)
 
 ### Working-tree state
-- CLEAN of tracked modifications as of 2026-10-15: every change reviewed
-  and committed (result semantics af7da4b; WS1 findings c1a490b+27299bf;
-  WS3 begin 6fb0356; WS7 begin pending). The previously uncommitted
-  `proto/collector.py` sort fix was deliberately reviewed as part of the
-  WS1 stage and committed at 27299bf.
+- This file (`docs/roadmap-status.md`) is tracked and committed;
+  working tree CLEAN of tracked modifications as of 2026-10-15. Only
+  untracked files are `docs/superpowers/plans/*.md` (new SDD plans,
+  not part of any stage). The `proto/collector.py` sort fix was
+  reviewed as part of the WS1 stage and committed at 27299bf; the WS7
+  promotion gate is committed (Stage D, 502df2e).
 
-### Untracked files
-- `docs/handoff-2026-10-15.md` — the standalone handoff document (committed
-  at a2f74e7): committed state, invariants, next priorities, pitfalls.
-- `docs/roadmap-status.md` — this file (roadmap status; kept untracked).
+### Previously untracked files, now committed
+- `docs/handoff-2026-10-15.md` (committed at a2f74e7): committed state,
+  invariants, next priorities, pitfalls.
+- `docs/roadmap-status.md` — this file (roadmap status; now tracked).
 - `docs/ws3-timeliness-feasibility.md` — WS3 decision record (1m
   feasibility, provisional-vs-closed).
-- `docs/superpowers/plans/2026-10-15-bar-archive-audit.md` — the Stage 1
-  SDD plan (brief, task specs).
-- `.superpowers/sdd/2026-10-15-bar-archive-audit/`, `.superpowers/sdd/2026-10-15-scanner-resilience/`,
-  `.superpowers/sdd/2026-10-15-roadmap-push/` — SDD workspaces
-  (`progress.md` ledgers, task briefs).
 - `proto/promotion.py`, `tests/test_promotion.py` — WS7 promotion gate
-  (committed in the Stage D commit).
+  (committed in the Stage D commit 502df2e).
 
 ### Committed state (2026-10-15)
-- WS4 funding archive commit — proto/funding.py + tests/test_funding.py +
-  daemon wiring + audit --tf-sec (pending sha at ledger time)
+- `983c083` feat(WS4): point-in-time funding observation archive +
+  audit --tf-sec
 - `41d5352` fix(WS3): sweep-duration defects — no TypeError retry,
   monotonic clock
 - `502df2e` feat(WS7): promotion-gate evaluation
