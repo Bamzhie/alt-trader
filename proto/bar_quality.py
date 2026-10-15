@@ -380,6 +380,10 @@ def main(argv=None):
                         help="Scan every *.csv.gz in --data-dir.")
     parser.add_argument("--max-examples", type=int, default=50,
                         help="Cap on per-finding example rows (default 50).")
+    parser.add_argument("--tf-sec", type=int, default=300,
+                        help="Expected bar/observation spacing in seconds "
+                             "(default 300 = 5m bars; funding observation "
+                             "archives use their snapshot cadence).")
     parser.add_argument("--now", type=float, default=None,
                         help="Override wall-clock seconds for staleness.")
     parser.add_argument("--json", action="store_true",
@@ -411,9 +415,10 @@ def main(argv=None):
 
     now = namespace.now
     max_examples = namespace.max_examples
+    tf_sec = namespace.tf_sec
     results = []
     for coin in coins:
-        audit = audit_archive_file(data_dir, coin, now=now,
+        audit = audit_archive_file(data_dir, coin, tf_sec=tf_sec, now=now,
                                    max_examples=max_examples)
         results.append(audit)
 

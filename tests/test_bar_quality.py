@@ -353,5 +353,22 @@ check("cli coins filter exit 0", _c_code == 0, str(_c_code))
 check("cli coins filter omits GAPPY", "GAPPY" not in _c_out, _c_out[-200:])
 check("cli coins filter includes CLEAN", "CLEAN" in _c_out, _c_out[-200:])
 
+# --tf-sec: the same GAPPY file audited at its true 900s spacing is clean
+# (a 900s-spaced archive is not a 300s grid with a gap). This is the
+# funding-archive case: observations at the snapshot cadence.
+_tf_code, _tf_out = _run_main(["--data-dir", cli_dir, "--coins", "GAPPY",
+                               "--tf-sec", "900", "--now", _now_val])
+check("cli tf-sec exit 0", _tf_code == 0, str(_tf_code))
+check("cli tf-sec 900 makes GAPPY clean (no false gap)",
+      "GAPPY" in _tf_out and "missing=0" in _tf_out.split("GAPPY", 1)[1],
+      _tf_out[-200:])
+_tfj_code, _tfj_out = _run_main(["--data-dir", cli_dir, "--coins", "GAPPY",
+                                 "--tf-sec", "900", "--json",
+                                 "--now", _now_val])
+_tfj = {x["coin"]: x for x in json.loads(_tfj_out)}
+check("cli tf-sec json GAPPY missing_count 0",
+      _tfj["GAPPY"]["missing_count"] == 0,
+      str(_tfj["GAPPY"]["missing_count"]))
+
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)

@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 from .app import App
 from . import collector as colmod
+from . import funding as fmod
 from . import measurement as measuremod
 from . import outcomes as outmod
 from .scan import MAX_WORKERS, build_universe
@@ -281,6 +282,19 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                           f"{sum(counts.values())} new bars", flush=True)
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] collect FAILED: "
+                          f"{type(e).__name__}: {e}", flush=True)
+                # WS4 point-in-time funding: one observation per coin,
+                # recorded on the same cadence as the bars cycle (funding
+                # rides the bulk ticker row — one extra request). Guarded
+                # on its own: a funding failure must never fail the bars
+                # sweep, and the sweep above still counts as complete.
+                try:
+                    fund_counts = fmod.collect_funding()
+                    print(f"[{time.strftime('%H:%M:%S')}] funding: "
+                          f"{len(fund_counts)} coins recorded",
+                          flush=True)
+                except Exception as e:
+                    print(f"[{time.strftime('%H:%M:%S')}] funding FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
             if resolve_future is not None and resolve_future.done():
                 try:

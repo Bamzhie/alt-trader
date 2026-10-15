@@ -319,6 +319,46 @@ def main():
             check("no-scan failed collect journals nothing",
                   journal_sweep_count(db_ns) == journal_before,
                   f"{journal_before} -> {journal_sweep_count(db_ns)}")
+
+            # WS4: the collect cycle also records a point-in-time funding
+            # observation per coin; a funding failure must never fail the
+            # bars sweep (guarded on its own inside the loop). Restore the
+            # SUCCESSFUL collector first: the failed-collect case above
+            # left it raising.
+            fund_calls = []
+            real_fund = dmod.fmod.collect_funding
+
+            def _fund_ok(*a, **k):
+                fund_calls.append(1)
+                return {"ADA": 1}
+
+            dmod.colmod.collect_full_universe = (
+                lambda *a, **k: {"BTC": 3, "ETH": 1})
+            dmod.fmod.collect_funding = _fund_ok
+            try:
+                dmod.run_daemon_loop(daemon_args(db_ns, no_scan=True,
+                                                 iterations=1,
+                                                 collect_every=0))
+            finally:
+                dmod.fmod.collect_funding = real_fund
+            check("collect cycle records a funding snapshot",
+                  len(fund_calls) == 1, str(fund_calls))
+
+            def _fund_boom(*a, **k):
+                raise RuntimeError("funding down")
+
+            dmod.fmod.collect_funding = _fund_boom
+            svc.reset_events()
+            snaps_fund = snapshot_count(db_ns)
+            try:
+                dmod.run_daemon_loop(daemon_args(db_ns, no_scan=True,
+                                                 iterations=1,
+                                                 collect_every=0))
+            finally:
+                dmod.fmod.collect_funding = real_fund
+            check("funding failure does not fail the bars sweep",
+                  snapshot_count(db_ns) == snaps_fund + 1,
+                  f"{snaps_fund} -> {snapshot_count(db_ns)}")
         finally:
             dmod.colmod.collect_full_universe = real_collect
             dmod.App = real_app
