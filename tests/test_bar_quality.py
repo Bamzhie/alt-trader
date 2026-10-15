@@ -19,7 +19,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from proto.bar_quality import (audit_bar_sequence, archive_max_ts,
-                               audit_archive_file, check_incoming)
+                               audit_archive_file, check_incoming, main)
 import csv
 import gzip
 import tempfile
@@ -242,6 +242,73 @@ check("incoming None max: all new", inc2["new"] == [900, 1000, 1100], str(inc2["
 check("incoming None max: no at_or_below", inc2["at_or_below_max"] == [], str(inc2["at_or_below_max"]))
 check("incoming None max: no internal dupes", inc2["internal_duplicates"] == [], str(inc2["internal_duplicates"]))
 check("incoming None max: no ooo", inc2["internal_out_of_order"] == [], str(inc2["internal_out_of_order"]))
+
+# ---------------------------------------------------------------------------
+# Task 3: CLI report (main)
+# ---------------------------------------------------------------------------
+import io
+import json
+from contextlib import redirect_stdout
+
+
+def _run_main(argv, capture=True):
+    """Call main(argv) capturing stdout; return (exit_code, stdout_text)."""
+    buf = io.StringIO()
+    if capture:
+        with redirect_stdout(buf):
+            code = main(argv)
+    else:
+        code = main(argv)
+    return code, buf.getvalue()
+
+
+print("\n=== task 3: CLI report ===")
+# Build a tmp data dir: one clean coin + one defective coin (a gap).
+cli_dir = tempfile.mkdtemp()
+clean_ts = _grid(n=5)
+_write_csv_gz(os.path.join(cli_dir, "CLEAN.csv.gz"), clean_ts)
+gappy = _grid(n=4)
+gappy.append(_bar(gappy[-1]["ts"] + 900, c=104.0))  # 3-slot gap
+_write_csv_gz(os.path.join(cli_dir, "GAPPY.csv.gz"), gappy)
+
+# Human mode: exit 0 even with findings; SUMMARY line present.
+# --now is pinned near the 2023 epoch test timestamps so bars are not stale.
+_now_val = str(gappy[-1]["ts"] + 300)
+_h_code, _h_out = _run_main(["--data-dir", cli_dir, "--all", "--now", _now_val])
+check("cli human exit 0 with findings", _h_code == 0, str(_h_code))
+check("cli human prints SUMMARY line", "SUMMARY" in _h_out, _h_out[-300:])
+check("cli human prints CLEAN line", "CLEAN" in _h_out, _h_out[-200:])
+check("cli human prints GAPPY line", "GAPPY" in _h_out, _h_out[-200:])
+
+# JSON mode: parses; GAPPY shows missing_count 2; CLEAN shows 0.
+_j_code, _j_out = _run_main(["--data-dir", cli_dir, "--all", "--json", "--now", _now_val])
+check("cli json exit 0", _j_code == 0, str(_j_code))
+_j = json.loads(_j_out)
+check("cli json returns list", isinstance(_j, list), str(type(_j)))
+_j_by = {_jc["coin"]: _jc for _jc in _j}
+check("cli json has CLEAN", "CLEAN" in _j_by, str(_j_by.keys()))
+check("cli json has GAPPY", "GAPPY" in _j_by, str(_j_by.keys()))
+check("cli json GAPPY missing_count 2",
+      _j_by["GAPPY"]["missing_count"] == 2,
+      str(_j_by["GAPPY"]["missing_count"]))
+check("cli json GAPPY stale False (pinned now)",
+      _j_by["GAPPY"]["stale"] is False, str(_j_by["GAPPY"]["stale"]))
+check("cli json GAPPY has coin+path",
+      _j_by["GAPPY"]["coin"] == "GAPPY"
+      and _j_by["GAPPY"]["path"].endswith("GAPPY.csv.gz"))
+check("cli json CLEAN missing_count 0", _j_by["CLEAN"]["missing_count"] == 0)
+
+# Exit code 2 on unreadable/missing data dir.
+_e_code, _e_out = _run_main(["--data-dir", "/nonexistent/xyz"])
+check("cli missing dir exit 2", _e_code == 2, str(_e_code))
+check("cli missing dir no crash",
+      _e_out == "" or "Traceback" not in _e_out, _e_out[-200:])
+
+# --coins filter: only the named coin.
+_c_code, _c_out = _run_main(["--data-dir", cli_dir, "--coins", "CLEAN"])
+check("cli coins filter exit 0", _c_code == 0, str(_c_code))
+check("cli coins filter omits GAPPY", "GAPPY" not in _c_out, _c_out[-200:])
+check("cli coins filter includes CLEAN", "CLEAN" in _c_out, _c_out[-200:])
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)

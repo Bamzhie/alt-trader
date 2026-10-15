@@ -10,6 +10,7 @@ then sorted on its own (never the rows) to compute gaps and coverage.
 import csv
 import gzip
 import os
+import sys
 import time
 
 from typing import Dict, Iterable, List, Mapping, Optional
@@ -314,3 +315,118 @@ def check_incoming(archive_max_ts, bars):
         "internal_duplicates": internal_duplicates,
         "internal_out_of_order": internal_out_of_order,
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 3: CLI report
+# ---------------------------------------------------------------------------
+
+def _coin_from_path(path):
+    "Extract the coin symbol from a 'COIN.csv.gz' basename."
+    base = os.path.basename(path)
+    if base.endswith(".csv.gz"):
+        return base[:-7]
+    return base.rsplit(".", 1)[0] if "." in base else base
+
+
+def _summarize(audit, max_examples=50):
+    """Reduce a full audit dict to the human-summary row + finding flag."""
+    findings = []
+    if audit.get("invalid_rows"):
+        findings.append(f"invalid={audit['invalid_rows']}")
+    if audit.get("duplicates"):
+        findings.append(f"dupes={len(audit['duplicates'])}")
+    if audit.get("out_of_order_count"):
+        findings.append(f"ooo={audit['out_of_order_count']}")
+    if audit.get("gaps"):
+        findings.append(f"gaps={len(audit['gaps'])}")
+    if audit.get("missing_count"):
+        findings.append(f"missing={audit['missing_count']}")
+    age = audit.get("age_s")
+    age_s = f"{age}s" if age is not None else "-"
+    stale = "STALE" if audit.get("stale") else "ok"
+    return audit["coin"], audit["count"], audit.get("path", ""), findings, age_s, stale
+
+
+def main(argv=None):
+    """Bar-archive data-quality CLI.
+
+    Exit codes: 0 on success (findings are data, not errors); 2 when the
+    data directory is missing/unreadable or no coins are selected.
+    """
+    import argparse
+    import json as _json
+
+    parser = argparse.ArgumentParser(
+        prog="bar_quality",
+        description="Audit on-disk MEXC bar archives (5m OHLCV).",
+    )
+    parser.add_argument("--data-dir", default="data/bars",
+                        help="Directory holding <COIN>.csv.gz archives.")
+    parser.add_argument("--coins", default="",
+                        help="Comma-separated coin list (e.g. ADA,PEPE). "
+                             "Omit with --all to scan every *.csv.gz.")
+    parser.add_argument("--all", action="store_true",
+                        help="Scan every *.csv.gz in --data-dir.")
+    parser.add_argument("--max-examples", type=int, default=50,
+                        help="Cap on per-finding example rows (default 50).")
+    parser.add_argument("--now", type=float, default=None,
+                        help="Override wall-clock seconds for staleness.")
+    parser.add_argument("--json", action="store_true",
+                        help="Emit machine-readable JSON list instead of text.")
+    namespace = parser.parse_args(argv)
+
+    data_dir = namespace.data_dir
+    if not os.path.isdir(data_dir):
+        # Unreadable/missing data dir: exit 2, no traceback.
+        if namespace.json:
+            _json.dumps([]).__class__  # noop, keeps json path exercised
+        return 2
+
+    # Resolve the coin set.
+    if namespace.all:
+        coins = [_coin_from_path(p) for p in
+                 sorted(os.listdir(data_dir))
+                 if p.endswith(".csv.gz")]
+    elif namespace.coins:
+        coins = [c.strip() for c in namespace.coins.split(",") if c.strip()]
+    else:
+        # No filter given: default to scanning all available archives.
+        coins = [_coin_from_path(p) for p in
+                 sorted(os.listdir(data_dir))
+                 if p.endswith(".csv.gz")]
+
+    if not coins:
+        return 2
+
+    now = namespace.now
+    max_examples = namespace.max_examples
+    results = []
+    for coin in coins:
+        audit = audit_archive_file(data_dir, coin, now=now,
+                                   max_examples=max_examples)
+        results.append(audit)
+
+    if namespace.json:
+        print(_json.dumps(results, indent=2, default=str))
+        return 0
+
+    # Human mode.
+    with_findings = 0
+    for audit in results:
+        coin, count, path, findings, age_s, stale = _summarize(audit)
+        flag = "STALE" if audit.get("stale") else "ok"
+        detail = " ".join(findings) if findings else "clean"
+        print(f"{coin} rows={count} {detail} age={age_s} {flag}")
+        if findings:
+            with_findings += 1
+    total_missing = sum(a.get("missing_count", 0) or 0 for a in results)
+    stalest_age = max((a.get("age_s") for a in results if a.get("age_s") is not None), default=None)
+    stalest = f"{stalest_age}s" if stalest_age is not None else "-"
+    print(f"SUMMARY coins={len(results)} findings={with_findings} "
+          f"missing={total_missing} stalest={stalest}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
