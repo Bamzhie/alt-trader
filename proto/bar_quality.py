@@ -130,25 +130,35 @@ def audit_bar_sequence(bars: Iterable[Mapping],
                      "span_s": span_s, "missing": missing}
                 )
 
+    # Staleness is a property of the DATA (newest bar), not of file order:
+    # an out-of-order file whose file-order last row is an old batch must
+    # not be reported stale while its newest bar is fresh.
     stale = False
     age_s: Optional[int] = None
-    if last_ts is not None:
-        age_s = int(now - last_ts)
+    if unique_ts:
+        newest_ts = unique_ts[-1]
+        age_s = int(now - newest_ts)
         if age_s > 2 * tf_sec:
             stale = True
 
-    # Coverage over the unique timestamp range.
+    # Coverage over the unique timestamp range — again the sorted min/max,
+    # never the raw file-order first/last (an out-of-order archive would
+    # otherwise report a negative or distorted span and a bogus ratio).
     span_s: Optional[int] = None
     expected: Optional[int] = None
     ratio: Optional[float] = None
-    if first_ts is not None and last_ts is not None:
-        span_s = last_ts - first_ts
+    if unique_ts:
+        cov_first = unique_ts[0]
+        cov_last = unique_ts[-1]
+        span_s = cov_last - cov_first
         unique = len(unique_ts)
         if span_s % tf_sec == 0:
             expected = span_s // tf_sec + 1
             ratio = (unique / expected) if expected else None
     else:
         unique = 0
+        cov_first = None
+        cov_last = None
 
     return {
         "count": count,
@@ -163,10 +173,10 @@ def audit_bar_sequence(bars: Iterable[Mapping],
         "age_s": age_s,
         "stale": stale,
         "coverage": {
-            "first_ts": first_ts,
-            "last_ts": last_ts,
+            "first_ts": cov_first,
+            "last_ts": cov_last,
             "span_s": span_s if span_s is not None else 0,
-            "unique": len(unique_ts) if first_ts is not None else 0,
+            "unique": len(unique_ts) if unique_ts else 0,
             "expected": expected,
             "ratio": ratio,
         },

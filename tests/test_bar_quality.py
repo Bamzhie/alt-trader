@@ -9,7 +9,9 @@ Covers audit_bar_sequence over the 8 cases from the plan:
   5. exact-multiple gap (missing 2 for a 3-slot jump)
   6. off-grid gap (missing None, still listed)
   7. stale file (now=last_ts+3600, stale True)
-  8. empty input (all None/zero, stale False)
+  8. out-of-order file — coverage/age use the true sorted min/max
+     (file-order first/last stay as ordering diagnostics)
+  9. empty input (all None/zero, stale False)
 """
 
 import os
@@ -147,6 +149,47 @@ now_stale = b[-1]["ts"] + 3600  # well past 2*tf
 r7 = audit_bar_sequence(b, now=now_stale)
 check("stale == True", r7["stale"] is True, str(r7["stale"]))
 check("age_s == 3600", r7["age_s"] == 3600, str(r7["age_s"]))
+
+print("\n=== case 9: out-of-order file — coverage/age use true min/max ===")
+# An out-of-order archive (the WS1 finding shape: perfectly spaced bars
+# appended in older batches) must NOT report a distorted coverage ratio
+# or a wrong staleness age. coverage.span/ratio and age_s/stale are data
+# properties: they must use the sorted unique min/max, not the raw
+# file-order first/last rows. first_ts/last_ts keep documenting FILE
+# ORDER (that is what makes them an ordering diagnostic).
+ooo_grid = _grid(n=10)
+# File order: newest batch first, then an older batch appended after it
+# (exactly the collector append pattern seen in the real archives).
+older = _grid(ooo_grid[0]["ts"] - 6 * 300, n=6)
+ooo_file = ooo_grid + older
+r9 = audit_bar_sequence(ooo_file, now=ooo_grid[-1]["ts"] + 300)
+check("ooo file: file-order first_ts preserved (diagnostic)",
+      r9["first_ts"] == ooo_file[0]["ts"], str(r9["first_ts"]))
+check("ooo file: file-order last_ts preserved (diagnostic)",
+      r9["last_ts"] == ooo_file[-1]["ts"], str(r9["last_ts"]))
+cov9 = r9["coverage"]
+check("ooo file: coverage.first_ts is the true min",
+      cov9["first_ts"] == older[0]["ts"], str(cov9))
+check("ooo file: coverage.last_ts is the true max",
+      cov9["last_ts"] == ooo_grid[-1]["ts"], str(cov9))
+# True span: older[0] .. ooo_grid[-1] = 15 slots * 300s
+check("ooo file: coverage.span_s is the true span",
+      cov9["span_s"] == 15 * 300, str(cov9))
+check("ooo file: coverage.expected is the true slot count",
+      cov9["expected"] == 16, str(cov9))
+check("ooo file: coverage.ratio == 1.0 (perfect grid, no distortion)",
+      cov9["ratio"] == 1.0, str(cov9))
+# age_s/stale must key off the NEWEST bar (true max), not the file-order
+# last row — here the file-order last row is the OLDEST batch.
+check("ooo file: age_s keys off the newest bar",
+      r9["age_s"] == 300, str(r9["age_s"]))
+check("ooo file: not stale when newest bar is fresh",
+      r9["stale"] is False, str(r9["stale"]))
+# And with a genuinely stale newest bar, staleness must still fire.
+r9s = audit_bar_sequence(ooo_file, now=ooo_grid[-1]["ts"] + 3600)
+check("ooo file: stale fires on genuinely old newest bar",
+      r9s["stale"] is True and r9s["age_s"] == 3600,
+      str({"age_s": r9s["age_s"], "stale": r9s["stale"]}))
 
 print("\n=== case 8: empty input ===")
 r8 = audit_bar_sequence([], now=1_700_006_300)
