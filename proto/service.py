@@ -1531,9 +1531,24 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
     ``on_health`` is called once with a callable returning the current
     scanner health dict (for embedded callers that need to surface health
     outside the HTTP routes).
+
+    Result semantics (explicit): ``result["ok"]`` means the service ENDED
+    in a healthy state — it is NOT "no failure ever occurred". A crash
+    that later recovers reports ``ok=True`` while preserving its
+    diagnostics: ``loop_error`` (last crash message), ``crashed`` (any
+    crash occurred), ``crash_count``, ``recovered`` (crashed and ended
+    healthy), and ``final_status`` (ending lifecycle state: healthy or
+    failed). Ending parked-failed reports ``ok=False``. ``exit_code`` is
+    unchanged (0 unless the lock was refused).
     """
     result = {"ok": False, "refused": False, "exit_code": 0, "port": None,
-              "shutdown_order": [], "loop_error": None}
+              "shutdown_order": [], "loop_error": None,
+              # Result semantics: ok = the service ENDED in a healthy
+              # state, NOT "no failure ever occurred". A crash that later
+              # recovers keeps its historical diagnostics and reports
+              # ok=True; ending parked-failed reports ok=False.
+              "crashed": False, "crash_count": 0, "recovered": False,
+              "final_status": None}
     lock_path = lock_path or default_lock_path(db)
     try:
         lock_fh = acquire_scanner_lock(lock_path)
@@ -1622,6 +1637,8 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
                 except Exception as e:  # keep server alive on loop failure
                     err_msg = f"{type(e).__name__}: {e}"
                     result["loop_error"] = err_msg
+                    result["crashed"] = True
+                    result["crash_count"] += 1
                     with scanner_lock:
                         scanner_state["status"] = SCANNER_FAILED
                         scanner_state["last_error"] = err_msg
@@ -1666,7 +1683,16 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
         result["shutdown_order"].append("server")
         close_sessions(app_box.get("app"))
         result["shutdown_order"].append("sessions")
-        result["ok"] = result["loop_error"] is None
+        # Result semantics (explicit): ok = the service ENDED in a healthy
+        # state. loop_error/crashed/crash_count preserve the historical
+        # diagnostics even when the scanner recovered; `recovered` flags
+        # exactly that case, and final_status is the ending lifecycle
+        # state (healthy | failed).
+        final_status = _scanner_health()["status"]
+        result["final_status"] = final_status
+        result["recovered"] = (result["crashed"]
+                               and final_status == SCANNER_HEALTHY)
+        result["ok"] = final_status == SCANNER_HEALTHY
         print("service: stopped cleanly", flush=True)
         return result
     finally:

@@ -626,6 +626,21 @@ def main():
                   res_crash.get("shutdown_order")
                   == ["loop", "server", "sessions"],
                   str(res_crash.get("shutdown_order")))
+            # Result semantics: ok means "ended in a healthy state", NOT
+            # "no failure ever occurred". A crash that later recovers must
+            # report ok=True while preserving the historical diagnostics.
+            check("recovered run reports ok (ended healthy)",
+                  res_crash.get("ok") is True, str(res_crash))
+            check("recovered run preserves the crash diagnostic",
+                  res_crash.get("crashed") is True
+                  and res_crash.get("crash_count") == 1
+                  and "boom" in str(res_crash.get("loop_error")),
+                  str(res_crash))
+            check("recovered run flags recovered explicitly",
+                  res_crash.get("recovered") is True, str(res_crash))
+            check("recovered run reports final scanner status",
+                  res_crash.get("final_status") == svc.SCANNER_HEALTHY,
+                  str(res_crash))
 
             # -- retry cap exhausted: server stays up, scanner parked -------
             db_cap = os.path.join(tmp2, "cap.db")
@@ -699,6 +714,15 @@ def main():
                   res_cap.get("shutdown_order")
                   == ["loop", "server", "sessions"],
                   str(res_cap.get("shutdown_order")))
+            # Ending parked-failed is NOT healthy: ok must be False while
+            # the diagnostics stay readable.
+            check("gave-up run reports not ok (ended failed)",
+                  res_cap.get("ok") is False, str(res_cap))
+            check("gave-up run is not flagged recovered",
+                  res_cap.get("recovered") is False, str(res_cap))
+            check("gave-up run reports final scanner status failed",
+                  res_cap.get("final_status") == svc.SCANNER_FAILED,
+                  str(res_cap))
         finally:
             dmod.run_daemon_loop = real_loop
             dmod.colmod.collect_full_universe = real_collect
