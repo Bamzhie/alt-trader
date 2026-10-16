@@ -293,6 +293,8 @@ export interface QuantStatus {
   pause_reason: string | null;
   config_hash: string | null;
   event_counts: QuantEventCounts;
+  /** Legacy ACTIONABLE rows, counted separately — never mixed into shadow counts. */
+  actionable_events: number;
   suppression_top: QuantSuppressionRow[];
   promotions: QuantPromotion[];
   reason: string | null;

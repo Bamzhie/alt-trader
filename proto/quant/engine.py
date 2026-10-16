@@ -16,6 +16,13 @@ State policy (the "never recompute" rule has a crash policy):
 
 Events from unpromoted rules are SHADOW: logged and measured, never shown as
 actionable.  Nothing here places orders.
+
+Local shadow-only contract (ALT RADAR integration): the embedded watcher
+never consults promotions at emission time, so every persisted row is
+``mode='shadow'`` even when a passed promotion record exists for the rule.
+A passed promotion is a research fact (readable via promotions.json and
+``GET /quant-status``); it NEVER switches live emission to ACTIONABLE.
+Enabling ACTIONABLE emission requires a separately approved stage.
 """
 import gzip
 import os

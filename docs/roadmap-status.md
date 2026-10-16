@@ -255,8 +255,8 @@ Verified against code/data, not inherited summaries.
     `gates` pass for an exact rule id + config hash is recorded as a
     research fact — it does NOT switch live emission (shadow-only
     contract; ACTIONABLE emission needs a separately approved stage).
-  - Verification: `tests/run_all.py` → ALL SUITES PASS (70 files);
-    `npm run test` 184 pass + typecheck + lint clean + `npm run build`
+  - Verification: `tests/run_all.py` → ALL SUITES PASS (71 files);
+    `npm run test` 185 pass + typecheck + lint clean + `npm run build`
     clean; bounded tmp-only e2e (fixture bars → research dev/val n>0 +
     denominators + holdout unevaluated → `watch --once` replay silent +
     persistent streaming SHADOW rows with `mode='shadow'` → report /
