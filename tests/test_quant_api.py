@@ -370,6 +370,30 @@ def main():
               f"head={svc.head_event_id()}")
         svc.reset_events()
 
+        # -- readable-but-unwritable file -> 200 unavailable (not 503) ----
+        ro_dir = os.path.join(tmp, "readonly")
+        os.makedirs(ro_dir, exist_ok=True)
+        ro_path = os.path.join(ro_dir, "ro-quant.db")
+        ro_store = QuantStore(ro_path)
+        ro_store.set_watermark("BTC", BASE_TS)
+        ro_store.close()
+        os.chmod(ro_path, 0o444)
+        ro_server = svc.serve(0, TOKEN, lambda: {}, store_path=sig_db,
+                              data_dir=bars_dir, quant_db=ro_path,
+                              is_ready=lambda: True)
+        rport = ro_server.server_address[1]
+        time.sleep(0.1)
+        try:
+            st, body = get(rport, "/quant-status")
+            rdata = (body or {}).get("data") or {}
+            check("quant-status unwritable file -> 200 unavailable",
+                  st == 200 and rdata.get("status") == "unavailable",
+                  f"{st} {str(rdata)[:200]}")
+        finally:
+            ro_server.shutdown()
+            ro_server.server_close()
+            os.chmod(ro_path, 0o644)
+
         # -- SSE: quant.shadow in order with the ring -----------------------
         check("quant.shadow registered in EVENT_KINDS",
               "quant.shadow" in svc.EVENT_KINDS, str(svc.EVENT_KINDS))
