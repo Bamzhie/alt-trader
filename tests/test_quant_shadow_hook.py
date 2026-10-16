@@ -114,6 +114,35 @@ def main():
 
     tmp = tempfile.mkdtemp(prefix="quant-shadow-hook-")
     try:
+        # -- service forwarding: quant flags reach the embedded loop -------
+        # (regression: main() used to forward only the scan/collect
+        # cadences, so the embedded loop never enabled the watcher).
+        from proto import service as svcmod
+        qdb = os.path.join(tmp, "fwd-quant.db")
+        qbars = os.path.join(tmp, "fwd-bars")
+        sargs = svcmod.build_service_parser().parse_args(
+            ["--quant-shadow", "--quant-db", qdb, "--quant-bars", qbars,
+             "--quant-equity", "2500"])
+        fwd = svcmod._daemon_argv_for(sargs)
+        loop_args = dmod.build_parser().parse_args(fwd)
+        check("forwarding: embedded loop enables the watcher",
+              getattr(loop_args, "quant_shadow", False) is True,
+              f"argv={fwd}")
+        check("forwarding: embedded loop uses the service quant-db",
+              getattr(loop_args, "quant_db", None) == qdb,
+              f"argv={fwd}")
+        check("forwarding: embedded loop uses the service quant-bars",
+              getattr(loop_args, "quant_bars", None) == qbars,
+              f"argv={fwd}")
+        check("forwarding: embedded loop uses the service quant-equity",
+              getattr(loop_args, "quant_equity", None) == 2500.0,
+              f"argv={fwd}")
+        # Flag off: no --quant-shadow in the forwarded argv (watcher
+        # stays disabled in the embedded loop, as before).
+        sargs_off = svcmod.build_service_parser().parse_args([])
+        check("forwarding: flag off stays off in the embedded loop",
+              "--quant-shadow" not in svcmod._daemon_argv_for(sargs_off))
+
         # -- flag off: no watcher constructed ------------------------------
         class BoomOnInit:
             def __init__(self, *a, **k):

@@ -216,7 +216,7 @@ Verified against code/data, not inherited summaries.
   — see above). UI evidence is WS6. Only 5m OHLCV +
   funding observations are persisted today.
 
-### 5. Quantitative research foundation — INCREMENT 1 DELIVERED (registry + split discipline)
+### 5. Quantitative research foundation — SHADOW PATH DELIVERED (engine + hook + status/SSE + Research view + e2e)
 - Deps: WS1 (PIT truth), WS4 (funding/cost inputs).
 - Complete: episode lifecycle + calibration gate + cost stub + explicit
   denominators + no-net-P&L prohibition (`proto/measurement.py`,
@@ -234,9 +234,42 @@ Verified against code/data, not inherited summaries.
   Verification: `tests/test_hypotheses.py` → ALL PASS (parse + fixtures
   + shipped example + decision-log wiring); `tests/run_all.py` → ALL
   SUITES PASS (65 files).
-- Remaining: everything in `docs/quant-analytics-system-proposal.md`
-  §3–§5 beyond the registry (evaluation harness, Hurst/MF-DFA,
-  competing outcomes, calibrated probs, clustered uncertainty) is unbuilt.
+- Delivered (2026-10-16, WS5 shadow path, commits 2c85807, deba410,
+  e80c07c, 139bcac, 44df80f + task-5 docs):
+  vendored `proto/quant` research-and-shadow engine (16 files,
+  byte-identical copies, + vendored tests + engine docs); guarded
+  `--quant-shadow` daemon hook (lazy init, per-sweep step after the
+  measure block, never touches sweep state, never raises — `quant FAILED`
+  is logged); service forwards the quant flags into the embedded loop
+  argv (`_daemon_argv_for`, so route and loop agree on the store);
+  read-only `GET /quant-status` (200 with unseen/healthy/paused states,
+  empty store → explicit zeros + `insufficient-evidence`, 503 only when
+  quant.db itself is unreadable) + counts-only `quant.shadow` SSE kind on
+  the unchanged ring/`Last-Event-ID`/`resync` machinery; Research view on
+  the Analysis page (SHADOW banner, counts, suppression rows,
+  measured-range promotions, no setup-table mixing, banned-word clean);
+  `docs/quant-integration.md` (architecture, commands, data flow,
+  limitations, registry relationship note).
+  - Engine verdict stands: no rule has passed promotion; every output is
+    SHADOW / not actionable / insufficient-evidence until a `gates` pass
+    for an exact rule id + config hash says otherwise.
+  - Verification: `tests/run_all.py` → ALL SUITES PASS (70 files);
+    `npm run test` 184 pass + typecheck + lint clean + `npm run build`
+    clean; bounded tmp-only e2e (fixture bars → research dev/val n>0 +
+    denominators + holdout unevaluated → `watch --once` replay silent +
+    persistent streaming SHADOW rows with `mode='shadow'` → report /
+    status → embedded-loop test service → `/quant-status` counts match db
+    → `quant.shadow` frame with matching counts → below-floor `resync` →
+    separation proof: zero quant tables in signals db, production `data/`
+    append-only-or-untouched with no quant artifacts).
+- Remaining: WS5 becomes live-data evaluation evidence (engine on
+  production bars with funding-archive costs), a calibration record, and
+  broader WS6 display (sample-n / CI / calibration / coverage /
+  validation-status beyond the Research view's current
+  counts+suppression+measured-range). Everything in
+  `docs/quant-analytics-system-proposal.md` §3–§5 beyond the registry and
+  the shadow path (evaluation harness, Hurst/MF-DFA, competing outcomes,
+  calibrated probs, clustered uncertainty) is unbuilt.
 
 ### 6. Evidence communication in app — NOT STARTED
 - Deps: WS5 outputs to display; WS1/WS4 coverage labels.

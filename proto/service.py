@@ -1993,6 +1993,33 @@ def build_service_parser():
     return ap
 
 
+# Loop flags forwarded from the service parser into the embedded
+# daemon loop's argv (parsed by the daemon parser, never re-spelled).
+# Includes the quant shadow flags: without them the embedded loop would
+# parse its own defaults and never enable the watcher, while the
+# /quant-status route reads the (separately plumbed) quant_db path —
+# route and loop would disagree. Both derive from the same args.
+_DAEMON_ARGV_NAMES = ("stake", "coins", "interval", "log_threshold",
+                      "use_v3", "collect_every", "resolve_every",
+                      "measure_every", "iterations", "no_scan",
+                      "quant_shadow", "quant_db", "quant_bars",
+                      "quant_equity")
+
+
+def _daemon_argv_for(args):
+    """Build the embedded loop's argv from parsed service args."""
+    daemon_argv = []
+    for name in _DAEMON_ARGV_NAMES:
+        value = getattr(args, name)
+        flag = "--" + name.replace("_", "-")
+        if isinstance(value, bool):
+            if value:
+                daemon_argv.append(flag)
+        elif value is not None:
+            daemon_argv += [flag, str(value)]
+    return daemon_argv
+
+
 def main(argv=None):
     """Entry point: ``python3 -m proto.service``. Returns an exit code."""
     args = build_service_parser().parse_args(argv)
@@ -2009,17 +2036,7 @@ def main(argv=None):
         return 0
     token = args.token or load_or_create_token(args.token_file)
     data_dir = args.data_dir
-    daemon_argv = []
-    for name in ("stake", "coins", "interval", "log_threshold", "use_v3",
-                 "collect_every", "resolve_every", "measure_every",
-                 "iterations", "no_scan"):
-        value = getattr(args, name)
-        flag = "--" + name.replace("_", "-")
-        if isinstance(value, bool):
-            if value:
-                daemon_argv.append(flag)
-        elif value is not None:
-            daemon_argv += [flag, str(value)]
+    daemon_argv = _daemon_argv_for(args)
     result = run_service(port=args.port, token=token, db=args.db,
                          data_dir=data_dir,
                          funding_dir=args.funding_dir,
