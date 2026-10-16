@@ -246,3 +246,66 @@ export interface Event {
   ts: number;
   coin: string | null;
 }
+
+/** Shadow-watcher run state from GET /quant-status (Task 3 contract). */
+export type QuantRunStatus = "unseen" | "healthy" | "paused" | "unavailable";
+
+/** Cumulative shadow-event counts — counts only, never levels or advice. */
+export interface QuantEventCounts {
+  total: number;
+  emitted: number;
+  resolved: number;
+}
+
+/** One top-suppression row: rule + reason + occurrences. */
+export interface QuantSuppressionRow {
+  rule_id: string;
+  reason: string;
+  n: number;
+}
+
+/** Holdout interval behind a promotion record (endpoints only). */
+export interface QuantHoldout {
+  ci_lo: number;
+  ci_hi: number;
+}
+
+/** A passed gate record — the only promotion shape the view renders. */
+export interface QuantPromotion {
+  rule_id: string;
+  config_hash: string;
+  passed: boolean;
+  reasons: string[];
+  holdout: QuantHoldout;
+  expected_net_r: number;
+}
+
+/**
+ * GET /quant-status body (proto/service.py _handle_quant_status).
+ * 200 whenever the quant store is readable; `reason` carries
+ * insufficient-evidence while event counts are zero. 503 UNAVAILABLE only
+ * when the store itself is unreadable.
+ */
+export interface QuantStatus {
+  mode: "shadow";
+  status: QuantRunStatus;
+  paused: boolean;
+  pause_reason: string | null;
+  config_hash: string | null;
+  event_counts: QuantEventCounts;
+  suppression_top: QuantSuppressionRow[];
+  promotions: QuantPromotion[];
+  reason: string | null;
+}
+
+/** Counts carried by a quant.shadow SSE frame (never levels or advice). */
+export interface QuantShadowState {
+  emitted: number;
+  resolved: number;
+}
+
+/** A quant.shadow SSE frame: counts only, coin always null. */
+export interface QuantEvent extends Event {
+  kind: "quant.shadow";
+  state?: QuantShadowState;
+}

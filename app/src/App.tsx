@@ -12,6 +12,7 @@ import { Sidebar } from "./components/Sidebar";
 import type { Page as PageKey } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { Dashboard } from "./pages/Dashboard";
+import { Research } from "./pages/Research";
 import { StubPage } from "./pages/StubPage";
 import { Watchlist } from "./pages/Watchlist";
 import { useDashboardStore } from "./store/dashboard";
@@ -47,13 +48,14 @@ export default function App({
             <Dashboard apiBaseUrl={apiBaseUrl} serviceToken={serviceToken} />
           ) : page === "watchlist" ? (
             <Watchlist apiBaseUrl={apiBaseUrl} serviceToken={serviceToken} />
+          ) : page === "analysis" ? (
+            <Research apiBaseUrl={apiBaseUrl} serviceToken={serviceToken} />
           ) : (
             <StubPage
               name={
                 {
                   watchlist: "Watchlist",
                   signals: "Signals",
-                  analysis: "Analysis",
                   trades: "Trades",
                   settings: "Settings",
                 }[page]

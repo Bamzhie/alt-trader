@@ -13,6 +13,7 @@ import type {
   Envelope,
   ErrorCode,
   Metrics,
+  QuantStatus,
   SetupsPage,
   SetupsQuery,
   Setup,
@@ -44,6 +45,7 @@ export interface ApiClient {
   /** Readiness probe — false when the first sweep is still in progress. Never throws. */
   readyz(): Promise<boolean>;
   snapshot(): Promise<Snapshot>;
+  quantStatus(): Promise<QuantStatus>;
   setups(query: SetupsQuery): Promise<SetupsPage>;
   setup(id: string): Promise<Setup>;
   bars(coin: string, tf: BarTimeframe): Promise<Bars>;
@@ -161,6 +163,10 @@ export function createClient(opts: CreateClientOptions): ApiClient {
 
     async snapshot(): Promise<Snapshot> {
       return (await get("/snapshot")) as Snapshot;
+    },
+
+    async quantStatus(): Promise<QuantStatus> {
+      return (await get("/quant-status")) as QuantStatus;
     },
 
     async setups(query: SetupsQuery): Promise<SetupsPage> {
