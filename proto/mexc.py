@@ -74,6 +74,23 @@ def funding_rate(symbol):
     }
 
 
+def funding_history(symbol, page_num, page_size=1000):
+    """One page of venue-reported funding settlement history.
+
+    Public endpoint (no auth): ``GET /funding_rate/history``. Returns
+    the ``data`` mapping (``pageSize/totalCount/totalPage/currentPage/
+    resultList``); rows carry ``symbol/fundingRate/settleTime`` (plus
+    per-row ``collectCycle`` on live responses). Validation of envelope
+    and rows is the caller's job (see ``proto.settlements``).
+    Transport/venue errors propagate.
+    """
+    if int(page_num) < 1:
+        raise MexcError(f"funding history page_num must be >= 1: {page_num!r}")
+    size = max(1, min(int(page_size), 1000))
+    return _get(f"/funding_rate/history?symbol={symbol}"
+                f"&page_num={int(page_num)}&page_size={size}")
+
+
 def depth(symbol, limit=20):
     """
     Order book. Rows are [price, qty, n_orders] on all three venues.
