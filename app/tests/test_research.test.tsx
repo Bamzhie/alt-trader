@@ -242,4 +242,21 @@ describe("Research view", () => {
     expect(container.querySelector("table")).toBeNull();
     expect(screen.queryByText(/Top Signals/)).toBeNull();
   });
+
+  test("passed promotion never flips live labels away from SHADOW", async () => {
+    // populatedStatus() already carries a passed promotion; add legacy
+    // ACTIONABLE rows on top. The shadow-only contract: live labels stay
+    // SHADOW, and no ACTIONABLE badge or section may appear.
+    stubQuantFetch(() =>
+      jsonResponse(200, {
+        ok: true,
+        data: { ...populatedStatus(), actionable_events: 5 },
+        error: null,
+      }),
+    );
+    render(<Research apiBaseUrl={BASE_URL} serviceToken="dev-token" />);
+    await screen.findByText(/SHADOW/);
+    expect(screen.getByText(/not actionable/)).toBeInTheDocument();
+    expect(screen.queryByText("ACTIONABLE")).toBeNull();
+  });
 });

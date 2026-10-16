@@ -1240,14 +1240,22 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                                "quant database unavailable", origin=origin)
                     return
                 try:
+                    # Shadow-only contract: counts labeled as shadow must
+                    # never include ACTIONABLE rows (legacy or otherwise).
+                    # ACTIONABLE rows are reported separately as an explicit
+                    # research-fact number, never mixed into shadow counts.
                     total = conn.execute(
-                        "SELECT COUNT(*) FROM quant_event").fetchone()[0]
+                        "SELECT COUNT(*) FROM quant_event "
+                        "WHERE mode='SHADOW'").fetchone()[0]
                     opened = conn.execute(
                         "SELECT COUNT(*) FROM quant_event "
-                        "WHERE state='EMITTED'").fetchone()[0]
+                        "WHERE mode='SHADOW' AND state='EMITTED'").fetchone()[0]
                     resolved = conn.execute(
                         "SELECT COUNT(*) FROM quant_event "
-                        "WHERE state='RESOLVED'").fetchone()[0]
+                        "WHERE mode='SHADOW' AND state='RESOLVED'").fetchone()[0]
+                    actionable = conn.execute(
+                        "SELECT COUNT(*) FROM quant_event "
+                        "WHERE mode='ACTIONABLE'").fetchone()[0]
                     supp_rows = (conn.execute(
                         "SELECT rule_id, reason, n FROM quant_suppressed "
                         "ORDER BY n DESC LIMIT 5").fetchall()
@@ -1291,6 +1299,7 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                 "config_hash": config_hash,
                 "event_counts": {"total": total, "emitted": opened,
                                  "resolved": resolved},
+                "actionable_events": actionable,
                 "suppression_top": [
                     {"rule_id": r[0], "reason": r[1], "n": r[2]}
                     for r in supp_rows],

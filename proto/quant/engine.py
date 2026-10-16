@@ -24,7 +24,6 @@ from collections import deque
 
 from . import barrier as B
 from . import risk as riskmod
-from . import gates as gatesmod
 from .bars import load_coin, list_coins, contiguous_runs, valid_bar
 from .config import DEFAULT, BAR_S, BARS_PER_DAY
 from .registry import REGISTERED, by_id
@@ -183,7 +182,13 @@ class Watcher:
                 self.store.bump_suppressed(day, rid, "no_vol")
                 continue
             plan = riskmod.plan_levels(snap.close, side, snap.sigma, spec.geometry)
-            promo = gatesmod.promotion_for(self.promo_dir, rid, self.cfg.config_hash())
+            # Local shadow-only contract: the embedded watcher is research
+            # logging only. Passed promotions are research facts (readable
+            # via promotions.json and /quant-status); they NEVER switch
+            # live emission to ACTIONABLE — that requires a separately
+            # approved stage. The watcher therefore never consults
+            # promotions here, so every emitted row is SHADOW.
+            promo = None
             ok, why, mode, cost = self.selector.decide(
                 spec, coin, snap.ts, snap.qv24, plan["stop_frac"], promo)
             if not ok:

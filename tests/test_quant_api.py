@@ -300,6 +300,25 @@ def main():
         pstore.set_meta("pause", "0")
         pstore.close()
 
+        # -- ACTIONABLE legacy rows are never counted as shadow -----------
+        astore = QuantStore(qpath)
+        aid = seed_event(astore, RULE, CHASH, "DOGE", BASE_TS + 900,
+                         mode="ACTIONABLE")
+        assert aid is not None, "actionable seed insert collided"
+        astore.commit()
+        astore.close()
+        st, body = get(port, "/quant-status")
+        adata = (body or {}).get("data") or {}
+        aec = adata.get("event_counts") or {}
+        check("ACTIONABLE rows excluded from shadow counts",
+              st == 200 and aec.get("total") == 2
+              and aec.get("emitted") == 1 and aec.get("resolved") == 1,
+              f"{st} {str(aec)[:200]}")
+        check("ACTIONABLE rows reported separately, never as shadow",
+              adata.get("actionable_events") == 1
+              and adata.get("mode") == "shadow",
+              str({k: adata.get(k) for k in ("actionable_events", "mode")}))
+
         # -- empty db: zeros + insufficient-evidence, never 404 -------------
         # Own subdir: promotions.json lives beside the db (promo_dir), so
         # a shared dir would leak the seeded promotion into this case.

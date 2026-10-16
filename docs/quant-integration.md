@@ -116,10 +116,18 @@ names the cause.
 - **Unwritable quant.db degrades, never breaks the loop**: watcher step
   and status route report explicit `unavailable`; daemon loop and API
   are unaffected.
-- **No ACTIONABLE mode exists in the pipeline.** The UI has no path that
-  renders a quant finding as a setup, plan, or order advice; promotion
-  records render uncertainty ONLY as `measured range (lower–upper)` with
-  the caption `range of measured outcomes, not a prediction`.
+- **Shadow-only live contract.** The embedded watcher never writes
+  `ACTIONABLE` rows: promotions are not consulted at emission time, so
+  every persisted row is `mode='shadow'`. A passed promotion is a
+  research fact (visible in `promotions` and the gates record), never a
+  live-emission mode switch — enabling ACTIONABLE emission requires a
+  separately approved stage. `/quant-status` counts shadow rows only;
+  any legacy `ACTIONABLE` rows are reported separately as
+  `actionable_events`, never mixed into shadow counts. The UI has no
+  path that renders a quant finding as a setup, plan, or order advice;
+  promotion records render uncertainty ONLY as `measured range
+  (lower–upper)` with the caption `range of measured outcomes, not a
+  prediction`.
 
 ## Registry relationship (no code merge)
 

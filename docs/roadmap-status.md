@@ -250,9 +250,11 @@ Verified against code/data, not inherited summaries.
   measured-range promotions, no setup-table mixing, banned-word clean);
   `docs/quant-integration.md` (architecture, commands, data flow,
   limitations, registry relationship note).
-  - Engine verdict stands: no rule has passed promotion; every output is
-    SHADOW / not actionable / insufficient-evidence until a `gates` pass
-    for an exact rule id + config hash says otherwise.
+  - Engine verdict stands: no rule has passed promotion; every live
+    output is SHADOW / not actionable / insufficient-evidence. A
+    `gates` pass for an exact rule id + config hash is recorded as a
+    research fact — it does NOT switch live emission (shadow-only
+    contract; ACTIONABLE emission needs a separately approved stage).
   - Verification: `tests/run_all.py` → ALL SUITES PASS (70 files);
     `npm run test` 184 pass + typecheck + lint clean + `npm run build`
     clean; bounded tmp-only e2e (fixture bars → research dev/val n>0 +
