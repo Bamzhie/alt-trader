@@ -34,6 +34,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .collector import read_bars
 from .funding import read_funding
+from .settlements import read_settlements
 from . import daemon as _daemon_mod
 from .planner import REFERENCE_NOTIONAL, reference_plan
 from . import watcher as _watcher_mod
@@ -382,6 +383,9 @@ ALLOWED_TFS = {"5m": 300, "15m": 900, "1H": 3600, "4H": 14400, "1D": 86400}
 # filesystem access so traversal names never reach the archive dir.
 # (/bars joins its coin unchecked — untouched by design.)
 _SAFE_FUNDING_COIN = re.compile(r"^[A-Za-z0-9_-]+$")
+# Same route-local rule for /settlements (own constant so neither route
+# can weaken the other's check by editing a shared one).
+_SAFE_SETTLEMENTS_COIN = re.compile(r"^[A-Za-z0-9_-]+$")
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 SETUP_STATES = frozenset({"active", "invalidated", "expired", "resolved"})
@@ -601,7 +605,8 @@ def load_or_create_token(path):
 
 
 def _make_handler(token, ready, store_path=None, data_dir=None,
-                   funding_dir=None, is_ready=None, scanner_health=None,
+                   funding_dir=None, settlements_dir=None,
+                   is_ready=None, scanner_health=None,
                    quant_db=None):
     cfg_store = store_path or os.path.join("data", "signals.db")
     cfg_data = data_dir or os.path.join("data", "bars")
@@ -610,6 +615,10 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
     # data/bars, matching proto.funding.FUNDING_DIR).
     cfg_funding = (funding_dir or os.path.join(
         os.path.dirname(cfg_data), "funding"))
+    # Same pattern for the settlement archive: data/funding_settlements
+    # beside data/bars (matching proto.settlements.SETTLEMENTS_DIR).
+    cfg_settlements = (settlements_dir or os.path.join(
+        os.path.dirname(cfg_data), "funding_settlements"))
     # Same pattern for the quant shadow store: quant.db beside the bars
     # dir unless the caller passes an explicit path (tests use tmp dirs).
     cfg_quant = (quant_db or os.path.join(
@@ -753,6 +762,10 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
 
             if self.command == "GET" and path == "/funding":
                 self._handle_funding(gated, qs, cfg_funding)
+                return
+
+            if self.command == "GET" and path == "/settlements":
+                self._handle_settlements(gated, qs, cfg_settlements)
                 return
 
             if self.command == "GET" and path == "/quant-status":
@@ -1208,6 +1221,52 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                        "data_as_of": last_ts, "last_ts": last_ts}),
                 origin=origin)
 
+        def _handle_settlements(self, origin, qs, settlements_dir):
+            """Read-only venue-reported settlement history for one coin.
+
+            Mirrors _handle_funding idioms exactly (own allowlist, own
+            messages): venue settle_ts/settled_rate/cycle_hours rows,
+            ascending, last-`limit` slice, `count == len(rows)`.
+            """
+            coin = (qs.get("coin") or [None])[0]
+            if not coin:
+                self._deny(400, "BAD_REQUEST",
+                           "coin is required", origin=origin)
+                return
+            if not _SAFE_SETTLEMENTS_COIN.match(coin):
+                self._deny(400, "BAD_REQUEST",
+                           "invalid coin name", origin=origin)
+                return
+            if not os.path.exists(os.path.join(settlements_dir,
+                                               f"{coin}.csv.gz")):
+                self._deny(404, "NOT_FOUND", f"no settlements for {coin}",
+                           origin=origin)
+                return
+            raw_limit = (qs.get("limit") or ["1000"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                self._deny(400, "BAD_REQUEST", "limit must be an integer",
+                           origin=origin)
+                return
+            if limit < 1 or limit > 5000:
+                self._deny(400, "BAD_REQUEST",
+                           "limit must be between 1 and 5000", origin=origin)
+                return
+            try:
+                rows = read_settlements(settlements_dir, coin)
+            except Exception:
+                self._deny(503, "UNAVAILABLE", "settlements unavailable",
+                           origin=origin)
+                return
+            rows = rows[-limit:]
+            last_ts = rows[-1]["settle_ts"] if rows else None
+            self._send_json(200, envelope(
+                True, {"coin": coin, "rows": rows,
+                       "count": len(rows),
+                       "data_as_of": last_ts, "last_ts": last_ts}),
+                origin=origin)
+
         def _handle_quant_status(self, origin, quant_db):
             """Read-only shadow-watcher status over the quant store.
 
@@ -1563,7 +1622,8 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
 
 
 def serve(port, token, ready, store_path=None, data_dir=None,
-           funding_dir=None, is_ready=None, scanner_health=None,
+           funding_dir=None, settlements_dir=None,
+           is_ready=None, scanner_health=None,
            quant_db=None):
     """Bind 127.0.0.1:port and serve in a daemon thread; return the server.
 
@@ -1572,7 +1632,9 @@ def serve(port, token, ready, store_path=None, data_dir=None,
     the resource routes read; `funding_dir` locates the funding archive
     the /funding route reads (default: funding sibling of `data_dir`);
     `quant_db` locates the quant shadow store the /quant-status route
-    reads (default: quant.db sibling of `data_dir`); `is_ready`
+    reads (default: quant.db sibling of `data_dir`); `settlements_dir`
+    locates the settlement archive the /settlements route reads
+    (default: funding_settlements sibling of `data_dir`); `is_ready`
     optionally overrides readiness; `scanner_health` optionally supplies
     the scanner lifecycle state for `GET /scanner-health` (a callable
     returning a dict, or a dict). All are optional so Task 1 callers keep
@@ -1581,6 +1643,7 @@ def serve(port, token, ready, store_path=None, data_dir=None,
     """
     handler = _make_handler(token, ready, store_path=store_path,
                             data_dir=data_dir, funding_dir=funding_dir,
+                            settlements_dir=settlements_dir,
                             is_ready=is_ready,
                             scanner_health=scanner_health,
                             quant_db=quant_db)
@@ -1738,7 +1801,7 @@ def close_sessions(app=None):
 
 
 def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
-                funding_dir=None,
+                funding_dir=None, settlements_dir=None,
                 lock_path=None, daemon_argv=None, stop_event=None,
                 install_signals=True, on_serving=None, on_health=None,
                 backoff_base_s: float = DEFAULT_BACKOFF_BASE_S,
@@ -1865,6 +1928,7 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
             port, token, lambda: {"sweep_done": sweep_done.is_set()},
             store_path=db, data_dir=data_dir,
             funding_dir=funding_dir,
+            settlements_dir=settlements_dir,
             is_ready=sweep_done.is_set,
             scanner_health=_scanner_health,
             quant_db=quant_db)
@@ -1997,6 +2061,10 @@ def build_service_parser():
     ap.add_argument("--funding-dir", default=None,
                     help="funding archive dir for /funding "
                          "(default: funding sibling of --data-dir)")
+    ap.add_argument("--settlements-dir", default=None,
+                    help="settlement archive dir for /settlements "
+                         "(default: funding_settlements sibling of "
+                         "--data-dir)")
     # No --quant-db here: the inherited daemon parser already owns it
     # (same default data/quant.db); main() passes args.quant_db through.
     return ap
@@ -2049,6 +2117,7 @@ def main(argv=None):
     result = run_service(port=args.port, token=token, db=args.db,
                          data_dir=data_dir,
                          funding_dir=args.funding_dir,
+                         settlements_dir=args.settlements_dir,
                          lock_path=args.lock_file,
                          daemon_argv=daemon_argv,
                          quant_db=getattr(args, "quant_db", None))
