@@ -223,13 +223,17 @@ def archive_max_ts(data_dir, coin):
     return max_ts, n
 
 
-def audit_archive_file(data_dir, coin, *, tf_sec=300, now=None, max_examples=50):
+def audit_archive_file(data_dir, coin, *, tf_sec=300, now=None, max_examples=50,
+                         ts_field="ts"):
     """Audit a single coin's persisted gzip bar archive.
 
     Streams the file once (file order, never sorted/reordered on disk), feeds
     the row list to :func:`audit_bar_sequence`, then caps the three example
     lists to ``max_examples``. Missing files return the empty audit shape
     (``count: 0``) with the coin/path keys attached — never raises.
+    ``ts_field`` names the timestamp column (default ``"ts"`` for bar
+    archives; pass ``"settle_ts"`` for funding-settlement archives) so
+    other timestamped archives audit with the same sequence math.
     """
     path = os.path.join(data_dir, f"{coin}.csv.gz")
     result_base = audit_bar_sequence([], tf_sec=tf_sec, now=now)
@@ -242,7 +246,7 @@ def audit_archive_file(data_dir, coin, *, tf_sec=300, now=None, max_examples=50)
     with gzip.open(path, "rt", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            ts = row.get("ts")
+            ts = row.get(ts_field)
             if ts is None:
                 invalid_rows += 1
                 continue

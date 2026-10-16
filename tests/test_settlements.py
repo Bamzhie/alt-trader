@@ -307,6 +307,21 @@ finally:
     dmod.App = real_app
     fmod.collect_funding = real_funding
 
+print("\n=== case 8: bar-quality audit covers the settle grid ===")
+from proto.bar_quality import audit_archive_file
+tmp8 = tempfile.mkdtemp(prefix="settle-audit-")
+smod.append_settlements(tmp8, "BTC", [
+    {"settle_ts": 1792166400 - i * 28800, "settled_rate": 0.0001,
+     "cycle_hours": 8} for i in range(5)])
+rep = audit_archive_file(tmp8, "BTC", tf_sec=28800, ts_field="settle_ts")
+check("settle grid audits perfect",
+      rep["count"] == 5 and rep["coverage"]["ratio"] == 1.0
+      and rep["missing_count"] == 0 and rep["invalid_rows"] == 0,
+      str({k: rep[k] for k in ("count", "missing_count", "invalid_rows")}))
+rep = audit_archive_file(tmp8, "BTC", tf_sec=28800)
+check("default ts field still rejects foreign schema",
+      rep["invalid_rows"] == 5, str(rep["invalid_rows"]))
+
 print()
 if FAILURES:
     print(f"FAIL  tests/test_settlements.py  "
