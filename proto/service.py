@@ -123,7 +123,7 @@ LOG.addFilter(_RedactingFilter())
 
 EVENT_KINDS = ("setup.emitted", "setup.invalidated", "setup.expired",
                "setup.resolved", "monitoring.unavailable", "monitoring.ok",
-               "sweep.completed")
+               "sweep.completed", "quant.shadow")
 EVENT_CAP = 500
 EVENT_TTL_S = 30 * 60
 EVENT_ID_WIDTH = 6
@@ -193,6 +193,36 @@ def record_sweep_completed(eligible_count=0, evaluated_count=0):
     call it directly. Returns the event dict.
     """
     return emit_event("sweep.completed", coin=None)
+
+
+QUANT_SHADOW_KIND = "quant.shadow"
+
+
+def emit_quant_shadow(last, result):
+    """Emit one quant.shadow event when a watcher step reports NEW counts.
+
+    ``last`` is the previous ``(emitted, resolved)`` tuple (or None on the
+    first step); ``result`` is the watcher's step() dict. Returns the
+    updated tuple. Emits only when the step succeeded, the cumulative
+    counts changed since ``last``, and at least one count is nonzero —
+    so per-sweep polling never spams the ring. The frame carries counts
+    only (state {"emitted", "resolved"}; coin None): no levels, no
+    advice, nothing actionable.
+    """
+    if last is None:
+        last = (0, 0)
+    if not isinstance(result, dict) or not result.get("ok"):
+        return last
+    try:
+        emitted = int(result.get("emitted", 0) or 0)
+        resolved = int(result.get("resolved", 0) or 0)
+    except (TypeError, ValueError):
+        return last
+    current = (emitted, resolved)
+    if current != tuple(last) and (emitted > 0 or resolved > 0):
+        emit_event(QUANT_SHADOW_KIND,
+                   state={"emitted": emitted, "resolved": resolved})
+    return current
 
 
 def reset_events():
@@ -421,6 +451,46 @@ def _db_writable(store_path):
         conn.close()
 
 
+def _quant_status_for(writable, paused, watermarks, total):
+    """Availability state from store meta + watermark (single source).
+
+    unseen = watcher never ran (no watermark); healthy / paused (manual
+    or auto-pause flag) / unavailable (readable but not writable).
+    """
+    if not writable:
+        return "unavailable"
+    if paused:
+        return "paused"
+    if watermarks == 0 and total == 0:
+        return "unseen"
+    return "healthy"
+
+
+def _quant_db_writable(quant_db):
+    """Write probe against the quant store's own meta table.
+
+    The generic _db_writable targets the signals-db `meta` table, which
+    quant.db does not have (it owns `quant_meta`); probing the wrong
+    table would report every healthy quant store unavailable.
+    Rolled back — nothing is kept. Call only after the read path has
+    proven the file exists and carries quant tables.
+    """
+    try:
+        conn = sqlite3.connect(quant_db, timeout=5)
+    except sqlite3.Error:
+        return False
+    try:
+        conn.execute("INSERT OR REPLACE INTO quant_meta "
+                     "(key, value, updated_ts)"
+                     " VALUES ('__svc_ready_probe__', '1', 0)")
+        conn.rollback()
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
 def _resample_bars(bars5, tf_sec, now):
     """Bucket closed 5m bars into tf_sec candles; closed buckets only."""
     closed5 = [b for b in bars5
@@ -531,7 +601,8 @@ def load_or_create_token(path):
 
 
 def _make_handler(token, ready, store_path=None, data_dir=None,
-                   funding_dir=None, is_ready=None, scanner_health=None):
+                   funding_dir=None, is_ready=None, scanner_health=None,
+                   quant_db=None):
     cfg_store = store_path or os.path.join("data", "signals.db")
     cfg_data = data_dir or os.path.join("data", "bars")
     # Resolved once here (per server), never per request. Default: the
@@ -539,6 +610,10 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
     # data/bars, matching proto.funding.FUNDING_DIR).
     cfg_funding = (funding_dir or os.path.join(
         os.path.dirname(cfg_data), "funding"))
+    # Same pattern for the quant shadow store: quant.db beside the bars
+    # dir unless the caller passes an explicit path (tests use tmp dirs).
+    cfg_quant = (quant_db or os.path.join(
+        os.path.dirname(cfg_data), "quant.db"))
 
     def _ready_ok():
         if is_ready is not None:
@@ -678,6 +753,10 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
 
             if self.command == "GET" and path == "/funding":
                 self._handle_funding(gated, qs, cfg_funding)
+                return
+
+            if self.command == "GET" and path == "/quant-status":
+                self._handle_quant_status(gated, cfg_quant)
                 return
 
             if self.command == "GET" and path == "/metrics":
@@ -1129,6 +1208,96 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                        "data_as_of": last_ts, "last_ts": last_ts}),
                 origin=origin)
 
+        def _handle_quant_status(self, origin, quant_db):
+            """Read-only shadow-watcher status over the quant store.
+
+            200 whenever quant.db is readable, with `status` one of
+            unseen (watcher never ran — no watermark) / healthy / paused
+            (manual or auto-pause flag) / unavailable (readable but not
+            writable); `reason` carries insufficient-evidence while event
+            counts are zero. 503 UNAVAILABLE only when quant.db itself is
+            unreadable. Never 404: an empty store is explicit zeros.
+            """
+            try:
+                conn = sqlite3.connect(
+                    f"file:{os.path.abspath(quant_db)}?mode=ro", uri=True,
+                    timeout=5)
+                conn.row_factory = sqlite3.Row
+            except sqlite3.Error:
+                self._deny(503, "UNAVAILABLE",
+                           "quant database unavailable", origin=origin)
+                return
+            try:
+                try:
+                    tables = {r[0] for r in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'")}
+                except sqlite3.Error:
+                    self._deny(503, "UNAVAILABLE",
+                               "quant database unavailable", origin=origin)
+                    return
+                if "quant_event" not in tables:
+                    self._deny(503, "UNAVAILABLE",
+                               "quant database unavailable", origin=origin)
+                    return
+                try:
+                    total = conn.execute(
+                        "SELECT COUNT(*) FROM quant_event").fetchone()[0]
+                    opened = conn.execute(
+                        "SELECT COUNT(*) FROM quant_event "
+                        "WHERE state='EMITTED'").fetchone()[0]
+                    resolved = conn.execute(
+                        "SELECT COUNT(*) FROM quant_event "
+                        "WHERE state='RESOLVED'").fetchone()[0]
+                    supp_rows = (conn.execute(
+                        "SELECT rule_id, reason, n FROM quant_suppressed "
+                        "ORDER BY n DESC LIMIT 5").fetchall()
+                        if "quant_suppressed" in tables else [])
+                    meta = ({r[0]: r[1] for r in conn.execute(
+                        "SELECT key, value FROM quant_meta").fetchall()}
+                        if "quant_meta" in tables else {})
+                    watermarks = (conn.execute(
+                        "SELECT COUNT(*) FROM quant_watermark").fetchone()[0]
+                        if "quant_watermark" in tables else 0)
+                except sqlite3.Error:
+                    self._deny(503, "UNAVAILABLE",
+                               "quant database unavailable", origin=origin)
+                    return
+            finally:
+                conn.close()
+            try:
+                from .quant.config import DEFAULT as _quant_default
+                config_hash = _quant_default.config_hash()
+            except Exception:
+                config_hash = None
+            try:
+                from .quant import gates as _gates_mod
+                promo_dir = os.path.dirname(os.path.abspath(quant_db)) or "."
+                promotions = [rec for rec in
+                              _gates_mod.load(promo_dir).values()
+                              if isinstance(rec, dict) and rec.get("passed")]
+            except Exception:
+                promotions = []
+            paused = meta.get("pause") == "1" or meta.get("auto_pause") == "1"
+            pause_reason = meta.get("auto_pause_reason") or None
+            if meta.get("pause") == "1" and not pause_reason:
+                pause_reason = "manual pause"
+            status = _quant_status_for(_quant_db_writable(quant_db), paused,
+                                       watermarks, total)
+            self._send_json(200, envelope(True, {
+                "mode": "shadow",
+                "status": status,
+                "paused": paused,
+                "pause_reason": pause_reason,
+                "config_hash": config_hash,
+                "event_counts": {"total": total, "emitted": opened,
+                                 "resolved": resolved},
+                "suppression_top": [
+                    {"rule_id": r[0], "reason": r[1], "n": r[2]}
+                    for r in supp_rows],
+                "promotions": promotions,
+                "reason": "insufficient-evidence" if total == 0 else None,
+            }), origin=origin)
+
         def _handle_metrics(self, origin, qs, data_dir):
             coin = (qs.get("coin") or [None])[0]
             if not coin:
@@ -1385,24 +1554,27 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
 
 
 def serve(port, token, ready, store_path=None, data_dir=None,
-           funding_dir=None, is_ready=None, scanner_health=None):
+           funding_dir=None, is_ready=None, scanner_health=None,
+           quant_db=None):
     """Bind 127.0.0.1:port and serve in a daemon thread; return the server.
 
     `ready` is the Task 1 sweep callback (also the default readiness
     signal); `store_path`/`data_dir` locate the Store DB and bar archive
     the resource routes read; `funding_dir` locates the funding archive
     the /funding route reads (default: funding sibling of `data_dir`);
-    `is_ready` optionally overrides readiness;
-    `scanner_health` optionally supplies the scanner lifecycle state for
-    `GET /scanner-health` (a callable returning a dict, or a dict). All
-    are optional so Task 1 callers keep working unchanged; when
-    `scanner_health` is absent the route answers 503 UNAVAILABLE — it
-    never claims health it cannot read.
+    `quant_db` locates the quant shadow store the /quant-status route
+    reads (default: quant.db sibling of `data_dir`); `is_ready`
+    optionally overrides readiness; `scanner_health` optionally supplies
+    the scanner lifecycle state for `GET /scanner-health` (a callable
+    returning a dict, or a dict). All are optional so Task 1 callers keep
+    working unchanged; when `scanner_health` is absent the route answers
+    503 UNAVAILABLE — it never claims health it cannot read.
     """
     handler = _make_handler(token, ready, store_path=store_path,
                             data_dir=data_dir, funding_dir=funding_dir,
                             is_ready=is_ready,
-                            scanner_health=scanner_health)
+                            scanner_health=scanner_health,
+                            quant_db=quant_db)
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever,
@@ -1562,7 +1734,8 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
                 install_signals=True, on_serving=None, on_health=None,
                 backoff_base_s: float = DEFAULT_BACKOFF_BASE_S,
                 backoff_max_s: float = DEFAULT_BACKOFF_MAX_S,
-                max_scanner_retries: int = MAX_SCANNER_RETRIES):
+                max_scanner_retries: int = MAX_SCANNER_RETRIES,
+                quant_db=None):
     """Run the HTTP server plus the embedded daemon loop; return a result.
 
     ``daemon_argv`` is parsed by the daemon parser (imported, never
@@ -1684,7 +1857,8 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
             store_path=db, data_dir=data_dir,
             funding_dir=funding_dir,
             is_ready=sweep_done.is_set,
-            scanner_health=_scanner_health)
+            scanner_health=_scanner_health,
+            quant_db=quant_db)
         result["port"] = bound
         print(f"service: listening on 127.0.0.1:{bound} db={db} "
               f"lock={lock_path}", flush=True)
@@ -1814,6 +1988,8 @@ def build_service_parser():
     ap.add_argument("--funding-dir", default=None,
                     help="funding archive dir for /funding "
                          "(default: funding sibling of --data-dir)")
+    # No --quant-db here: the inherited daemon parser already owns it
+    # (same default data/quant.db); main() passes args.quant_db through.
     return ap
 
 
@@ -1848,7 +2024,8 @@ def main(argv=None):
                          data_dir=data_dir,
                          funding_dir=args.funding_dir,
                          lock_path=args.lock_file,
-                         daemon_argv=daemon_argv)
+                         daemon_argv=daemon_argv,
+                         quant_db=getattr(args, "quant_db", None))
     return result.get("exit_code", 0)
 
 

@@ -242,6 +242,7 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
     # constructed once before the loop. A failed init is reported and
     # leaves the watcher disabled — the loop below never depends on it.
     quant_watcher = None
+    quant_last_shadow = (0, 0)
     if getattr(args, "quant_shadow", False):
         try:
             from .quant.engine import Watcher as _QuantWatcher
@@ -395,9 +396,21 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
             # accounting. Guarded on its own — a watcher failure is
             # reported, never raised, and this block never touches
             # sweep_ok/collect_ok/sweep_counts/last_* nor calls on_sweep.
+            # When step() reports new emissions, the counts (only) are
+            # fanned out as one in-process quant.shadow SSE event via the
+            # service ring — inside this same guard, so a notify failure
+            # is reported exactly like a watcher failure: never raised.
             if quant_watcher is not None:
                 try:
-                    quant_watcher.step()
+                    _quant_step = quant_watcher.step()
+                    try:
+                        from . import service as _service_mod
+                    except Exception:
+                        _service_mod = None
+                    if _service_mod is not None:
+                        quant_last_shadow = \
+                            _service_mod.emit_quant_shadow(
+                                quant_last_shadow, _quant_step)
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] quant FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
