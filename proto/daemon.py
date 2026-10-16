@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from .app import App
 from . import collector as colmod
 from . import funding as fmod
+from . import settlements as smod
 from . import measurement as measuremod
 from . import outcomes as outmod
 from .scan import MAX_WORKERS, build_universe
@@ -316,6 +317,21 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                           flush=True)
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] funding FAILED: "
+                          f"{type(e).__name__}: {e}", flush=True)
+                # WS4 venue-reported settlement history: incremental page-1
+                # pass, throttled to daily inside maybe_collect (3
+                # settles/day/coin make sub-daily polling pure venue
+                # load). Guarded on its own like funding: a settlements
+                # failure must never fail the bars sweep.
+                try:
+                    settle_out = smod.maybe_collect()
+                    if settle_out:
+                        print(f"[{time.strftime('%H:%M:%S')}] settlements: "
+                              f"{len(settle_out)} coins "
+                              f"{sum(r.get('new', 0) for r in settle_out.values())} "
+                              "new rows", flush=True)
+                except Exception as e:
+                    print(f"[{time.strftime('%H:%M:%S')}] settlements FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
             if resolve_future is not None and resolve_future.done():
                 try:

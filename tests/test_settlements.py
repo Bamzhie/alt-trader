@@ -235,6 +235,78 @@ finally:
     else:
         mexmod.funding_history = real_history
 
+print("\n=== case 7: daemon throttle + failure isolation ===")
+from types import SimpleNamespace
+
+tmp7 = tempfile.mkdtemp(prefix="settle-throttle-")
+calls = []
+
+
+def _fake_recent(data_dir, coins=None):
+    calls.append(data_dir)
+    return {"BTC": {"coin": "BTC", "new": 1, "skipped": {},
+                    "pages": 1, "truncated": False}}
+
+
+real_recent = smod.collect_recent
+smod.collect_recent = _fake_recent
+try:
+    out = smod.maybe_collect(tmp7)
+    check("due throttle collects", out["BTC"]["new"] == 1
+          and calls == [tmp7], str((out, calls)))
+    calls.clear()
+    out = smod.maybe_collect(tmp7)
+    check("fresh throttle mark skips venue", out == {} and calls == [],
+          str((out, calls)))
+finally:
+    smod.collect_recent = real_recent
+
+from proto import daemon as dmod
+from proto import collector as colmod
+from proto import funding as fmod
+
+real_collect = colmod.collect_full_universe
+real_maybe = smod.maybe_collect
+real_app = dmod.App
+real_funding = fmod.collect_funding
+sweeps = []
+colmod.collect_full_universe = lambda *a, **k: {}
+fmod.collect_funding = lambda *a, **k: {}
+
+
+class _FakeApp:
+    def __init__(self, args):
+        pass
+
+
+dmod.App = _FakeApp
+boom_calls = []
+
+
+def _boom_maybe(*a, **k):
+    boom_calls.append(a)
+    raise RuntimeError("settlements boom")
+
+
+smod.maybe_collect = _boom_maybe
+try:
+    args = SimpleNamespace(stake=0.10, coins=150, interval=5,
+                           db=os.path.join(tmp7, "s.db"),
+                           log_threshold=24.0, use_v3=False,
+                           collect_every=0, resolve_every=10 ** 12,
+                           measure_every=10 ** 12, iterations=1,
+                           no_scan=True, quant_shadow=False)
+    dmod.run_daemon_loop(args, on_sweep=lambda e, v, **k: sweeps.append((e, v)))
+    check("daemon loop consults settlements collect",
+          boom_calls != [], "maybe_collect never called")
+    check("settlements failure never fails the sweep", sweeps != [],
+          str(sweeps))
+finally:
+    colmod.collect_full_universe = real_collect
+    smod.maybe_collect = real_maybe
+    dmod.App = real_app
+    fmod.collect_funding = real_funding
+
 print()
 if FAILURES:
     print(f"FAIL  tests/test_settlements.py  "
