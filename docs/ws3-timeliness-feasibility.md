@@ -28,27 +28,32 @@ is the operator-visible number. Deferred, not missing.
 
 ## 2. Live / one-minute feasibility — NOT FEASIBLE AS-IS (evidence)
 
-Venue adapter (`proto/mexc.py:22-29`): measured `INTERVALS` starts at
-**5m** (`Min5`); there is no `1m` (`Min1`) entry. Requesting it raises
-`ValueError: unknown interval`. Whether MEXC contract klines serves 1m
-at all is UNVERIFIED — no request was made; adding `"1m"` to INTERVALS
-without a measured probe would be inventing capability.
+Venue probe (verified live 2026-10-16, one read-only public request —
+no adapter change, no kept code): `GET
+/kline/BTC_USDT?interval=Min1` returns `success=true`, 11 rows in
+~0.5s, with the same columnar shape as Min5 (`time` as 60s-spaced
+epoch seconds plus `open/close/high/low/vol/amount`). Min1 IS served;
+the adapter's `INTERVALS` (`proto/mexc.py:22-29`) merely lacks the
+entry. Venue support is no longer the question.
 
-Request budget (`proto/scan.py:29`): venue-wide cap `REQ_PER_S = 20`,
-shared by scan and collector via one `LIMITER`. Full-universe collect =
-576 coins (corrected audit) → 576 requests minimum ≈ **29s** at the
-cap, one coin per request. A 1m cadence at the same universe needs
-12x the requests of 5m → ~347s/sweep at 20 rps, i.e. it cannot keep a
-1m schedule; and 5m collect at 300s cadence already uses ~10% of the
-budget per sweep.
+Request budget, corrected with live timing: 1m steady state needs
+576 coins × 1 request/min ≈ **9.6 rps** against the venue-wide 20 rps
+cap (`proto/scan.py:29`) — feasible on paper. (The older ~347s/sweep
+figure described full 200-bar history sweeps, not steady state, and
+is superseded for cadence planning.) The live loop's measured sweep
+is **~803s** (`GET /scanner-health`, 2026-10-16) — the scan phase
+alone exceeds a 60s schedule by ~13×. So the schedule is blocked by
+**consumption/sweep time, not request rate**: collectors could fetch
+1m bars, but nothing downstream can act on them each minute.
 
-Conclusion: **stay on 5m closed bars.** 1m requires (a) a measured
-venue probe of Min1 support, (b) a per-coin batching or websocket
-design to fit the request budget, (c) an archive-format decision (the
-current CSV archives are 300s grids; mixing 60s rows breaks every
-consumer's grid assumption, including the audit's `tf_sec=300`
-coverage math). That is a design stage, not a flag flip — tracked in
-WS3, not started.
+Conclusion: **stay on 5m closed bars.** 1m requires a design stage:
+(a) a measured loop fast enough to consume 1m data (current sweep
+~803s), (b) a separate 1m archive namespace — the current CSV
+archives are 300s grids and mixing 60s rows breaks every consumer's
+grid assumption, including the audit's `tf_sec=300` coverage math,
+(c) a provisional-bar policy with scorer re-validation (a 60s bar
+necessarily forms mid-sweep). Tracked in WS3 as a design-stage item,
+not started; do not add `"1m"` to `INTERVALS` without that design.
 
 ## 3. Provisional vs closed bars — DECIDED: closed-only, made explicit
 
@@ -76,6 +81,8 @@ design stage, not a flag.
 
 - Scan-phase duration instrumentation inside `app.scan_once()`
   (sweep-level duration is delivered).
-- Live/1m: venue probe of Min1 + request-budget design (see §2).
+- Live/1m: Min1 venue support VERIFIED (2026-10-16 probe); remaining
+  design (see §2): consumer loop speed, separate 1m archive namespace,
+  provisional-bar policy.
 - Provisional-vs-closed: decided closed-only (§3); revisit only with a
   research requirement.

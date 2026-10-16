@@ -44,8 +44,10 @@ GET /funding?coin=BTC&limit=1000
   guarantees chronological), sliced to the last `limit` rows.
 - Response data (exact keys, no extras):
   `{coin, rows: [{ts, rate, cap}], count, data_as_of, last_ts}`
-  where `data_as_of == last_ts` (mirroring `/bars`), and both are
-  `null` when the archive holds zero rows.
+  where `data_as_of == last_ts` (mirroring `/bars`), both `null` when
+  the archive holds zero rows, and `count == len(rows)` AFTER the
+  limit slice is applied (count describes the payload, never the
+  archive total).
 
 ## Limit behavior (mirrors `/bars` exactly)
 
@@ -97,7 +99,7 @@ GET /funding?coin=BTC&limit=1000
 
 - Python service-level tests with a seeded tmp funding dir (injected
   funding_dir): auth gate, 200 shape/order/slice, default/limit
-  clamp/integer errors, missing coin 404, corrupt-file 503,
+  out-of-range-400/integer-400 errors, missing coin 404, corrupt-file 503,
   empty-archive 200-with-nulls, traversal-name 400, envelope shape.
 - `python3 tests/run_all.py` stays green (auto-discovery by
   `test_*.py` naming; no aggregator change).
