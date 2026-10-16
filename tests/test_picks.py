@@ -50,6 +50,11 @@ check("watch = stake-blocked only, by score",
 tmp = tempfile.mkdtemp()
 store = Store(os.path.join(tmp, "p.db"))
 now = int(time.time())
+# Anchor day-bucket signals to mid-UTC-day: the daily_top20 assertions
+# below target days[-1] (today, UTC), so signals logged at now-3600 fall
+# in yesterday's bucket for runs in the first ~2h after UTC midnight.
+# noon-3600 is always inside today's bucket, at any run hour.
+noon = (now // 86400) * 86400 + 12 * 3600
 
 
 def log_at(coin, score, direction, ts, flagged=True):
@@ -75,9 +80,9 @@ check("newest by latest score",
 check("latest row supplies score",
       next(d for d in new if d["coin"] == "NEW1")["score"] == 60, str(new))
 
-s1 = log_at("W1", 90, "LONG", now - 3600)
-s2 = log_at("W2", 80, "SHORT", now - 3600)
-log_at("SH", 99, "LONG", now - 3600, flagged=False)  # shadow: never a pick
+s1 = log_at("W1", 90, "LONG", noon - 3600)
+s2 = log_at("W2", 80, "SHORT", noon - 3600)
+log_at("SH", 99, "LONG", noon - 3600, flagged=False)  # shadow: never a pick
 store.log_outcome(s1, "1h", 2.0, 2.5, -0.5)
 store.log_outcome(s2, "1h", -1.0, 0.2, -1.5)
 
