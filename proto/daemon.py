@@ -96,6 +96,12 @@ def build_parser():
                     help="EXPLICIT operator action: enable episode creation "
                          "after calibration passes. Refused while calibration "
                          "fails, and never moves an epoch already set.")
+    ap.add_argument("--quant-shadow", action="store_true",
+                    help="run the quant shadow watcher once per sweep "
+                         "(research-only events; never affects sweeps)")
+    ap.add_argument("--quant-db", default="data/quant.db")
+    ap.add_argument("--quant-bars", default="data/bars")
+    ap.add_argument("--quant-equity", type=float, default=1000.0)
     return ap
 
 
@@ -232,6 +238,20 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
     measure_cfg = measuremod.measurement_config(
         args.stake, args.log_threshold,
         getattr(args, "leverage_cap", None))
+    # Quant shadow watcher (Task 2): lazy imports only under the flag,
+    # constructed once before the loop. A failed init is reported and
+    # leaves the watcher disabled — the loop below never depends on it.
+    quant_watcher = None
+    if getattr(args, "quant_shadow", False):
+        try:
+            from .quant.engine import Watcher as _QuantWatcher
+            from .quant.qstore import QuantStore as _QuantStore
+            quant_watcher = _QuantWatcher(
+                getattr(args, "quant_bars", "data/bars"),
+                _QuantStore(getattr(args, "quant_db", "data/quant.db")),
+                equity=getattr(args, "quant_equity", 1000.0))
+        except Exception as e:
+            print(f"quant init FAILED: {type(e).__name__}: {e}", flush=True)
 
     run_id = f"{os.getpid()}-{int(time.time())}"
     n = 0
@@ -370,6 +390,16 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                           f"p99 {stats['gap_p99_s']}s", flush=True)
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] measure FAILED: "
+                          f"{type(e).__name__}: {e}", flush=True)
+            # Quant shadow step: AFTER the measure block, BEFORE sweep
+            # accounting. Guarded on its own — a watcher failure is
+            # reported, never raised, and this block never touches
+            # sweep_ok/collect_ok/sweep_counts/last_* nor calls on_sweep.
+            if quant_watcher is not None:
+                try:
+                    quant_watcher.step()
+                except Exception as e:
+                    print(f"[{time.strftime('%H:%M:%S')}] quant FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
             n += 1
             sweep_counts = None
