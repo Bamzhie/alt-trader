@@ -209,12 +209,25 @@ Verified against code/data, not inherited summaries.
     yet. After `systemctl --user restart altradar.service`, live-verify
     with `curl` on an observed coin (expect 200, ascending rows,
     `count == len(rows)`).
-- Remaining: funding SETTLEMENT history (settle times + settled amounts —
-  needs the per-coin funding endpoint or settlement events, a separate
-  design); mark/index archive; book/spread history; OI series; DEPLOY +
-  live-verify the funding read route (delivered in code, pending restart
-  — see above). UI evidence is WS6. Only 5m OHLCV +
-  funding observations are persisted today.
+- Remaining: mark/index archive; book/spread history; OI series;
+  DEPLOY + live-verify the funding and settlements read routes
+  (delivered in code, pending restart — see above). UI evidence is WS6.
+  Persisted today: 5m OHLCV bars, funding observations, and (as of this
+  change, filling on next backfill/collect) venue-reported funding
+  settlements.
+- Delivered (2026-10-17, WS4 settlement history): venue-reported
+  settled rates via public `/funding_rate/history`
+  (`proto/settlements.py`: `fetch/parse/collect/backfill/collect_recent`
+  + CLI, idempotent by settle_ts, malformed rows counted never
+  zero-filled); append-only `data/funding_settlements/<COIN>.csv.gz`
+  (`settle_ts,settled_rate,cycle_hours`); guarded daemon hook with 24h
+  throttle (never fails the sweep); read-only `GET /settlements`
+  mirroring `/funding` (auth, limits, 404/503/400s, exact keys);
+  `bar_quality` audits the 8h grid via `ts_field="settle_ts"`. No
+  estimation anywhere (no rate_applied, no interpolation, no filled
+  gaps); not fed into scoring, setups, costs, gates, or quant emission.
+  Full spec in `docs/superpowers/specs/2026-10-17-funding-settlement-design.md`,
+  operator reference in `docs/ws4-settlement-history.md`.
 
 ### 5. Quantitative research foundation — SHADOW PATH DELIVERED (engine + hook + status/SSE + Research view + e2e)
 - Deps: WS1 (PIT truth), WS4 (funding/cost inputs).
@@ -310,7 +323,7 @@ Verified against code/data, not inherited summaries.
 ## Outstanding (NOT in this plan — kept visible)
 
 - WS3 beyond R2/R3: 1m/venue-probe design stage; provisional-bar tier (decided against, needs per-bar markers + scorer re-validation to reopen).
-- WS4 beyond funding observations: funding SETTLEMENT history, mark/index archive, book/spread history, OI series, service route for the funding series (code delivered 858201c, deploy pending live-verify).
+- WS4 beyond funding observations: funding SETTLEMENT history (code delivered, deploy pending live-verify), mark/index archive, book/spread history, OI series, service route for the funding series (code delivered 858201c, deploy pending live-verify).
 - WS5 beyond increment 1: evaluation harness, estimators, competing outcomes, calibrated probabilities (proposal §3–§5).
 - WS6 evidence UI: sample-n / CI / calibration / coverage / validation-status display (blocked on WS5 outputs).
 - WS7 beyond the decision log: champion/candidate persistence, outcome-based comparison (blocked on WS5).
