@@ -144,6 +144,10 @@ class EvaluationReport:
     missing_cost_coins: List[str] = field(default_factory=list)
     git_rev: Optional[str] = None
     bar_digests: Dict[str, str] = field(default_factory=dict)
+    funding_digests: Dict[str, str] = field(default_factory=dict)
+    settlement_digests: Dict[str, str] = field(default_factory=dict)
+    incomplete_boundary_events: int = 0
+    incomplete_boundary_denominator: int = 0
     produced_at: int = field(default_factory=lambda: int(time.time()))
 
     def to_json(self) -> str:
@@ -165,8 +169,10 @@ def _git_rev() -> Optional[str]:
         return None
 
 
-def _bar_digest(data_dir: str, coin: str) -> Optional[str]:
-    """SHA256 of a bar archive file for reproducibility."""
+def _archive_digest(data_dir: str, coin: str) -> Optional[str]:
+    """SHA256 of an archive file for reproducibility."""
+    if data_dir is None:
+        return None
     path = os.path.join(data_dir, f"{coin}.csv.gz")
     if not os.path.exists(path):
         return None
@@ -175,6 +181,46 @@ def _bar_digest(data_dir: str, coin: str) -> Optional[str]:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _bar_digest(data_dir: str, coin: str) -> Optional[str]:
+    """SHA256 of a bar archive file for reproducibility."""
+    return _archive_digest(data_dir, coin)
+
+
+def _funding_digest(funding_dir: str, coin: str) -> Optional[str]:
+    """SHA256 of a funding observation archive file."""
+    return _archive_digest(funding_dir, coin)
+
+
+def _settlement_digest(settlements_dir: str, coin: str) -> Optional[str]:
+    """SHA256 of a settlement archive file."""
+    return _archive_digest(settlements_dir, coin)
+
+
+def _event_exit_ts(ev, geom_idx: int, cfg: QuantConfig) -> Optional[int]:
+    """Compute the actual exit timestamp for an event's selected geometry/side.
+
+    The event stores ``exit_offset`` per (geometry, side) slot, where
+    exit_offset is the 0-based bar offset from the entry bar (the open of
+    bar i+1).  The entry bar timestamp is ``ev.ts + BAR_S`` (signal bar
+    open + one bar), so:
+
+        exit_ts = ev.ts + BAR_S + exit_offset[k] * BAR_S
+
+    For TP/SL exits the offset is < horizon_bars (early exit); for TIME
+    exits the offset is horizon_bars - 1 (full horizon).  Funding is
+    charged only through this actual exit timestamp.
+    """
+    if not hasattr(ev, "exit_offset"):
+        return None
+    k = geom_idx * 2 + (0 if ev.side > 0 else 1)
+    try:
+        off = ev.exit_offset[k]
+    except (IndexError, AttributeError):
+        return None
+    # Entry is at the open of bar i+1 = ev.ts + BAR_S; exit is at bar i+1+off
+    return ev.ts + (1 + off) * BAR_S
 
 
 def evaluate(data_dir: str, funding_dir: Optional[str] = None,
@@ -237,26 +283,44 @@ def evaluate(data_dir: str, funding_dir: Optional[str] = None,
                 import tempfile
                 out_dir = tempfile.mkdtemp(prefix="ws5-eval-")
             os.makedirs(out_dir, exist_ok=True)
-            h, h2 = R.holdout_once(events, meta, selected, out_dir, cfg)
-            holdout = R.summarize(h, 3000)
-            holdout_slip2x = R.summarize(h2, 1500)
+            # holdout_once enforces the one-shot lock; a second attempt
+            # raises SystemExit. Catch it so the harness reports refusal
+            # gracefully instead of crashing.
+            try:
+                h, h2 = R.holdout_once(events, meta, selected, out_dir, cfg)
+                holdout = R.summarize(h, 3000)
+                holdout_slip2x = R.summarize(h2, 1500)
+            except SystemExit:
+                pass  # lock refuses a second look; holdout stays None
 
     # 5. Cost attribution analysis
-    missing_cost_coins = _find_missing_cost_coins(
-        events, funding_dir, settlements_dir, splits, cfg)
+    missing_cost_coins, incomplete = _find_missing_cost_coins(
+        events, funding_dir, settlements_dir, splits, cfg, dev_val)
 
     # 6. Reproducibility metadata
     ch = cfg.config_hash()
     csh = cost_hash(funding_dir, settlements_dir, cfg)
 
-    # Bar digests for key coins
+    # Bar digests for ALL coins (no cap) whose data contributes to metrics
+    coins_in_eval = sorted(set(e.coin for e in events))
     bar_digests = {}
-    for coin in ["BTC", "ETH"] + sorted(set(e.coin for e in events)):
+    for coin in ["BTC", "ETH"] + coins_in_eval:
         d = _bar_digest(data_dir, coin)
         if d is not None:
             bar_digests[coin] = d
-        if len(bar_digests) > 20:  # cap for report size
-            break
+
+    # Archive digests for every coin whose data contributes to reported
+    # metrics, covering both funding observations and settlements.
+    funding_digests = {}
+    settlement_digests = {}
+    contributing_coins = sorted(set(e.coin for e in events) | {"BTC", "ETH"})
+    for coin in contributing_coins:
+        fd = _funding_digest(funding_dir, coin) if funding_dir else None
+        sd = _settlement_digest(settlements_dir, coin) if settlements_dir else None
+        if fd is not None:
+            funding_digests[coin] = fd
+        if sd is not None:
+            settlement_digests[coin] = sd
 
     report = EvaluationReport(
         config_hash=ch,
@@ -275,6 +339,10 @@ def evaluate(data_dir: str, funding_dir: Optional[str] = None,
         missing_cost_coins=missing_cost_coins,
         git_rev=_git_rev(),
         bar_digests=bar_digests,
+        funding_digests=funding_digests,
+        settlement_digests=settlement_digests,
+        incomplete_boundary_events=incomplete["events"],
+        incomplete_boundary_denominator=incomplete["denominator"],
     )
 
     # Write report
@@ -290,23 +358,60 @@ def evaluate(data_dir: str, funding_dir: Optional[str] = None,
 
 
 def _find_missing_cost_coins(events, funding_dir, settlements_dir,
-                             splits, cfg) -> List[str]:
+                             splits, cfg, dev_val=None) -> Tuple[List[str], Dict[str, int]]:
     """Identify coins that have events in the evaluation windows but
     no funding or settlement archive (cost data missing -- surfaced, not
-    estimated)."""
+    estimated).
+
+    Uses the selected config's actual trade side and per-event exit
+    timestamps (derived from the barrier labeler's exit_offset) so that
+    funding is charged only through the real exit, not the max horizon.
+
+    Also tracks events excluded from funding-adjusted metrics due to
+    incomplete boundary coverage (funding data exists but does not cover
+    the full [open_ts, exit_ts) window for that event).
+
+    Returns (missing_coins, incomplete_info) where incomplete_info has
+    keys "events" (count excluded) and "denominator" (total events in
+    windows with cost data available).
+    """
     from .cost_attribution import funding_cost
     coins_with_events = sorted(set(e.coin for e in events))
     if not coins_with_events:
-        return []
-    # Derive the archive start timestamp from the earliest event bar_ts
-    archive_start = min(getattr(e, "ts", 0) for e in events)
-    open_ts = int(archive_start + splits.dev[0] * 86400)
-    close_ts = int(archive_start + splits.holdout[1] * 86400)
+        return [], {"events": 0, "denominator": 0}
+
+    # Determine the selected geometry for exit-timestamp computation
+    selected = dev_val.get("selected", {}) if dev_val else {}
+    geom_idx = selected.get("geom_idx", 0)
+
     missing = []
+    incomplete_events = 0
+    denominator = 0
+
     for coin in coins_with_events:
-        result = funding_cost(
-            coin, open_ts, close_ts,
-            funding_dir=funding_dir, settlements_dir=settlements_dir)
-        if result.missing:
-            missing.append(coin)
+        # Check each event for this coin individually with its actual
+        # open/exit timestamps and trade side
+        coin_events = [e for e in events if e.coin == coin]
+        for ev in coin_events:
+            # Use the selected geometry's exit offset to compute actual exit ts
+            exit_ts = _event_exit_ts(ev, geom_idx, cfg)
+            if exit_ts is None:
+                # Fall back to max-horizon close for boundary checking
+                exit_ts = ev.ts + MAX_HORIZON_BARS * BAR_S
+            # Entry is at open of bar i+1
+            open_ts = ev.ts + BAR_S
+            side = ev.side
+            result = funding_cost(
+                coin, open_ts, exit_ts,
+                funding_dir=funding_dir, settlements_dir=settlements_dir,
+                side=side)
+            denominator += 1
+            if result.missing:
+                if coin not in missing:
+                    missing.append(coin)
+            elif result.cost is None:
+                # Data exists but doesn't cover the window -> incomplete
+                incomplete_events += 1
+
+    return missing, {"events": incomplete_events, "denominator": denominator}
     return missing

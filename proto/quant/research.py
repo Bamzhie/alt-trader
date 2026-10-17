@@ -36,7 +36,7 @@ MAX_H = max(g.horizon_bars for g in grid_geometries())
 
 class Event:
     __slots__ = ("coin", "ts", "day", "fam", "param", "side", "qv24", "sigma",
-                 "rvol", "z1h", "z4h", "btc7d", "gross", "kind")
+                 "rvol", "z1h", "z4h", "btc7d", "gross", "kind", "exit_offset")
 
 
 def _btc7d_map(btc):
@@ -98,13 +98,15 @@ def collect_events(data_dir, cfg=DEFAULT, coins=None, progress=False):
                     continue
                 gross = array.array("d")
                 kind = array.array("b")
+                exit_offset = array.array("H")  # 0-based bars after entry bar
                 for g in geoms:
                     dd = B.stop_distance(snap.sigma, g.horizon_bars, g.k_stop)
                     for side in (1, -1):
-                        gr, k, _ = B.label_path(path, side, dd, g.horizon_bars,
-                                                g.r_tp)
+                        gr, k, off = B.label_path(path, side, dd, g.horizon_bars,
+                                                  g.r_tp)
                         gross.append(gr)
                         kind.append({"TP": 0, "SL": 1, "TIME": 2}[k])
+                        exit_offset.append(off)
                 for fam, param, side in cands:
                     ev = Event()
                     ev.coin, ev.ts = coin, snap.ts
@@ -114,6 +116,7 @@ def collect_events(data_dir, cfg=DEFAULT, coins=None, progress=False):
                     ev.z1h, ev.z4h = snap.z1h, snap.z4h
                     ev.btc7d = b7.get(snap.ts)
                     ev.gross, ev.kind = gross, kind
+                    ev.exit_offset = exit_offset
                     events.append(ev)
         if progress and (ci + 1) % 10 == 0:
             print(f"  collected {ci + 1}/{len(names)} coins, "

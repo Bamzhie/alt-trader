@@ -40,9 +40,12 @@ class FundingCostResult:
 
     cost: float | None -- accumulated funding cost as a fraction of
         notional (additive to the round-trip friction cost_frac).
-        ``None`` means funding data was missing for this coin over the
-        holding window -- the harness must surface this as insufficient
-        evidence rather than treating it as zero cost.
+        Sign follows the trade side: a positive rate is a cost for a
+        long (side=+1) and a credit for a short (side=-1), and vice-versa
+        for negative rates.  ``None`` means funding data was missing for
+        this coin over the holding window -- the harness must surface
+        this as insufficient evidence rather than treating it as zero
+        cost.
     observations: int -- how many funding observations contributed.
     missing: bool -- True when the coin has NO funding archive at all
         (the coin was never observed by the funding collector).
@@ -103,17 +106,28 @@ def _interpolate_rate_at(obs_tss: List[int], obs_rates: List[float],
 
 
 def _accumulate_funding(obs_tss: List[int], obs_rates: List[float],
-                        open_ts: int, close_ts: int) -> Tuple[Optional[float], int]:
+                        open_ts: int, close_ts: int,
+                        side: int = 1) -> Tuple[Optional[float], int]:
     """Accumulate funding cost over [open_ts, close_ts) using the
     piecewise-constant observation series.
 
-    Funding on MEXC is paid/received at settle boundaries.  A position
-    open at ``open_ts`` and closed at ``close_ts`` accrues the rate that
-    is in effect at each settle boundary between them.
+    Funding on MEXC is paid/received at settle boundaries.  The
+    observation timestamps **are** the settle boundaries (each observation
+    records the rate in effect at that settlement).  A position opened at
+    ``open_ts`` and closed at ``close_ts`` accrues the rate in effect at
+    each settle boundary (observation timestamp) in (open_ts, close_ts).
 
-    Returns (total_cost_or_None, n_observations_used).  Total is None when
-    no observation covers the open time (the coin wasn't being observed
-    when the position opened -- missing, not zero).
+    The ``side`` parameter determines the sign of the cost:
+      * Positive rates are a cost for longs (side=+1) – you pay the rate.
+      * Positive rates are a credit for shorts (side=-1) – you receive the
+        rate (your P&L improves).
+      * Negative rates reverse the effect.
+
+    Returns (total_cost_or_None, n_observations_used).  Total is None
+    when no observation covers the open time (the coin wasn't being
+    observed when the position opened -- missing, not zero).  Total is
+    0.0 with n=0 when the position closes before the first settle boundary
+    after open_ts.
     """
     if not obs_tss:
         return None, 0
@@ -123,18 +137,15 @@ def _accumulate_funding(obs_tss: List[int], obs_rates: List[float],
         return None, 0
     total = 0.0
     n = 0
-    # Walk settle boundaries between open and close
-    first_settle = _next_settle_after(open_ts)
-    if first_settle is None or first_settle >= close_ts:
-        # Position closed before the next settle boundary -> no settle occurs
-        return 0.0, 0
-    settle_ts = first_settle
-    while settle_ts < close_ts:
-        rate = _interpolate_rate_at(obs_tss, obs_rates, settle_ts)
-        if rate is not None:
-            total += rate
-            n += 1
-        settle_ts += SETTLE_SECONDS
+    # Walk observation timestamps (settle boundaries) strictly after open_ts
+    # and before close_ts.  The rate in effect at each boundary is the
+    # piecewise-constant rate (last obs <= that boundary).
+    for ts, rate in zip(obs_tss, obs_rates):
+        if open_ts < ts < close_ts:
+            r = _interpolate_rate_at(obs_tss, obs_rates, ts)
+            if r is not None:
+                total += r * side
+                n += 1
     return total, n
 
 
@@ -162,13 +173,22 @@ def funding_cost(
     close_bar_ts: int,
     funding_dir: Optional[str] = None,
     settlements_dir: Optional[str] = None,
+    side: int = 1,
 ) -> FundingCostResult:
     """Compute the funding cost for holding ``coin`` from
     ``open_bar_ts`` to ``close_bar_ts``.
 
     Cost is the sum of venue-reported rates at each settle boundary in
-    [open, close).  Uses settlements first (venue-reported settled rates)
-    if available, then falls back to observations (point-in-time).
+    [open, close), multiplied by ``side``:
+      * side=+1 (long): positive rates are costs (paid).
+      * side=-1 (short): positive rates are credits (received).
+
+    Uses settlements first (venue-reported settled rates) if available,
+    then falls back to observations (point-in-time).
+
+    ``close_bar_ts`` should be the event's ACTUAL exit timestamp (TP/SL
+    exit early, only TIME exits go to the full horizon).  Funding is
+    charged only through that exit.
 
     Returns a FundingCostResult. ``missing=True`` means no funding data
     exists for this coin at all. ``cost=None`` (with missing=False) means
@@ -194,7 +214,7 @@ def funding_cost(
     # Try settlements first (venue-reported settled rates are more precise)
     if settle_tss:
         cost, n = _accumulate_funding(settle_tss, settle_rates,
-                                      open_bar_ts, close_bar_ts)
+                                      open_bar_ts, close_bar_ts, side)
         if cost is not None:
             return FundingCostResult(
                 cost=cost, observations=n, missing=False,
@@ -203,7 +223,7 @@ def funding_cost(
     # Fall back to observations
     if obs_tss:
         cost, n = _accumulate_funding(obs_tss, obs_rates,
-                                      open_bar_ts, close_bar_ts)
+                                      open_bar_ts, close_bar_ts, side)
         if cost is not None:
             return FundingCostResult(
                 cost=cost, observations=n, missing=False,
