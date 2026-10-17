@@ -48,6 +48,15 @@ def main(argv=None):
     g.add_argument("--research", default="data/quant_research/research.json")
     g.add_argument("--db", default="data/quant.db")
 
+    ev = sub.add_parser("evaluate")
+    ev.add_argument("--data", default="data/bars")
+    ev.add_argument("--funding-dir", default="data/funding")
+    ev.add_argument("--settlements-dir", default="data/funding_settlements")
+    ev.add_argument("--out", default="data/quant_research")
+    ev.add_argument("--holdout", action="store_true",
+                    help="spend the one-shot holdout (only if val kept the config)")
+    ev.add_argument("--coins", default=None)
+
     a = ap.parse_args(argv)
 
     if a.cmd == "research":
@@ -113,6 +122,32 @@ def main(argv=None):
         print("PASS" if ok else "NOT PROMOTED")
         for x in why:
             print("  -", x)
+        return 0
+    if a.cmd == "evaluate":
+        from . import eval_harness
+        from .config import DEFAULT as _cfg
+        # Filter bar archive to requested coins if --coins given
+        fargs = [x for x in ("--coins", a.coins) if x is not None]
+        report = eval_harness.evaluate(
+            a.data,
+            funding_dir=a.funding_dir if os.path.isdir(a.funding_dir) else None,
+            settlements_dir=a.settlements_dir if os.path.isdir(a.settlements_dir) else None,
+            cfg=_cfg,
+            spend_holdout=a.holdout,
+            out_dir=a.out)
+        print(report.to_json())
+        if report.leakage_violations:
+            print("LEAKAGE VIOLATIONS:", file=sys.stderr)
+            for v in report.leakage_violations:
+                print(f"  - {v}", file=sys.stderr)
+        if report.missing_cost_coins:
+            print(f"\nFunding cost data MISSING for {len(report.missing_cost_coins)} "
+                  f"coins (surfaced, not estimated):", file=sys.stderr)
+            for c in report.missing_cost_coins[:20]:
+                print(f"  - {c}", file=sys.stderr)
+            if len(report.missing_cost_coins) > 20:
+                print(f"  ... and {len(report.missing_cost_coins) - 20} more",
+                      file=sys.stderr)
         return 0
     return 1
 

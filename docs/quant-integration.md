@@ -47,11 +47,27 @@ Separation (structural, not conventional):
 python3 -m proto.quant research --data <bars> --out <tmp-out>   # no --holdout: holdout stays unevaluated
 python3 -m proto.quant research --data <bars> --out <tmp-out> --holdout  # once-only; creates holdout_evaluated.json lock
 
+# WS5 evaluation harness: research splits on production bars with funding cost attribution
+python3 -m proto.quant evaluate --data data/bars \
+    --funding-dir data/funding \
+    --settlements-dir data/funding_settlements \
+    --out <tmp-out>              # research-only; never writes data/, never starts service
+python3 -m proto.quant evaluate --data data/bars --funding-dir data/funding --holdout \
+    --out <tmp-out>             # spends the one-shot holdout (lock enforced)
+
 python3 -m proto.quant watch --data <bars> --db <quant.db> --once   # single step; fresh process replays silently
 python3 -m proto.quant report --db <quant.db>    # events/open/resolved denominators + TP/SL/TIME vs driftless null
 python3 -m proto.quant status --db <quant.db>    # config_hash, pause flags, event count
 python3 -m proto.quant gates --research <out/research.json> --db <quant.db>  # promotion check (records pass/fail)
 ```
+
+The `evaluate` command (WS5 evaluation harness) runs `research.collect_events`
++ `run_stage_dev_val` + one-shot holdout over production bar archives with
+funding-cost attribution from the WS4 archives. Splits, embargo, and the
+holdout lock are inherited from the research harness. Missing funding data
+is surfaced as `missing_cost_coins`, never zero-filled. The report carries
+`config_hash`, `cost_hash`, `git_rev`, and `bar_digests` for reproducibility.
+See `docs/ws5-evaluation-harness.md` for the full operator reference.
 
 Daemon hook (opt-in, default off):
 

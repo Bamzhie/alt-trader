@@ -327,6 +327,32 @@ Verified against code/data/live probes/tests, not inherited summaries.
   `docs/quant-analytics-system-proposal.md` §3–§5 beyond the registry and
   the shadow path (evaluation harness, Hurst/MF-DFA, competing outcomes,
   calibrated probs, clustered uncertainty) is unbuilt.
+- Delivered (2026-10-17, WS5 evaluation harness):
+  `proto/quant/cost_attribution.py` — funding cost attribution from the
+  WS4 archives. Attaches venue-reported funding rates to event holding
+  windows using the settlement archive (`data/funding_settlements/`) first,
+  falling back to the observation archive (`data/funding/`). Missing
+  funding data for a coin is surfaced as ``missing=True`` / ``cost=None``
+  — never zero-filled or estimated. The cost is additive to the existing
+  round-trip friction in ``barrier.net_r``; funding is included in net R
+  only when the archive covers the position window. Reproducible via
+  ``config_hash(funding_dir, settlements_dir, cfg)`` (SH-16 of the
+  quant config hash + archive paths + settle-seconds).
+  `proto/quant/eval_harness.py` + CLI `python3 -m proto.quant evaluate`
+  — runs `research.collect_events` → `run_stage_dev_val` → one-shot
+  holdout over production bar archives with the dev/val/holdout splits
+  and embargo from `config.Splits`. The split discipline is the same as
+  the research harness (embargo >= max horizon + entry bar, holdout
+  once-only via `holdout_evaluated.json` lock). Explicit leakage check
+  (`check_no_leakage`) asserts no event window crosses a split boundary.
+  Reports carry config_hash, cost_hash, git_rev, bar file digests, and
+  the list of coins with missing cost data. All output goes to a temp or
+  ``--out`` directory -- production `data/` is never written, the service
+  is never restarted, and no quant.db is created. Verification:
+  `tests/test_ws5_eval_harness.py` → ALL PASS (37 checks covering cost
+  attribution, missing-data handling, split resolution, leakage checks,
+  holdout lock, reproducibility metadata, and no-production-write
+  guarantees); all pre-existing quant and WS4 tests remain green.
 
 ### 6. Evidence communication in app — PARTIAL (Research view delivered; broader evidence display not started)
 - Deps: WS5 outputs to display; WS1/WS4 coverage labels.
@@ -384,10 +410,12 @@ Verified against code/data/live probes/tests, not inherited summaries.
   `/funding` is live-verified. Mark/index price history is **DELIVERED in
   code** with operator reference `docs/ws4-mark-index-history.md`; deploy
   pending.
-- WS5 beyond increment 1: live-data evaluation evidence (engine on
-  production bars with funding-archive costs), a calibration record,
-  evaluation harness, estimators, competing outcomes, calibrated
-  probabilities (proposal §3–§5). No rule has passed promotion.
+- WS5 beyond delivered work: calibration record (engine on production
+  bars), estimators (Hurst/MF-DFA), competing outcomes (stop/tp/time/
+  invalidation/censor per proposal §3.4), calibrated probabilities
+  (proposal §3–§5). No rule has passed promotion. The evaluation harness
+  and cost attribution are delivered and tested; the calibration run on
+  production data is research-only (SHADOW, read-only, output to temp).
 - WS6 evidence UI: sample-n / CI / calibration / coverage /
   validation-status display (blocked on WS5 outputs).
 - WS7 beyond the decision log: champion/candidate persistence,
@@ -459,6 +487,15 @@ Verified against code/data/live probes/tests, not inherited summaries.
 |  (52 checks). No estimation; not fed into scoring/costs/gates/emission.
 |  Operator reference docs/ws4-mark-index-history.md. Deploy PENDING (live
 |  service not restarted). NOTE: no raw archive was ever rewritten.
+|- Stage J (WS5 evaluation harness, complete 2026-10-17):
+|  proto/quant/cost_attribution.py (funding cost from WS4 archives,
+|  missing-not-zero, reproduction hash) + proto/quant/eval_harness.py
+|  (research splits + leakage check + holdout-once + reproducibility
+|  metadata on production data); tests/test_ws5_eval_harness.py
+|  (37 checks: cost attribution, missing-data, splits, leakage,
+|  holdout lock, no-production-write). CLI: python3 -m proto.quant
+|  evaluate. All output to temp/ --data/ append-only-or-untouched,
+|  service NOT restarted.
 
 ## Handoff (committed-state reference — NOT part of the stage log above)
 
@@ -494,26 +531,20 @@ Verified against code/data/live probes/tests, not inherited summaries.
 - `80991bb` feat: scanner resilience
 - Stage 1 audit: `8073b63`, `0bd1938`, `f11b789` (carried forward, untouched)
 
-### Next priorities by workstream
-- WS4 (market-data history): DELIVERED in code — funding observations,
-  venue-reported settlements, and mark/index price history; `/funding`
-  live-verified. DEPLOY PENDING: `/settlements`, `/prices`, and
-  `/quant-status` routes live-verify (restart not authorized).
-  OPEN-BLOCKED: OI series + book/spread history (no public history
-  endpoint — do not fabricate). The audit pattern
-  (`proto/bar_quality.py`) is reused by every archive.
-- WS5 (research foundation): hypothesis registry + shadow engine
-  DELIVERED; NOT STARTED: live-data evaluation evidence, calibration
-  record, evaluation harness, purge/embargo splits usage, competing
-  outcomes, calibrated probabilities (proposal §3–§5). The promotion gate
-  states its outcome inputs are unbuilt rather than inventing them; no
-  rule has passed.
+- WS5 (research foundation): hypothesis registry + shadow engine +
+  evaluation harness + cost attribution DELIVERED; IN PROGRESS:
+  calibration run on production bars (research-only, SHADOW, output to
+  temp), competing outcomes, calibrated probabilities (proposal §3–§5).
+  The evaluation harness runs the research splits (dev/val/holdout with
+  embargo) on production data with funding-cost attribution; the
+  promotion gate still states outcome inputs are unbuilt. No rule has
+  passed.
 - WS6 (evidence-focused UI): Research view DELIVERED (shadow counts);
   sample-n / CI / calibration / coverage / validation-status display NOT
   STARTED (blocked on WS5 outputs).
 - WS7: decision log file + validator DELIVERED (empty log awaits its
-  first genuine entry); still pending: champion/candidate objects +
-  outcome-based comparison (needs WS5).
+  first genuine entry); still pending: champion/candidate persistence
+  and outcome-based comparison (needs WS5).
 - WS3: 1m design stage (venue probe + request budget + archive
   decision); stale-coins uptime look.
 - The overall quantitative research system is NOT complete: WS4 deploy +
@@ -542,3 +573,5 @@ Verified against code/data/live probes/tests, not inherited summaries.
 - `e80c07c` feat(WS5): quant status route and shadow event
 - `deba410` feat(WS5): guarded quant-shadow daemon hook
 - `2c85807` feat(WS5): vendor quant research-and-shadow engine (additive)
+- (uncommitted, 2026-10-17 WS5 eval harness): proto/quant/cost_attribution.py
+  + proto/quant/eval_harness.py + tests/test_ws5_eval_harness.py
