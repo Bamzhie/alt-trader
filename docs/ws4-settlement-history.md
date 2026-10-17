@@ -60,7 +60,12 @@ python3 -m proto.settlements collect-recent --data-dir data/funding_settlements
 
 The daemon runs the incremental pass on the collect cadence with a 24h
 throttle file (`data/funding_settlements/.last_collect`), guarded like
-funding: a settlements failure prints and never fails the bars sweep.
+funding: a settlements failure prints and never fails the bars sweep. The
+throttle uses total-failure-aware semantics: if every coin errors on a
+collect pass (wholesale venue outage), the throttle file is NOT written,
+so the next sweep retries immediately; if at least one coin succeeds, the
+throttle is marked and the failing coins retry on the next explicit
+backfill/collect-recent run.
 
 ## Route contract
 

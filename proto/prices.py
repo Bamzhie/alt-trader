@@ -175,14 +175,25 @@ def read_prices(data_dir, series, coin):
 def append_prices(data_dir, series, coin, rows):
     """Append candles; return the count of NEW rows.
 
-    Dedupes by ts against what is already on disk (re-fetching the same
-    window records nothing), writes in append order, never rewrites.
+    Dedupes by ts both against what is already on disk and within the
+    supplied batch (first row wins on conflict), writes in append order,
+    never rewrites. Re-fetching the same window records nothing.
     """
     _check_series(series)
     os.makedirs(_series_dir(data_dir, series), exist_ok=True)
     seen = {r["ts"] for r in read_prices(data_dir, series, coin)}
-    new = [r for r in sorted(rows, key=lambda r: r["ts"])
-           if r["ts"] not in seen]
+    # Dedupe within the batch too: a duplicate ts in the same call would
+    # otherwise be appended twice (the archive `seen` set only covers what
+    # is already on disk). First row wins, consistent with parse_page's
+    # duplicate_ts policy.
+    batch_seen = set()
+    new = []
+    for r in sorted(rows, key=lambda r: r["ts"]):
+        ts = r["ts"]
+        if ts in seen or ts in batch_seen:
+            continue
+        batch_seen.add(ts)
+        new.append(r)
     if not new:
         return 0
     p = _path(data_dir, series, coin)
@@ -331,14 +342,57 @@ def _throttle_mark(data_dir, now=None):
         f.write(f"{now}\n")
 
 
+def _collect_outcome(out):
+    """Classify a collect_recent result for throttle marking.
+
+    Returns ``("success", n_coins)`` when at least one coin recorded rows
+    (even if others errored), ``("error", 0)`` when every coin failed or
+    no coins were attempted. Partial success still gets its rows kept;
+    total failure leaves the throttle unmarked so the next sweep retries.
+    """
+    total_new = 0
+    total_coins = 0
+    any_success = False
+    any_attempted = False
+    for series_results in out.values():
+        for coin, res in series_results.items():
+            any_attempted = True
+            if "error" not in res and res.get("new", 0) > 0:
+                any_success = True
+                total_new += res["new"]
+            total_coins += 1
+    if not any_attempted:
+        return ("error", 0)
+    return ("success" if any_success else "error", total_new)
+
+
 def maybe_collect(data_dir=None, series=SERIES, every_s=COLLECT_EVERY_S,
                   now=None):
-    """Daemon entry: collect when the daily throttle is due, else ``{}``."""
+    """Daemon entry: collect when the daily throttle is due, else ``{}``.
+
+    Throttle semantics on failure:
+    - **Total failure** (every coin errored, or nothing was attempted):
+      the throttle file is NOT marked, so the next daemon sweep retries
+      the collection immediately (subject to the per-sweep cadence). This
+      prevents a wholesale venue outage from silencing recovery for a full
+      day.
+    - **Partial failure** (some coins errored, others recorded rows):
+      the throttle IS marked — successful rows are preserved, and the
+      errored coins will be retried on the next backfill/collect-recent
+      run. Marking avoids re-pulling the entire universe on every sweep
+      when the archive is already growing.
+    - **Success** (at least one coin recorded rows): throttle marked as
+      before.
+    """
     if data_dir is None:
         data_dir = PRICES_DIR
     if not _throttle_due(data_dir, every_s, now):
         return {}
     out = collect_recent(data_dir, series=series, now=now)
+    outcome, n_new = _collect_outcome(out)
+    if outcome == "error":
+        # Do NOT mark the throttle on total failure — retry next sweep.
+        return out
     _throttle_mark(data_dir, now)
     return out
 

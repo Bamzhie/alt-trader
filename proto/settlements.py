@@ -228,16 +228,26 @@ def read_settlements(data_dir, coin):
 def append_settlements(data_dir, coin, rows):
     """Append settlements; return the count of NEW rows.
 
-    Dedupes by settle_ts against what is already on disk (re-fetching
-    the same page records nothing), writes in append order, never
-    rewrites.
+    Dedupes by settle_ts both against what is already on disk and within
+    the supplied batch (first row wins on conflict), writes in append
+    order, never rewrites. Re-fetching the same page records nothing.
     """
     if data_dir is None:
         data_dir = SETTLEMENTS_DIR
     os.makedirs(data_dir, exist_ok=True)
     seen = {r["settle_ts"] for r in read_settlements(data_dir, coin)}
-    new = [r for r in sorted(rows, key=lambda r: r["settle_ts"])
-           if r["settle_ts"] not in seen]
+    # Dedupe within the batch too: a duplicate settle_ts in the same call
+    # would otherwise be appended twice (the archive `seen` set only
+    # covers what is already on disk). First row wins, consistent with
+    # parse_page's duplicate_ts policy.
+    batch_seen = set()
+    new = []
+    for r in sorted(rows, key=lambda r: r["settle_ts"]):
+        ts = r["settle_ts"]
+        if ts in seen or ts in batch_seen:
+            continue
+        batch_seen.add(ts)
+        new.append(r)
     if not new:
         return 0
     p = _path(data_dir, coin)
@@ -383,14 +393,47 @@ def _throttle_mark(data_dir, now=None):
         f.write(f"{now}\n")
 
 
+def _collect_outcome(out):
+    """Classify a collect_recent result for throttle marking.
+
+    Returns ``("success", 0)`` when at least one coin recorded rows,
+    ``("error", 0)`` when every coin errored or no coins were attempted.
+    Partial success preserves the throttle mark so we don't re-pull the
+    whole universe every sweep; total failure leaves the throttle unmarked
+    so the next sweep retries.
+    """
+    any_success = False
+    any_attempted = False
+    for res in out.values():
+        any_attempted = True
+        if "error" not in res and res.get("new", 0) > 0:
+            any_success = True
+    if not any_attempted:
+        return ("error", 0)
+    return ("success" if any_success else "error", 0)
+
+
 def maybe_collect(data_dir=SETTLEMENTS_DIR, every_s=COLLECT_EVERY_S,
                   now=None):
-    """Daemon entry: collect when the daily throttle is due, else {}."""
+    """Daemon entry: collect when the daily throttle is due, else {}``.
+
+    Throttle semantics on failure:
+    - **Total failure** (every coin errored, or nothing attempted): the
+      throttle file is NOT marked, so the next daemon sweep retries the
+      collection immediately. Prevents a wholesale venue outage from
+      silencing settlement collection for a full day.
+    - **Partial failure** (some coins errored, others recorded rows):
+      the throttle IS marked — successful rows are preserved, and errored
+      coins retry on the next backfill/collect-recent run.
+    """
     if data_dir is None:
         data_dir = SETTLEMENTS_DIR
     if not _throttle_due(data_dir, every_s, now):
         return {}
     out = collect_recent(data_dir)
+    outcome, _ = _collect_outcome(out)
+    if outcome == "error":
+        return out
     _throttle_mark(data_dir, now)
     return out
 

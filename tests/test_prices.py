@@ -396,7 +396,62 @@ check("route default sibling == module PRICES_DIR for default data_dir",
       f"{os.path.join(os.path.dirname('data/bars'), 'prices')} vs "
       f"{pmod.PRICES_DIR}")
 
-print("\n=== case 8: bar-quality audit covers the hourly grid ===")
+print("\n=== case 8: append_prices dedupes within the batch ===")
+tmp8b = tempfile.mkdtemp(prefix="prices-batch-dedup-")
+# Batch with a duplicate ts: the first row wins, the duplicate is dropped.
+dup_rows = [
+    crow(BASE, c=100.5), crow(BASE, c=200.0),  # duplicate ts, first wins
+    crow(BASE + 3600, c=101.5),
+    crow(BASE + 3600, c=199.0),  # duplicate ts, first wins
+]
+n = pmod.append_prices(tmp8b, "mark", "BTC", dup_rows)
+check("batch dedupe writes 2 rows (4 input, 2 unique ts)", n == 2, str(n))
+rows8b = pmod.read_prices(tmp8b, "mark", "BTC")
+check("batch dedupe keeps first value for duplicate ts",
+      rows8b[0]["c"] == 100.5 and rows8b[1]["c"] == 101.5, str(rows8b))
+
+print("\n=== case 9: maybe_collect throttle on total vs partial failure ===")
+tmp9 = tempfile.mkdtemp(prefix="prices-throttle-fail-")
+# Build a fake collect_recent that returns a total failure.
+total_fail = {"mark": {"BTC": {"series": "mark", "coin": "BTC", "new": 0,
+                                "error": "MexcError: boom"}}}
+real_cr = pmod.collect_recent
+pmod.collect_recent = lambda *a, **k: total_fail
+try:
+    out = pmod.maybe_collect(tmp9)
+    check("total failure still returns the error result",
+          "error" in out["mark"]["BTC"], str(out))
+    # Throttle should NOT be marked — the .last_collect file must not exist.
+    import os.path
+    throttle_exists = os.path.exists(
+        os.path.join(tmp9, pmod.THROTTLE_FILE))
+    check("total failure leaves throttle unmarked",
+          not throttle_exists, "throttle file written on total failure")
+finally:
+    pmod.collect_recent = real_cr
+
+# Partial failure: one coin succeeds, one errors — throttle SHOULD be marked.
+partial_out = {"mark": {
+    "BTC": {"series": "mark", "coin": "BTC", "new": 1, "skipped": {}},
+    "BOOM": {"series": "mark", "coin": "BOOM", "new": 0,
+             "error": "MexcError: boom"}}}
+pmod.collect_recent = lambda *a, **k: partial_out
+# Pre-write a stale throttle file so _throttle_due returns True regardless.
+import time as _time
+old_ts = _time.time() - pmod.COLLECT_EVERY_S - 1
+os.makedirs(tmp9, exist_ok=True)
+with open(os.path.join(tmp9, pmod.THROTTLE_FILE), "w") as f:
+    f.write(f"{int(old_ts)}\n")
+try:
+    out = pmod.maybe_collect(tmp9)
+    check("partial failure returns the mixed result",
+          out == partial_out, str(out))
+    check("partial failure marks the throttle (retry deferred to next backfill)",
+          os.path.exists(os.path.join(tmp9, pmod.THROTTLE_FILE)),
+          "throttle not marked on partial failure")
+finally:
+    pmod.collect_recent = real_cr
+
 from proto.bar_quality import audit_archive_file
 tmp8 = tempfile.mkdtemp(prefix="prices-audit-")
 pmod.append_prices(tmp8, "mark", "BTC", [crow(BASE + i * 3600)

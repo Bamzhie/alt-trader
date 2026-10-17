@@ -347,6 +347,60 @@ check("CLI --ts-field settle grid clean",
       and rep2["missing_count"] == 0 and rep2["invalid_rows"] == 0,
       str({k: rep2[k] for k in ("count", "missing_count", "invalid_rows")}))
 
+print("\n=== case 10: append_settlements dedupes within the batch ===")
+tmp10 = tempfile.mkdtemp(prefix="settle-batch-dedup-")
+# Batch with a duplicate settle_ts: first row wins, duplicate dropped.
+dup_rows = [
+    {"settle_ts": 1792166400, "settled_rate": 0.0001, "cycle_hours": 8},
+    {"settle_ts": 1792166400, "settled_rate": 0.9999, "cycle_hours": 8},  # dup
+    {"settle_ts": 1792137600, "settled_rate": 0.0002, "cycle_hours": 8},
+    {"settle_ts": 1792137600, "settled_rate": 0.5000, "cycle_hours": 8},  # dup
+]
+n = smod.append_settlements(tmp10, "BTC", dup_rows)
+check("batch dedupe writes 2 rows (4 input, 2 unique ts)", n == 2, str(n))
+rows10 = smod.read_settlements(tmp10, "BTC")
+# read_settlements sorts ascending by settle_ts, so the lower ts comes first.
+check("batch dedupe keeps first rate for duplicate ts",
+      rows10[0]["settled_rate"] == 0.0002 and rows10[1]["settled_rate"] == 0.0001,
+      str(rows10))
+
+print("\n=== case 11: maybe_collect throttle on total vs partial failure ===")
+# Total failure: every coin errors → throttle NOT marked.
+total_fail = {"BTC": {"coin": "BTC", "new": 0, "error": "MexcError: boom"}}
+real_recent = smod.collect_recent
+smod.collect_recent = lambda *a, **k: total_fail
+tmp11 = tempfile.mkdtemp(prefix="settle-throttle-fail-")
+try:
+    out = smod.maybe_collect(tmp11)
+    check("total failure returns error result",
+          "error" in out["BTC"], str(out))
+    throttle_exists = os.path.exists(
+        os.path.join(tmp11, smod.THROTTLE_FILE))
+    check("total failure leaves throttle unmarked",
+          not throttle_exists, "throttle file written on total failure")
+finally:
+    smod.collect_recent = real_recent
+
+# Partial failure: one coin succeeds, one errors → throttle marked.
+partial_out = {
+    "BTC": {"coin": "BTC", "new": 1, "skipped": {}},
+    "BOOM": {"coin": "BOOM", "new": 0, "error": "MexcError: boom"}}
+smod.collect_recent = lambda *a, **k: partial_out
+import time as _time
+old_ts = _time.time() - smod.COLLECT_EVERY_S - 1
+os.makedirs(tmp11, exist_ok=True)
+with open(os.path.join(tmp11, smod.THROTTLE_FILE), "w") as f:
+    f.write(f"{int(old_ts)}\n")
+try:
+    out = smod.maybe_collect(tmp11)
+    check("partial failure returns mixed result",
+          out == partial_out, str(out))
+    check("partial failure marks throttle",
+          os.path.exists(os.path.join(tmp11, smod.THROTTLE_FILE)),
+          "throttle not marked on partial failure")
+finally:
+    smod.collect_recent = real_recent
+
 print()
 if FAILURES:
     print(f"FAIL  tests/test_settlements.py  "

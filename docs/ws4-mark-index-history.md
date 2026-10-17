@@ -64,8 +64,23 @@ python3 -m proto.bar_quality --data-dir data/prices/mark  --all --tf-sec 3600
 python3 -m proto.bar_quality --data-dir data/prices/index --all --tf-sec 3600
 ```
 
-The header already uses `ts`, so no `--ts-field` override is needed. Gaps and
-off-grid candles surface as findings; they are never filled.
+The header already uses `ts`, so no `--ts-field` override is needed for price
+archives. Gaps and off-grid candles surface as findings; they are never
+filled.
+
+## Daemon hook
+
+```bash
+python3 -m proto.service --no-scan --prices-dir data/prices
+```
+
+The daemon runs `collect_recent` on the collect cadence with a 24h throttle
+file (`data/prices/.last_collect`), guarded like funding/settlements: a prices
+failure prints `prices FAILED` and never fails the bars sweep. The throttle
+uses total-failure-aware semantics: if every coin errors on a collect pass
+(wholesale venue outage), the throttle file is NOT written, so the next sweep
+retries immediately; if at least one coin succeeds, the throttle is marked and
+the failing coins retry on the next explicit backfill/collect-recent run.
 
 ## Read route
 
@@ -87,10 +102,15 @@ same directory via `--prices-dir`.
 
 ## Collection
 
-- Daemon hook: on the collect cadence, `maybe_collect` runs a bounded recent
-  window per coin/series, throttled to **daily** (`COLLECT_EVERY_S = 86400`)
-  with a **48 h** lookback. It is guarded on its own — a prices failure
-  prints `prices FAILED` and never fails the bars sweep.
+- **Daemon hook**: on the collect cadence, `maybe_collect` runs a bounded
+  recent window per coin/series, throttled to **daily** (`COLLECT_EVERY_S =
+  86400`) with a **48 h** lookback (`RECENT_LOOKBACK_S`). It is guarded on its
+  own — a prices failure prints `prices FAILED` and never fails the bars
+  sweep. The throttle uses total-failure-aware semantics: if every coin
+  errors on a collect pass (wholesale venue outage), the throttle file is
+  NOT written, so the next sweep retries immediately; if at least one coin
+  succeeds, the throttle is marked and the failing coins retry on the next
+  explicit backfill/collect-recent run.
 - Every venue request is paced through `RollingRateLimiter(20, 2.0)` — the
   endpoint's documented cap — not `scan.LIMITER` (20 req/s).
 - Universe = USDT perps minus synthetics, the same filter as

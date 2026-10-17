@@ -89,11 +89,18 @@ match bar and funding-observation names coin for coin.
   Daemon wiring on the collect cadence with a 24h throttle file
   (`data/funding_settlements/.last_collect`, epoch seconds; skip when
   younger than 86400s), guarded exactly like funding (a settlement
-  failure prints and never fails the bars sweep). Rationale for daily:
+  failure prints and never fails the bars sweep). **Throttle retry
+  semantics**: if every coin errors on a collect pass, the throttle file
+  is NOT written, so the next sweep retries immediately; if at least one
+  coin succeeds, the throttle is marked and failing coins retry on the
+  next explicit backfill/collect-recent run. Rationale for daily:
   3 settles/day/coin make sub-daily polling pure venue load.
 - Out-of-order pages/rows: sorted in memory before append; duplicate
   `settle_ts` keeps the first-seen row and counts the conflict (same
   philosophy as `bar_quality` duplicates — reported, never merged).
+  Batch-internal deduplication (within a single append call) also keeps
+  the first row and counts the conflict, so a page with repeated settle_ts
+  values never writes duplicates to the archive.
 - No estimation anywhere: no `rate_applied`, no interpolation, no
   observation backfill. Gaps stay gaps (auditable, see below).
 

@@ -62,8 +62,9 @@ Nothing is merged.
 
 Contract (mirrors `proto/collector.py` / `proto/funding.py` /
 `proto/settlements.py`): append-only gzip CSV per coin, sorted on read,
-deduped by `ts`, never rewritten. Malformed candles are skipped and
-counted per category; transport/venue errors propagate so callers can
+deduped by `ts` (both against the archive and within a single append
+batch — first row wins), never rewritten. Malformed candles are skipped
+and counted per category; transport/venue errors propagate so callers can
 isolate them.
 
 Interval is fixed at `1H` (`Min60`, 3600 s): 2000 candles/request ≈ 83
@@ -113,8 +114,13 @@ row), matching `mexc.klines`.
 - Daemon hook: on the collect cadence, `maybe_collect` is called inside
   its own try/except (a prices failure prints `prices FAILED` and never
   fails the bars sweep), throttled daily (`COLLECT_EVERY_S = 86400`) with
-  a 48h lookback, like settlements. Universe = USDT perps minus
-  synthetics (`canon`/`is_synthetic`), matching bars/funding/settlements.
+  a 48h lookback, like settlements. **Throttle retry semantics**: if every
+  coin errors on a collect pass (wholesale venue outage), the throttle
+  file is NOT written, so the next sweep retries immediately; if at least
+  one coin succeeds, the throttle is marked and the failing coins retry
+  on the next explicit backfill/collect-recent run. Universe = USDT
+  perps minus synthetics (`canon`/`is_synthetic`), matching
+  bars/funding/settlements.
 - CLI: `python3 -m proto.prices backfill|collect-recent [--series
   mark,index] [--data-dir D] [--coins A,B] [--days N] [--json]`.
 
