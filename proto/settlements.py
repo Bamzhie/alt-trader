@@ -16,7 +16,9 @@ import csv
 import gzip
 import math
 import os
+import threading
 import time
+from collections import deque
 
 HEADER = ("settle_ts", "settled_rate", "cycle_hours")
 
@@ -29,9 +31,53 @@ SETTLEMENTS_DIR = "data/funding_settlements"
 COLLECT_EVERY_S = 86400
 THROTTLE_FILE = ".last_collect"
 
+# MEXC documents GET /funding_rate/history at 20 times / 2 seconds.
+# This is a DISTINCT cap from scan.LIMITER (20 req/s for bars/depth):
+# the history endpoint is throttled to 10 req/s (20 requests per a
+# rolling 2-second window) so universe backfill and collect_recent
+# never breach the venue's documented settlement-endpoint limit.
+SETTLEMENT_RATE = 20
+SETTLEMENT_WINDOW_S = 2.0
+
 
 class SettlementError(RuntimeError):
     pass
+
+
+class SettlementRateLimiter:
+    """Thread-safe rolling-window limiter for the settlement endpoint.
+
+    Enforces ``SETTLEMENT_RATE`` requests per ``SETTLEMENT_WINDOW_S``-second
+    sliding window — the documented MEXC cap for /funding_rate/history.
+    Distinct from scan.LIMITER (which is 20 req/s for bars/depth): the
+    history endpoint's actual limit is 20 req per 2 seconds.
+    """
+
+    def __init__(self, rate=SETTLEMENT_RATE, window_s=SETTLEMENT_WINDOW_S):
+        self.rate = rate
+        self.window_s = window_s
+        self._times = deque()
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                while self._times and now - self._times[0] >= self.window_s:
+                    self._times.popleft()
+                if len(self._times) < self.rate:
+                    self._times.append(now)
+                    return
+                wait = self.window_s - (now - self._times[0])
+            time.sleep(max(wait, 0.001))
+
+    def reset(self):
+        """Clear the window (test isolation)."""
+        with self._lock:
+            self._times.clear()
+
+
+SETTLEMENT_LIMITER = SettlementRateLimiter()
 
 
 def _path(data_dir, coin):
@@ -224,7 +270,6 @@ def collect_coin(data_dir, coin, symbol, max_pages=10):
     silent). Transport errors propagate.
     """
     from . import mexc
-    from .scan import LIMITER
     if data_dir is None:
         data_dir = SETTLEMENTS_DIR
     new_total = 0
@@ -233,10 +278,10 @@ def collect_coin(data_dir, coin, symbol, max_pages=10):
     truncated = False
     page = 1
     while True:
-        # Pace every venue request through the shared venue-wide rate
-        # limiter (documented 20 req/s cap) so backfill/collect never
-        # bursts the endpoint the way a raw per-coin loop would.
-        LIMITER.acquire()
+        # Pace every venue request through the settlement-endpoint rate
+        # limiter (documented 20 req / 2s rolling window), distinct from
+        # scan.LIMITER (20 req/s for bars/depth).
+        SETTLEMENT_LIMITER.acquire()
         data = mexc.funding_history(symbol, page, 1000)
         rows, info, skipped = parse_page(symbol, data,
                                          expected_page=page)
@@ -296,17 +341,15 @@ def collect_recent(data_dir=SETTLEMENTS_DIR, coins=None):
     Returns ``{coin: collect_coin result}`` with ``pages`` always 1.
     """
     from . import mexc
-    from .scan import LIMITER
     if data_dir is None:
         data_dir = SETTLEMENTS_DIR
     mapping = dict(coins) if coins is not None else _universe_coins()
     out = {}
     for coin, symbol in sorted(mapping.items()):
         try:
-            # Pace every venue request through the shared venue-wide rate
-            # limiter (documented 20 req/s cap) so incremental collection
-            # never bursts the endpoint either.
-            LIMITER.acquire()
+            # Pace every venue request through the settlement-endpoint
+            # rate limiter (documented 20 req / 2s rolling window).
+            SETTLEMENT_LIMITER.acquire()
             data = mexc.funding_history(symbol, 1, 1000)
             rows, _, skipped = parse_page(symbol, data, expected_page=1)
             added = append_settlements(data_dir, coin, rows)

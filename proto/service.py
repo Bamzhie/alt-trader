@@ -604,6 +604,19 @@ def load_or_create_token(path):
     return token
 
 
+def _resolve_archive_dir(custom_dir, data_dir, default_name):
+    """Resolve a custom archive dir, or the sibling-of-data_dir default.
+
+    Centralizes the sibling-resolution rule so the daemon collector and
+    the route always agree on which directory to use when the operator
+    does not pass an explicit override.
+    """
+    if custom_dir is not None:
+        return custom_dir
+    cfg_data = data_dir or os.path.join("data", "bars")
+    return os.path.join(os.path.dirname(cfg_data), default_name)
+
+
 def _make_handler(token, ready, store_path=None, data_dir=None,
                    funding_dir=None, settlements_dir=None,
                    is_ready=None, scanner_health=None,
@@ -613,12 +626,11 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
     # Resolved once here (per server), never per request. Default: the
     # funding archive sibling of the bars dir (data/funding beside
     # data/bars, matching proto.funding.FUNDING_DIR).
-    cfg_funding = (funding_dir or os.path.join(
-        os.path.dirname(cfg_data), "funding"))
+    cfg_funding = _resolve_archive_dir(funding_dir, data_dir, "funding")
     # Same pattern for the settlement archive: data/funding_settlements
     # beside data/bars (matching proto.settlements.SETTLEMENTS_DIR).
-    cfg_settlements = (settlements_dir or os.path.join(
-        os.path.dirname(cfg_data), "funding_settlements"))
+    cfg_settlements = _resolve_archive_dir(
+        settlements_dir, data_dir, "funding_settlements")
     # Same pattern for the quant shadow store: quant.db beside the bars
     # dir unless the caller passes an explicit path (tests use tmp dirs).
     cfg_quant = (quant_db or os.path.join(
@@ -2111,11 +2123,25 @@ def main(argv=None):
         return 0
     token = args.token or load_or_create_token(args.token_file)
     data_dir = args.data_dir
+    # Resolve --settlements-dir (and --funding-dir) to the sibling-of-data_dir
+    # default BEFORE building the daemon argv, so the embedded collector and
+    # the /settlements route agree on one directory even when --data-dir is
+    # custom and --settlements-dir is omitted. The daemon parser still accepts
+    # --settlements-dir for standalone daemon use; here the service owns the
+    # resolution so route and loop never disagree.
+    resolved_settlements = _resolve_archive_dir(
+        args.settlements_dir, data_dir, "funding_settlements")
+    resolved_funding = _resolve_archive_dir(
+        args.funding_dir, data_dir, "funding")
+    # Rebuild the daemon argv with the resolved value so the embedded loop
+    # uses the same settlements dir the route will resolve to.
     daemon_argv = _daemon_argv_for(args)
+    if args.settlements_dir is None:
+        daemon_argv += ["--settlements-dir", resolved_settlements]
     result = run_service(port=args.port, token=token, db=args.db,
                          data_dir=data_dir,
-                         funding_dir=args.funding_dir,
-                         settlements_dir=args.settlements_dir,
+                         funding_dir=resolved_funding,
+                         settlements_dir=resolved_settlements,
                          lock_path=args.lock_file,
                          daemon_argv=daemon_argv,
                          quant_db=getattr(args, "quant_db", None))
