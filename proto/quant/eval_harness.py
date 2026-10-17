@@ -18,10 +18,36 @@ Purge / embargo rules (reused from `config.Splits`):
     window can leak across.
 
 Cost attribution reuses `cost_attribution.funding_cost`:
-  * Missing funding data for a coin is surfaced as insufficient evidence
-    (the event is excluded from the cost-attributed net-R, not
-    zero-filled).
-  * The cost is added to the round-trip friction in ``barrier.net_r``.
+  * Venue-reported settlement timestamps are the funding events;
+    observation snapshots are mapped to funding events through the
+    documented last-snapshot-of-the-cycle rule (never summed per
+    snapshot). See the `cost_attribution` module docstring.
+  * Missing funding data for a coin, or funding events that cannot be
+    attributed inside a holding window, are surfaced as insufficient
+    evidence (the event is EXCLUDED from the funding-adjusted metric and
+    counted, not zero-filled).
+
+Metrics and denominators -- every window reports two clearly separated
+views (report fields):
+  * ``dev`` / ``val`` / ``holdout`` / ``holdout_slip2x`` are
+    FRICTION-ONLY (fees + slippage), exactly as the research harness
+    computes them. Selection (which config, which window keeps it) uses
+    only these friction numbers.
+  * ``dev_funding_adjusted`` / ``val_funding_adjusted`` /
+    ``holdout_funding_adjusted`` / ``holdout_slip2x_funding_adjusted``
+    re-evaluate the SAME selected config with funding costs added to the
+    round-trip friction. These are REPORTING ONLY (no tuning on val /
+    holdout) and carry explicit denominators: ``n_events`` (selected,
+    tradeable events in the window), ``n_funding_adjusted`` (events with
+    a fully attributed funding cost -- the metric's denominator),
+    ``n_excluded_missing_coin`` and ``n_excluded_incomplete``. When
+    ``n_funding_adjusted`` is 0 the metric is ``None`` -- a
+    funding-adjusted label never hides a friction-only number.
+
+Position side: the trade side comes from the SELECTED RULE's policy
+(``trade_side``: `fade` inverts the break direction, `cont` keeps it) and
+is used consistently for funding signs, exit-offset selection, and the
+coverage accounting.
 
 Reproducibility:
   * The harness records the config hash, the cost-attribution hash, the
@@ -43,8 +69,9 @@ from . import barrier as B
 from . import stats as S
 from . import research as R
 from .config import (DEFAULT, BARS_PER_DAY, BAR_S, Geometry, QuantConfig,
-                     RuleParams, Splits, grid_geometries)
-from .cost_attribution import config_hash as cost_hash, FundingCostResult
+                     RuleParams, grid_geometries)
+from .cost_attribution import (config_hash as cost_hash,
+                               coin_cost_data_missing, funding_cost)
 
 # Maximum label horizon in bars (from the grid). The embargo must cover
 # at least this many bars so no outcome window crosses a boundary.
@@ -132,7 +159,13 @@ def check_no_leakage(events: List, splits: EvalSplits) -> List[str]:
 
 @dataclass
 class EvaluationReport:
-    """Full evaluation report with reproduction metadata."""
+    """Full evaluation report with reproduction metadata.
+
+    ``dev`` / ``val`` / ``holdout`` / ``holdout_slip2x`` are friction-only
+    (fees + slippage).  ``*_funding_adjusted`` re-evaluates the selected
+    config with venue-attributed funding costs added, and carries explicit
+    denominators (n_events, n_funding_adjusted, n_excluded_*).
+    """
     config_hash: str
     cost_hash: str
     splits: Dict[str, Any]
@@ -140,6 +173,10 @@ class EvaluationReport:
     val: Dict[str, Any]
     holdout: Optional[Dict[str, Any]] = None
     holdout_slip2x: Optional[Dict[str, Any]] = None
+    dev_funding_adjusted: Optional[Dict[str, Any]] = None
+    val_funding_adjusted: Optional[Dict[str, Any]] = None
+    holdout_funding_adjusted: Optional[Dict[str, Any]] = None
+    holdout_slip2x_funding_adjusted: Optional[Dict[str, Any]] = None
     leakage_violations: List[str] = field(default_factory=list)
     missing_cost_coins: List[str] = field(default_factory=list)
     git_rev: Optional[str] = None
@@ -198,13 +235,27 @@ def _settlement_digest(settlements_dir: str, coin: str) -> Optional[str]:
     return _archive_digest(settlements_dir, coin)
 
 
-def _event_exit_ts(ev, geom_idx: int, cfg: QuantConfig) -> Optional[int]:
-    """Compute the actual exit timestamp for an event's selected geometry/side.
+def trade_side(ev, rule: RuleParams) -> int:
+    """The actual POSITION side for an event under a rule's policy.
+
+    The candidate event carries the break direction (``ev.side``); the
+    rule's policy maps it to a position: `cont` trades with the break,
+    `fade` trades against it (same convention as
+    ``research.eval_config``: ``side = ev.side if rule.policy == "cont"
+    else -ev.side``).  Funding signs, exit-offset slot selection, and
+    coverage accounting all use THIS side.
+    """
+    return ev.side if rule.policy == "cont" else -ev.side
+
+
+def _event_exit_ts(ev, geom_idx: int, rule: RuleParams) -> Optional[int]:
+    """Compute the actual exit timestamp for an event's selected geometry.
 
     The event stores ``exit_offset`` per (geometry, side) slot, where
     exit_offset is the 0-based bar offset from the entry bar (the open of
-    bar i+1).  The entry bar timestamp is ``ev.ts + BAR_S`` (signal bar
-    open + one bar), so:
+    bar i+1).  The side slot is chosen from the TRADE side (rule policy),
+    matching how the gross return was labeled.  The entry bar timestamp
+    is ``ev.ts + BAR_S`` (signal bar open + one bar), so:
 
         exit_ts = ev.ts + BAR_S + exit_offset[k] * BAR_S
 
@@ -214,13 +265,106 @@ def _event_exit_ts(ev, geom_idx: int, cfg: QuantConfig) -> Optional[int]:
     """
     if not hasattr(ev, "exit_offset"):
         return None
-    k = geom_idx * 2 + (0 if ev.side > 0 else 1)
+    side = trade_side(ev, rule)
+    k = geom_idx * 2 + (0 if side > 0 else 1)
     try:
         off = ev.exit_offset[k]
     except (IndexError, AttributeError):
         return None
     # Entry is at the open of bar i+1 = ev.ts + BAR_S; exit is at bar i+1+off
     return ev.ts + (1 + off) * BAR_S
+
+
+def funding_adjusted_config(events, rule: RuleParams, geom_idx: int,
+                            geom: Geometry, window, cfg: QuantConfig = DEFAULT,
+                            funding_dir: Optional[str] = None,
+                            settlements_dir: Optional[str] = None,
+                            slip_mult: float = 1.0,
+                            fee_mult: float = 1.0) -> Dict[str, Any]:
+    """Friction + funding net R for one (rule, geometry) in a day window.
+
+    Mirrors ``research.eval_config`` (same event selection, same friction
+    model, same triple-barrier slots keyed by the TRADE side from the
+    rule's policy) and adds the venue-attributed funding cost for each
+    event's [entry, actual exit) window:
+
+        net_r = (gross - round_trip_friction - funding_cost) / stop_distance
+
+    Events whose funding cost cannot be fully attributed (coin archive
+    missing, or a funding event inside the window unattributable) are
+    EXCLUDED from the metric and counted -- never zero-filled.
+
+    Returns a summary dict with EXPLICIT DENOMINATORS:
+      n_events               selected + tradeable events in the window
+      n_funding_adjusted     events with a fully attributed funding cost
+                             (= the metric's denominator)
+      n_excluded_missing_coin events on coins with no cost archive rows
+      n_excluded_incomplete  events with unattributable funding events
+      coverage               n_funding_adjusted / n_events
+      missing_coins          sorted coins counted as missing
+    and the funding-adjusted metric itself (mean_r / ci_lo / ci_hi / t /
+    days / coins / tp / sl / time) over the attributed events.  When
+    n_funding_adjusted is 0 every metric field is None -- a
+    funding-adjusted label never carries a friction-only number.
+    """
+    lo, hi = window
+    sel = R._select(events, rule, lo, hi)
+    values, days, kinds = [], [], [0, 0, 0]
+    coins = set()
+    missing_coins = set()
+    n_events = n_missing = n_incomplete = 0
+
+    for ev in sel:
+        side = trade_side(ev, rule)
+        k = geom_idx * 2 + (0 if side > 0 else 1)
+        friction = cfg.cost.round_trip(ev.qv24, slip_mult, fee_mult)
+        if friction is None:
+            continue                       # untradeable: not an event
+        exit_ts = _event_exit_ts(ev, geom_idx, rule)
+        if exit_ts is None:
+            # Fall back to the full horizon for this geometry
+            exit_ts = ev.ts + geom.horizon_bars * BAR_S
+        open_ts = ev.ts + BAR_S
+        fc = funding_cost(ev.coin, open_ts, exit_ts,
+                          funding_dir=funding_dir,
+                          settlements_dir=settlements_dir, side=side)
+        n_events += 1
+        if fc.missing:
+            n_missing += 1
+            missing_coins.add(ev.coin)
+            continue
+        if fc.incomplete or fc.cost is None:
+            n_incomplete += 1
+            continue
+        dd = B.stop_distance(ev.sigma, geom.horizon_bars, geom.k_stop)
+        values.append(B.net_r(ev.gross[k], dd, friction + fc.cost))
+        days.append(int(ev.day))
+        kinds[ev.kind[k]] += 1
+        coins.add(ev.coin)
+
+    n = len(values)
+    out: Dict[str, Any] = {
+        "n_events": n_events,
+        "n_funding_adjusted": n,
+        "n_excluded_missing_coin": n_missing,
+        "n_excluded_incomplete": n_incomplete,
+        "coverage": (n / n_events) if n_events else 0.0,
+        "missing_coins": sorted(missing_coins),
+    }
+    if n:
+        m, c_lo, c_hi, nd = S.day_cluster_mean(values, days, B=1500)
+        out.update({
+            "mean_r": m, "ci_lo": c_lo, "ci_hi": c_hi, "days": nd,
+            "coins": len(coins),
+            "tp": kinds[0] / n, "sl": kinds[1] / n, "time": kinds[2] / n,
+            "t": S.day_cluster_t(values, days),
+        })
+    else:
+        out.update({
+            "mean_r": None, "ci_lo": None, "ci_hi": None, "days": 0,
+            "coins": 0, "tp": None, "sl": None, "time": None, "t": None,
+        })
+    return out
 
 
 def evaluate(data_dir: str, funding_dir: Optional[str] = None,
@@ -233,12 +377,14 @@ def evaluate(data_dir: str, funding_dir: Optional[str] = None,
     Steps:
       1. collect_events over the bar archive (reuses research.collect_events)
       2. resolve splits + assert no leakage
-      3. run_stage_dev_val (dev -> val, with max-t multiplicity control)
-      4. if spend_holdout and validation kept the config, spend the
-         one-shot holdout
-      5. attach funding cost attribution to the selected config's results
+      3. run_stage_dev_val (dev -> val, with max-t multiplicity control);
+         selection uses friction-only metrics
+      4. funding-adjusted dev/val for the SELECTED config (reporting only)
+      5. if spend_holdout and validation kept the config, spend the
+         one-shot holdout (friction + funding-adjusted + 2x-slip
+         sensitivity, all within the same single look)
       6. record reproducibility metadata (config hash, cost hash, git rev,
-         bar digests)
+         bar digests) and the explicit funding-coverage denominators
 
     Returns an EvaluationReport.  All output goes to ``out_dir`` (or a
     temp dir) -- production data/ is never written.
@@ -250,11 +396,12 @@ def evaluate(data_dir: str, funding_dir: Optional[str] = None,
     splits = resolve_splits(meta, cfg)
     violations = check_no_leakage(events, splits)
 
-    # 3. Dev -> Val
-    # Guard: if too few events, run_stage_dev_val will produce empty configs
-    # and spa_max_t will fail. Handle that explicitly.
+    # 3. Dev -> Val (friction-only; this is where selection happens)
+    # Guard: if too few events, run_stage_dev_val would produce empty
+    # configs and spa_max_t would fail. Handle that explicitly.
     if len(events) < 50:
         dev_val = {
+            "bounds": cfg.splits.bounds(meta["n_days"]),
             "dev": {"n": 0, "mean_r": float("nan"), "ci_lo": float("nan"),
                     "ci_hi": float("nan"), "days": 0, "coins": 0,
                     "tp": float("nan"), "sl": float("nan"), "time": float("nan")},
@@ -270,11 +417,28 @@ def evaluate(data_dir: str, funding_dir: Optional[str] = None,
     else:
         dev_val = R.run_stage_dev_val(events, meta, cfg)
 
-    # 4. Holdout (one-shot, only if val kept the config)
+    selected = dev_val.get("selected", {})
+    rule_obj = selected.get("rule_obj")
+    bounds = dev_val.get("bounds") or cfg.splits.bounds(meta["n_days"])
+
+    # 4. Funding-adjusted dev/val for the selected config (REPORTING ONLY:
+    # selection already happened on friction numbers; no val tuning).
+    fa_dev = fa_val = None
+    if rule_obj is not None:
+        geom_idx, geom = selected["geom_idx"], selected["geom"]
+        fa_dev = funding_adjusted_config(
+            events, rule_obj, geom_idx, geom, bounds["dev"], cfg,
+            funding_dir, settlements_dir)
+        fa_val = funding_adjusted_config(
+            events, rule_obj, geom_idx, geom, bounds["val"], cfg,
+            funding_dir, settlements_dir)
+
+    # 5. Holdout (one-shot, only if val kept the config)
     holdout = None
     holdout_slip2x = None
-    selected = dev_val.get("selected", {})
-    if spend_holdout and selected.get("rule_obj") is not None:
+    fa_holdout = None
+    fa_holdout_slip2x = None
+    if spend_holdout and rule_obj is not None:
         import math as _math
         val_mean = dev_val.get("val", {}).get("mean_r", float("nan"))
         if (isinstance(val_mean, (int, float)) and _math.isfinite(val_mean)
@@ -287,24 +451,44 @@ def evaluate(data_dir: str, funding_dir: Optional[str] = None,
             # raises SystemExit. Catch it so the harness reports refusal
             # gracefully instead of crashing.
             try:
+                # holdout_once returns the two summaries directly (and
+                # writes the one-shot lock); it is NOT re-summarized.
                 h, h2 = R.holdout_once(events, meta, selected, out_dir, cfg)
-                holdout = R.summarize(h, 3000)
-                holdout_slip2x = R.summarize(h2, 1500)
+                holdout, holdout_slip2x = h, h2
+                # Same single look: funding-adjusted holdout + 2x-slip
+                # sensitivity for the selected config. Only computed when
+                # holdout_once SUCCEEDED -- never a second look.
+                geom_idx, geom = selected["geom_idx"], selected["geom"]
+                fa_holdout = funding_adjusted_config(
+                    events, rule_obj, geom_idx, geom, bounds["holdout"], cfg,
+                    funding_dir, settlements_dir)
+                fa_holdout_slip2x = funding_adjusted_config(
+                    events, rule_obj, geom_idx, geom, bounds["holdout"], cfg,
+                    funding_dir, settlements_dir, slip_mult=2.0)
             except SystemExit:
                 pass  # lock refuses a second look; holdout stays None
 
-    # 5. Cost attribution analysis
-    missing_cost_coins, incomplete = _find_missing_cost_coins(
-        events, funding_dir, settlements_dir, splits, cfg, dev_val)
+    # 6. Cost-coverage accounting + reproducibility metadata
+    # Coins with events but NO rows in either cost archive (surfaced,
+    # never zero-filled).
+    coins_in_events = sorted(set(e.coin for e in events))
+    missing_cost_coins = [c for c in coins_in_events
+                          if coin_cost_data_missing(c, funding_dir,
+                                                    settlements_dir)]
 
-    # 6. Reproducibility metadata
+    # Excluded-and-counted totals across every window whose
+    # funding-adjusted metric was actually computed (holdout slip2x is
+    # the same events as the holdout and is not double-counted).
+    fa_blocks = [b for b in (fa_dev, fa_val, fa_holdout) if b is not None]
+    incomplete_events = sum(b["n_excluded_incomplete"] for b in fa_blocks)
+    incomplete_denominator = sum(b["n_events"] for b in fa_blocks)
+
     ch = cfg.config_hash()
     csh = cost_hash(funding_dir, settlements_dir, cfg)
 
     # Bar digests for ALL coins (no cap) whose data contributes to metrics
-    coins_in_eval = sorted(set(e.coin for e in events))
     bar_digests = {}
-    for coin in ["BTC", "ETH"] + coins_in_eval:
+    for coin in ["BTC", "ETH"] + coins_in_events:
         d = _bar_digest(data_dir, coin)
         if d is not None:
             bar_digests[coin] = d
@@ -313,7 +497,7 @@ def evaluate(data_dir: str, funding_dir: Optional[str] = None,
     # metrics, covering both funding observations and settlements.
     funding_digests = {}
     settlement_digests = {}
-    contributing_coins = sorted(set(e.coin for e in events) | {"BTC", "ETH"})
+    contributing_coins = sorted(set(coins_in_events) | {"BTC", "ETH"})
     for coin in contributing_coins:
         fd = _funding_digest(funding_dir, coin) if funding_dir else None
         sd = _settlement_digest(settlements_dir, coin) if settlements_dir else None
@@ -335,14 +519,18 @@ def evaluate(data_dir: str, funding_dir: Optional[str] = None,
         val=dev_val["val"],
         holdout=holdout,
         holdout_slip2x=holdout_slip2x,
+        dev_funding_adjusted=fa_dev,
+        val_funding_adjusted=fa_val,
+        holdout_funding_adjusted=fa_holdout,
+        holdout_slip2x_funding_adjusted=fa_holdout_slip2x,
         leakage_violations=violations,
         missing_cost_coins=missing_cost_coins,
         git_rev=_git_rev(),
         bar_digests=bar_digests,
         funding_digests=funding_digests,
         settlement_digests=settlement_digests,
-        incomplete_boundary_events=incomplete["events"],
-        incomplete_boundary_denominator=incomplete["denominator"],
+        incomplete_boundary_events=incomplete_events,
+        incomplete_boundary_denominator=incomplete_denominator,
     )
 
     # Write report
@@ -355,63 +543,3 @@ def evaluate(data_dir: str, funding_dir: Optional[str] = None,
         f.write(report.to_json())
 
     return report
-
-
-def _find_missing_cost_coins(events, funding_dir, settlements_dir,
-                             splits, cfg, dev_val=None) -> Tuple[List[str], Dict[str, int]]:
-    """Identify coins that have events in the evaluation windows but
-    no funding or settlement archive (cost data missing -- surfaced, not
-    estimated).
-
-    Uses the selected config's actual trade side and per-event exit
-    timestamps (derived from the barrier labeler's exit_offset) so that
-    funding is charged only through the real exit, not the max horizon.
-
-    Also tracks events excluded from funding-adjusted metrics due to
-    incomplete boundary coverage (funding data exists but does not cover
-    the full [open_ts, exit_ts) window for that event).
-
-    Returns (missing_coins, incomplete_info) where incomplete_info has
-    keys "events" (count excluded) and "denominator" (total events in
-    windows with cost data available).
-    """
-    from .cost_attribution import funding_cost
-    coins_with_events = sorted(set(e.coin for e in events))
-    if not coins_with_events:
-        return [], {"events": 0, "denominator": 0}
-
-    # Determine the selected geometry for exit-timestamp computation
-    selected = dev_val.get("selected", {}) if dev_val else {}
-    geom_idx = selected.get("geom_idx", 0)
-
-    missing = []
-    incomplete_events = 0
-    denominator = 0
-
-    for coin in coins_with_events:
-        # Check each event for this coin individually with its actual
-        # open/exit timestamps and trade side
-        coin_events = [e for e in events if e.coin == coin]
-        for ev in coin_events:
-            # Use the selected geometry's exit offset to compute actual exit ts
-            exit_ts = _event_exit_ts(ev, geom_idx, cfg)
-            if exit_ts is None:
-                # Fall back to max-horizon close for boundary checking
-                exit_ts = ev.ts + MAX_HORIZON_BARS * BAR_S
-            # Entry is at open of bar i+1
-            open_ts = ev.ts + BAR_S
-            side = ev.side
-            result = funding_cost(
-                coin, open_ts, exit_ts,
-                funding_dir=funding_dir, settlements_dir=settlements_dir,
-                side=side)
-            denominator += 1
-            if result.missing:
-                if coin not in missing:
-                    missing.append(coin)
-            elif result.cost is None:
-                # Data exists but doesn't cover the window -> incomplete
-                incomplete_events += 1
-
-    return missing, {"events": incomplete_events, "denominator": denominator}
-    return missing

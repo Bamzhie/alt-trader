@@ -6,32 +6,57 @@ venue-reported settlement archive (``proto/settlements.py``) as the two
 cost data sources.
 
 Design rules (reused from WS4 archives, proposal §3.1/§4):
-  * Funding is observed point-in-time (``proto/funding.py``): the `rate`
-    field is the rate OBSERVED at `ts`, not a settled fact. A position
-    opened at time `t0` accrues the rate observed on the next settle
-    boundary after t0.
-  * Settlements are venue-reported settled rates (``proto/settlements.py``):
-    the `settled_rate` field is the rate that was actually paid on
-    `settle_ts`.
+  * Funding is paid/received at the venue's settle boundaries (every
+    ``SETTLE_SECONDS`` = 8h on MEXC). Those boundaries are the FUNDING
+    EVENTS; a cost exists only at a funding event, never at an arbitrary
+    observation timestamp.
+  * Settlements are venue-reported settled funding
+    (``proto/settlements.py``): each row's ``settle_ts`` IS a funding
+    event timestamp and ``settled_rate`` is what was actually paid there.
+    When the settlement archive covers every funding event inside a
+    holding window, it is the cost source — no mapping involved.
+  * The observation archive (``proto/funding.py``) records the MUTATING
+    point-in-time rate at each ``ts`` — it does NOT record funding-event
+    timestamps. Observation timestamps are therefore NEVER summed as if
+    they were settle boundaries. The documented mapping from snapshots to
+    funding events is:
+        funding event at boundary ``b`` (b = phase + k * cycle, phase
+        inferred from the coin's settlement archive when present, else
+        epoch-aligned UTC) takes the LAST snapshot in ``[b - cycle, b)``.
+      Each boundary is charged at most once, with the most recent
+      point-in-time snapshot of its own cycle. A snapshot after ``b``
+      belongs to the next cycle and never affects this one.
+  * INCOMPLETE, not estimated: if ANY funding event inside the holding
+    window cannot be attributed (a venue settlement row is missing, or no
+    snapshot covers a boundary's cycle), the window's cost is
+    ``cost=None, incomplete=True`` — the event is excluded from
+    funding-adjusted metrics and counted, never zero-filled.
   * Missing data is MISSING — never estimated, interpolated, or
-    zero-filled. If a coin has no funding observations, its funding cost
+    zero-filled. If a coin has no funding archive at all, its funding cost
     is reported as ``None`` (unevaluated), not 0.
-  * The evaluation harness calls ``funding_cost`` to get the cost of
-    holding a position for the event horizon; the returned cost is in the
-    same units as the gross log-return (net R is computed by
-    ``barrier.net_r`` which subtracts `cost_frac`).
+  * The sign follows the TRADE side supplied by the caller (derived from
+    the selected rule's policy, see ``eval_harness.trade_side``): a
+    positive rate is a cost for a long (side=+1) and a credit for a short
+    (side=-1). Net R is computed by ``barrier.net_r`` which subtracts
+    the combined (friction + funding) ``cost_frac``.
 
 This module is research-only: it never writes to production data, never
 starts the service, and never changes emission modes.
 """
 import json
-import os
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+import math
+from bisect import bisect_left
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
-from .config import BAR_S, BARS_PER_DAY, QuantConfig, DEFAULT as DEFAULT_CFG
+from .config import QuantConfig, DEFAULT as DEFAULT_CFG
 
 SETTLE_SECONDS = 8 * 3600  # 8h funding cycle (MEXC standard; see ws4-settlement-history.md)
+
+# Tolerance when matching a venue-reported settle_ts to its grid boundary
+# (one 5m bar; venue rows sit exactly on the grid, this only absorbs
+# whole-second rounding).
+BOUNDARY_TOL_S = 300
 
 
 @dataclass(frozen=True)
@@ -42,20 +67,30 @@ class FundingCostResult:
         notional (additive to the round-trip friction cost_frac).
         Sign follows the trade side: a positive rate is a cost for a
         long (side=+1) and a credit for a short (side=-1), and vice-versa
-        for negative rates.  ``None`` means funding data was missing for
-        this coin over the holding window -- the harness must surface
-        this as insufficient evidence rather than treating it as zero
-        cost.
-    observations: int -- how many funding observations contributed.
+        for negative rates.  ``None`` means funding data was missing or
+        could not be attributed for this coin over the holding window --
+        the harness must surface this as insufficient evidence rather
+        than treating it as zero cost.
+    observations: int -- how many FUNDING EVENTS (settle boundaries)
+        contributed. Never a count of raw snapshots.
     missing: bool -- True when the coin has NO funding archive at all
         (the coin was never observed by the funding collector).
-    source: str -- "observation" or "settlement" depending on which
-        source provided the cost values.
+    source: str -- "settlement" (venue-reported settled rates),
+        "observation" (snapshot-mapped funding events), or "none".
+    incomplete: bool -- True when archives exist for the coin but at
+        least one funding event inside the holding window could not be
+        attributed (missing venue settlement row, or no snapshot covers
+        a boundary's cycle). The cost is excluded, not estimated.
+    reason: str | None -- machine-readable cause of incompleteness:
+        "settlement-boundaries-missing", "observation-coverage-gap", or
+        both joined by "+".
     """
     cost: Optional[float]
     observations: int
     missing: bool
     source: str
+    incomplete: bool = False
+    reason: Optional[str] = None
 
 
 def _load_observations(funding_dir: str, coin: str) -> List[Tuple[int, float]]:
@@ -72,99 +107,112 @@ def _load_observations(funding_dir: str, coin: str) -> List[Tuple[int, float]]:
     return [(r["ts"], r["rate"]) for r in rows]
 
 
-def _load_settlements(settlements_dir: str, coin: str) -> List[Tuple[int, float]]:
-    """Load (settle_ts, settled_rate) pairs from the settlement archive.
+def _load_settlements(settlements_dir: str,
+                      coin: str) -> List[Tuple[int, float, Optional[float]]]:
+    """Load (settle_ts, settled_rate, cycle_hours) rows from the
+    venue-reported settlement archive.
 
-    Uses proto.settlements.read_settlements.
-    Returns [] when the file is absent.
+    Uses proto.settlements.read_settlements.  Returns [] when the file
+    is absent.
     """
     try:
         from proto.settlements import read_settlements
     except ImportError:
         return []
     rows = read_settlements(settlements_dir, coin)
-    return [(r["settle_ts"], r["settled_rate"]) for r in rows]
+    return [(r["settle_ts"], r["settled_rate"], r.get("cycle_hours"))
+            for r in rows]
 
 
-def _interpolate_rate_at(obs_tss: List[int], obs_rates: List[float],
-                         target_ts: int) -> Optional[float]:
-    """Find the funding rate in effect at ``target_ts``.
+def coin_cost_data_missing(coin: str, funding_dir: Optional[str],
+                           settlements_dir: Optional[str]) -> bool:
+    """True when NEITHER archive holds any row for ``coin``."""
+    if funding_dir is not None and _load_observations(funding_dir, coin):
+        return False
+    if settlements_dir is not None and _load_settlements(settlements_dir, coin):
+        return False
+    return True
 
-    Funding rates are piecewise-constant between observation/settle times:
-    the rate observed at time T applies until the next observation.  This
-    is NOT estimation -- it is the venue's own piecewise-constant rate
-    schedule.  Returns None if no observation precedes target_ts.
+
+def _grid_boundaries(lo: int, hi: int, phase: int,
+                     cycle: int) -> List[int]:
+    """Funding-event boundaries strictly inside ``(lo, hi)``.
+
+    Boundaries are ``phase + k * cycle`` (the venue's own settle grid:
+    inferred from the settlement archive when present, else epoch-aligned
+    UTC).  A boundary exactly at open or exactly at close is NOT charged
+    (the position does not yet / no longer exists at that instant).
     """
-    # Find the last observation at or before target_ts
-    rate = None
-    for ts, rt in zip(obs_tss, obs_rates):
-        if ts <= target_ts:
-            rate = rt
-        else:
-            break
-    return rate
+    k = math.floor((lo - phase) / cycle) + 1
+    b = phase + k * cycle
+    out = []
+    while b < hi:
+        out.append(b)           # b > lo by construction of k
+        b += cycle
+    return out
 
 
-def _accumulate_funding(obs_tss: List[int], obs_rates: List[float],
-                        open_ts: int, close_ts: int,
-                        side: int = 1) -> Tuple[Optional[float], int]:
-    """Accumulate funding cost over [open_ts, close_ts) using the
-    piecewise-constant observation series.
+def _cycle_seconds(settle_rows: List[Tuple[int, float, Optional[float]]]
+                   ) -> int:
+    """The venue's funding cycle from its own reported cycle_hours."""
+    cycles = [c for _, _, c in settle_rows if c and c > 0]
+    if not cycles:
+        return SETTLE_SECONDS
+    return int(round(max(set(cycles), key=cycles.count))) * 3600
 
-    Funding on MEXC is paid/received at settle boundaries.  The
-    observation timestamps **are** the settle boundaries (each observation
-    records the rate in effect at that settlement).  A position opened at
-    ``open_ts`` and closed at ``close_ts`` accrues the rate in effect at
-    each settle boundary (observation timestamp) in (open_ts, close_ts).
 
-    The ``side`` parameter determines the sign of the cost:
-      * Positive rates are a cost for longs (side=+1) – you pay the rate.
-      * Positive rates are a credit for shorts (side=-1) – you receive the
-        rate (your P&L improves).
-      * Negative rates reverse the effect.
+def _settlement_attribution(settle_rows, open_ts, close_ts, side):
+    """Cost from venue-reported settlements over ``(open_ts, close_ts)``.
 
-    Returns (total_cost_or_None, n_observations_used).  Total is None
-    when no observation covers the open time (the coin wasn't being
-    observed when the position opened -- missing, not zero).  Total is
-    0.0 with n=0 when the position closes before the first settle boundary
-    after open_ts.
+    The venue's own settle timestamps define both the funding events and
+    the grid phase.  EVERY expected boundary inside the window must have
+    a venue-reported row (within BOUNDARY_TOL_S); if any row is missing
+    the window is a GAP -- the caller reports it as incomplete instead of
+    silently undercounting.
+
+    Returns (cost, n_events, gap) with cost/n_events None on a gap.
     """
-    if not obs_tss:
-        return None, 0
-    # Rate in effect at open time (last obs <= open_ts)
-    open_rate = _interpolate_rate_at(obs_tss, obs_rates, open_ts)
-    if open_rate is None:
-        return None, 0
+    tss = [t for t, _, _ in settle_rows]
+    cycle = _cycle_seconds(settle_rows)
+    phase = tss[0] % cycle
+    expected = _grid_boundaries(open_ts, close_ts, phase, cycle)
+    if not expected:
+        return 0.0, 0, False
     total = 0.0
-    n = 0
-    # Walk observation timestamps (settle boundaries) strictly after open_ts
-    # and before close_ts.  The rate in effect at each boundary is the
-    # piecewise-constant rate (last obs <= that boundary).
-    for ts, rate in zip(obs_tss, obs_rates):
-        if open_ts < ts < close_ts:
-            r = _interpolate_rate_at(obs_tss, obs_rates, ts)
-            if r is not None:
-                total += r * side
-                n += 1
-    return total, n
+    j = 0
+    for b in expected:
+        # advance to the first row at/after b - tol
+        while j < len(tss) and tss[j] < b - BOUNDARY_TOL_S:
+            j += 1
+        if j >= len(tss) or abs(tss[j] - b) > BOUNDARY_TOL_S:
+            return None, None, True     # venue settlement row missing
+        total += settle_rows[j][1] * side
+    return total, len(expected), False
 
 
-def _next_settle_after(ts: int) -> Optional[int]:
-    """The next 8h settle boundary strictly after timestamp ``ts``.
+def _observation_attribution(obs_rows, open_ts, close_ts, side,
+                             cycle=SETTLE_SECONDS, phase=0):
+    """Cost from observation snapshots via the documented funding-event
+    mapping (see module docstring): the boundary ``b`` takes the LAST
+    snapshot in ``[b - cycle, b)``; each boundary is charged at most
+    once; a boundary with no covering snapshot makes the window a gap.
 
-    MEXC settles funding every 8 hours. The exact grid phase depends on
-    the coin's listing; we align to the next 8h boundary strictly after
-    ``ts``.  Returns None on arithmetic failure.
-
-    Note: this is a grid-alignment heuristic, not an estimation of the
-    rate itself. The rate at each boundary is still the venue-reported
-    value (observation or settlement). Coins with a different grid phase
-    may accumulate costs at slightly offset boundaries -- this is a
-    known limitation surfaced in the report, not a silent fill.
+    Returns (cost, n_events, gap) with cost/n_events None on a gap.
     """
-    if ts < 0:
-        return None
-    return ts + SETTLE_SECONDS - (ts % SETTLE_SECONDS)
+    tss = [t for t, _ in obs_rows]
+    expected = _grid_boundaries(open_ts, close_ts, phase, cycle)
+    if not expected:
+        return 0.0, 0, False
+    total = 0.0
+    for b in expected:
+        # last snapshot in [b - cycle, b): first ts >= b-cycle, then the
+        # one before the first ts >= b.
+        lo = bisect_left(tss, b - cycle)
+        hi = bisect_left(tss, b)
+        if hi <= lo:
+            return None, None, True     # no snapshot covers this cycle
+        total += obs_rows[hi - 1][1] * side
+    return total, len(expected), False
 
 
 def funding_cost(
@@ -178,61 +226,70 @@ def funding_cost(
     """Compute the funding cost for holding ``coin`` from
     ``open_bar_ts`` to ``close_bar_ts``.
 
-    Cost is the sum of venue-reported rates at each settle boundary in
-    [open, close), multiplied by ``side``:
+    Cost is the sum of the rates PAID at each funding event (settle
+    boundary) strictly inside ``(open_bar_ts, close_bar_ts)``,
+    multiplied by ``side``:
       * side=+1 (long): positive rates are costs (paid).
       * side=-1 (short): positive rates are credits (received).
 
-    Uses settlements first (venue-reported settled rates) if available,
-    then falls back to observations (point-in-time).
+    Source discipline:
+      * Venue-reported settlements first: when the coin's settlement
+        archive covers every funding event in the window, the settled
+        rates are used as-is.
+      * Otherwise the observation archive is consulted through the
+        documented snapshot -> funding-event mapping (last snapshot of
+        each boundary's cycle, each boundary charged once).
+      * When neither source can attribute EVERY funding event in the
+        window, the result is ``incomplete=True, cost=None``: excluded
+        and counted by the harness, never estimated.
 
     ``close_bar_ts`` should be the event's ACTUAL exit timestamp (TP/SL
     exit early, only TIME exits go to the full horizon).  Funding is
     charged only through that exit.
 
     Returns a FundingCostResult. ``missing=True`` means no funding data
-    exists for this coin at all. ``cost=None`` (with missing=False) means
-    data exists but does not cover the position window.
+    exists for this coin at all. ``incomplete=True`` (with missing=False)
+    means data exists but does not cover every funding event in the
+    window.
     """
-    obs_tss, obs_rates = [], []
-    if funding_dir is not None:
-        obs = _load_observations(funding_dir, coin)
-        obs_tss = [t for t, _ in obs]
-        obs_rates = [r for _, r in obs]
-
-    settle_tss, settle_rates = [], []
-    if settlements_dir is not None:
-        settles = _load_settlements(settlements_dir, coin)
-        settle_tss = [t for t, _ in settles]
-        settle_rates = [r for _, r in settles]
+    obs = _load_observations(funding_dir, coin) \
+        if funding_dir is not None else []
+    settles = _load_settlements(settlements_dir, coin) \
+        if settlements_dir is not None else []
 
     # If neither source has data for this coin, it is genuinely missing.
-    if not obs_tss and not settle_tss:
+    if not obs and not settles:
         return FundingCostResult(
             cost=None, observations=0, missing=True, source="none")
 
-    # Try settlements first (venue-reported settled rates are more precise)
-    if settle_tss:
-        cost, n = _accumulate_funding(settle_tss, settle_rates,
-                                      open_bar_ts, close_bar_ts, side)
-        if cost is not None:
+    reasons = []
+
+    # Venue-reported settlements first (settled facts, no mapping).
+    if settles:
+        cost, n, gap = _settlement_attribution(
+            settles, open_bar_ts, close_bar_ts, side)
+        if not gap:
             return FundingCostResult(
                 cost=cost, observations=n, missing=False,
                 source="settlement")
+        reasons.append("settlement-boundaries-missing")
 
-    # Fall back to observations
-    if obs_tss:
-        cost, n = _accumulate_funding(obs_tss, obs_rates,
-                                      open_bar_ts, close_bar_ts, side)
-        if cost is not None:
+    # Observation-only fallback: snapshot -> funding-event mapping.
+    if obs:
+        cost, n, gap = _observation_attribution(
+            obs, open_bar_ts, close_bar_ts, side)
+        if not gap:
             return FundingCostResult(
                 cost=cost, observations=n, missing=False,
                 source="observation")
+        reasons.append("observation-coverage-gap")
 
-    # Data exists for the coin but doesn't cover the window
+    # Data exists for the coin but at least one funding event in the
+    # window could not be attributed: incomplete, excluded not estimated.
     return FundingCostResult(
         cost=None, observations=0, missing=False,
-        source="settlement" if settle_tss else "observation")
+        source="settlement" if settles else "observation",
+        incomplete=True, reason="+".join(reasons))
 
 
 def config_hash(funding_dir: Optional[str], settlements_dir: Optional[str],
@@ -249,5 +306,6 @@ def config_hash(funding_dir: Optional[str], settlements_dir: Optional[str],
         "funding_dir": funding_dir,
         "settlements_dir": settlements_dir,
         "settle_seconds": SETTLE_SECONDS,
+        "boundary_tol_s": BOUNDARY_TOL_S,
     }, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]

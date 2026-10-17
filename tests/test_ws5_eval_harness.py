@@ -2,20 +2,35 @@
 
 Self-checking script: python3 tests/test_ws5_eval_harness.py
 Covers:
-  1. Funding cost attribution from observation archive (missing -> None, not 0)
-  2. Funding cost accumulation over settle boundaries
-  3. Config hash covers funding/settlements dirs
-  4. Split resolution matches Splits.bounds
-  5. Leakage check: embargo >= max horizon
-  6. Leakage check: no event window crosses a boundary
-  7. Evaluation report: reproducibility metadata (config hash, git rev)
-  8. Missing cost coins surfaced explicitly
-  9. Holdout lock enforced (second look refused)
- 10. No production data written
- 11. Funding cost sign: longs pay positive rates, shorts receive them
- 12. Funding charged only through actual exit timestamp (TP/SL early exit)
- 13. Archive digests for every coin (no 30-coin cap)
- 14. Incomplete boundary coverage excluded from funding-adjusted metrics
+   1. Funding cost attribution from observation archive (missing -> None, not 0)
+   2. Funding cost data for missing coins is NOT zero-filled
+   3. Config hash covers funding/settlements dirs
+   4. Split resolution matches Splits.bounds
+   5. Leakage check: embargo >= max horizon
+   6. Leakage check: no event window crosses a boundary
+   7. Evaluation report: reproducibility metadata (config hash, git rev)
+   8. Holdout lock enforced (second look refused)
+   9. No production data written
+  10. Funding cost attribution from the settlement archive (venue settle_ts)
+  11. Funding cost sign: longs pay positive rates, shorts receive them
+  12. Funding charged only through actual exit timestamp (TP/SL early exit)
+  13. Archive digests for every coin (no 30-coin cap)
+  14. Incomplete boundary coverage -> cost is None (excluded, not estimated)
+  15. Holdout lock refuses second attempt (92-day real-bar run)
+  16. Report carries funding/settlement digests and boundary counts
+  17. Observation -> funding-event mapping: snapshots are NOT summed
+      repeatedly; each 8h boundary takes the last snapshot of its cycle;
+      unattributable boundaries make the event incomplete
+  18. Settlement archive wins when it covers the window; missing settle
+      boundaries -> incomplete; observation fallback for gap periods
+  19. FADE policy regression: trade side comes from the selected rule's
+      policy, consistently for funding sign, exit-offset slot, coverage
+  20. Integration: funding-adjusted dev/val/holdout/slip2x metrics differ
+      from friction-only when funding is present; denominators explicit
+  21. Integration: with no funding data, funding-adjusted metrics are None
+      (never a friction-only number under a funding-adjusted label)
+  22. Integration: missing settlement boundaries are excluded AND counted;
+      the holdout is spent at most once (incl. funding-adjusted fields)
 """
 
 import gzip
@@ -31,7 +46,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from proto.quant import cost_attribution as ca
 from proto.quant import eval_harness as eh
 from proto.quant import research as R
-from proto.quant.config import DEFAULT, BAR_S, BARS_PER_DAY, Splits
+from proto.quant import barrier as B
+from proto.quant.config import (DEFAULT, BAR_S, BARS_PER_DAY, Splits,
+                                RuleParams, grid_geometries)
 
 FAILURES = []
 CHECKS = 0
@@ -52,6 +69,10 @@ def check(name, cond, detail=""):
 
 T0 = 1_700_000_100
 T0 = T0 - (T0 % BAR_S)
+
+# Epoch-aligned 8h funding-grid anchor (multiple of SETTLE_SECONDS).
+SETTLE_S = 8 * 3600
+B1 = SETTLE_S * ((T0 // SETTLE_S) + 1)      # 1700006400, on the grid
 
 
 def make_bars(n, seed, sigma, start=T0):
@@ -101,25 +122,32 @@ tmp = tempfile.mkdtemp(prefix="ws5-cost-")
 funding_dir = os.path.join(tmp, "funding")
 os.makedirs(funding_dir)
 
-# Write 3 funding observations for BTC, 1 hour apart (starting at T0)
+# Hourly snapshots at T0, T0+1h, T0+2h. Under the documented mapping each
+# 8h funding event takes the LAST snapshot of its cycle; the only funding
+# boundary in (T0, T0+10000) is T0+6300, covered by the T0+3600 snapshot.
 obs_ts = T0, T0 + 3600, T0 + 7200
 obs_rates = 0.0001, 0.0002, 0.00015
 write_funding(funding_dir, "BTC", list(zip(obs_ts, obs_rates)))
 
-# Position opens at T0 (same time as first obs), closes after all obs
 result = ca.funding_cost("BTC", T0, T0 + 10000,
                          funding_dir=funding_dir)
 check("funding cost is non-None when data exists",
       result.cost is not None, str(result))
 check("missing=False for coin with data", not result.missing, str(result))
 check("source is observation", result.source == "observation", str(result))
-check("observations counted", result.observations >= 1, str(result))
+check("one funding event attributed (boundary at T0+6300)",
+      result.observations == 1, str(result))
+check("boundary takes the last snapshot of its cycle (0.0002, not a sum)",
+      result.cost == 0.0002, str(result))
+check("complete coverage -> incomplete is False", not result.incomplete,
+      str(result))
 
-# Position that opens AFTER the last observation (rate unknown beyond last obs)
+# Window with NO funding boundary (T0+6300 < T0+20000, next is T0+35100):
+# no funding event settles inside it, so the cost is exactly zero events.
 result2 = ca.funding_cost("BTC", T0 + 20000, T0 + 30000,
                           funding_dir=funding_dir)
-check("position after last obs: rate at open is still last obs (piecewise constant)",
-      result2.cost is not None, str(result2))
+check("window without a funding boundary -> cost 0.0, 0 events",
+      result2.cost == 0.0 and result2.observations == 0, str(result2))
 
 
 print("\n=== case 2: missing data is NOT zero-filled ===")
@@ -237,6 +265,18 @@ check("report has git_rev or None", report.git_rev is None or isinstance(report.
 check("report has bar_digests", isinstance(report.bar_digests, dict))
 check("report produced_at is timestamp", report.produced_at > 0)
 
+# Funding-adjusted fields exist and, when present, carry the explicit
+# denominator keys (they are None when no config was selected).
+for label, blk in (("dev", report.dev_funding_adjusted),
+                   ("val", report.val_funding_adjusted)):
+    if blk is None:
+        check(f"{label}_funding_adjusted is None on insufficient data", True)
+    else:
+        check(f"{label}_funding_adjusted has explicit denominators",
+              all(k in blk for k in ("n_events", "n_funding_adjusted",
+                                     "n_excluded_missing_coin",
+                                     "n_excluded_incomplete")), str(blk))
+
 # Check that AAA is missing from funding (not zero-filled)
 check("AAA appears in missing_cost_coins", "AAA" in report.missing_cost_coins,
       str(report.missing_cost_coins))
@@ -293,21 +333,26 @@ print("\n=== case 10: cost attribution with settlement archive ===")
 
 sett_dir = os.path.join(tempfile.mkdtemp(prefix="ws5-sett-"), "settlements")
 os.makedirs(sett_dir)
-# Settle at T0, T0+8h, T0+16h, T0+24h (8h cycle). The first settle at T0
-# establishes the rate in effect from T0 onward.
+# Venue-reported settlements on their own 8h grid (grid phase is inferred
+# from the archive itself). All boundaries in the window below are present
+# -> complete settlement coverage.
 settles = [(T0, 0.0001, 8),
            (T0 + 8 * 3600, 0.0002, 8),
            (T0 + 16 * 3600, 0.00015, 8),
            (T0 + 24 * 3600, 0.0001, 8)]
 write_settlements(sett_dir, "BTC", settles)
 
-# Position opens at T0+8h (after first settle), closes at T0+25h
+# Position opens at T0+8h (after first settle), closes at T0+25h:
+# boundaries strictly inside the window are T0+16h and T0+24h.
 result_s = ca.funding_cost("BTC", T0 + 8 * 3600, T0 + 25 * 3600,
                            funding_dir=None,
                            settlements_dir=sett_dir)
 check("settlement cost is non-None", result_s.cost is not None, str(result_s))
 check("settlement source", result_s.source == "settlement", str(result_s))
-check("settlement observations counted", result_s.observations >= 1, str(result_s))
+check("exactly the two venue settle events in the window are charged",
+      result_s.observations == 2, str(result_s))
+check("cost equals the two venue-reported settled rates",
+      result_s.cost == 0.00015 + 0.0001, str(result_s))
 
 
 print("\n=== case 11: funding cost sign (long vs short) ===")
@@ -348,32 +393,33 @@ check("short pays negative rate (cost > 0)",
 
 print("\n=== case 12: funding charged through actual exit timestamp ===")
 
-# Funding observations at T0, T0+8h (SETTLE_SECONDS), T0+16h, T0+24h, T0+32h
+# Grid-aligned observations: a snapshot just before every 8h boundary plus
+# a mid-cycle snapshot. The boundary at B1+8h takes the B1+8h-100s snapshot.
 fund_dir4 = os.path.join(tempfile.mkdtemp(prefix="ws5-exit-"), "funding")
 os.makedirs(fund_dir4)
-fund_obs_12 = [(T0 + i * 8 * 3600, 0.0001 + i * 0.00001) for i in range(5)]
-write_funding(fund_dir4, "BTC", fund_obs_12)
+fund_obs_12 = []
+for k in range(4):
+    b = B1 + k * SETTLE_S
+    fund_obs_12.append((b - 100, 0.0001 + k * 0.00001))
+fund_obs_12.append((B1 + 27000, 0.0003))     # last snapshot before B1+8h
+write_funding(fund_dir4, "BTC", sorted(fund_obs_12))
 
-# If the position exits early (e.g. at T0+2h via TP), funding should only
-# go through settle boundaries before exit, not the full horizon.
-exit_ts_early = T0 + 2 * 3600  # exits 2h after open, before first 8h settle
-cost_early = ca.funding_cost("BTC", T0, exit_ts_early, funding_dir=fund_dir4,
+# Early exit 2h after open: no funding boundary in the window -> 0 events
+cost_early = ca.funding_cost("BTC", B1, B1 + 7200, funding_dir=fund_dir4,
                              side=1)
-# The first settle boundary after T0 is T0 + SETTLE_SECONDS = T0 + 8h.
-# No settle boundary falls in [T0, exit_ts_early) -> cost is 0.0 with 0 obs.
 check("early exit before first settle -> cost is 0.0 (no settles)",
       cost_early.cost == 0.0,
       f"expected 0.0, got {cost_early.cost}")
 
-# If the position exits at T0+10h, one settle boundary (T0+8h) falls in range.
-exit_ts_late = T0 + 10 * 3600
-cost_late = ca.funding_cost("BTC", T0, exit_ts_late, funding_dir=fund_dir4,
+# Exit at +10h: exactly one boundary (B1+8h) is inside the window, and it
+# takes the LAST snapshot of its cycle (B1+8h-100s), not every snapshot.
+cost_late = ca.funding_cost("BTC", B1, B1 + 10 * 3600, funding_dir=fund_dir4,
                             side=1)
 check("exit at +10h -> exactly 1 settle boundary in range",
       cost_late.observations == 1,
       f"expected 1 observation, got {cost_late.observations}")
-check("exit at +10h -> cost equals the rate in effect at T0+8h settle boundary",
-      cost_late.cost == 0.00011,
+check("exit at +10h -> cost equals the last snapshot of the boundary's cycle",
+      cost_late.cost == 0.0001 + 1 * 0.00001,
       str(cost_late))
 
 
@@ -415,29 +461,24 @@ check("all 35 funding digests present (no cap)",
       f"got {len(fund_digests)}")
 
 
-print("\n=== case 14: incomplete boundary coverage excluded from metrics ===")
+print("\n=== case 14: incomplete boundary coverage -> cost is None ===")
 
-# Create an event where funding data covers the open but NOT the full
-# holding window -> must be excluded from funding-adjusted metrics.
+# Observations start only AFTER the position's open and too late to cover
+# the first boundary -> the cost cannot be attributed and must NOT be
+# estimated: cost=None, incomplete=True, missing=False.
 fund_dir6 = os.path.join(tempfile.mkdtemp(prefix="ws5-incomplete-"), "funding")
 os.makedirs(fund_dir6)
-# Only one observation at T0; the position opens at T0 and the exit is
-# at T0 + 5*8h. The funding data does not cover the full window because
-# only T0 is observed -- but since rates are piecewise constant, the
-# rate at T0 persists. For genuine incompleteness, we need data that
-# doesn't cover the open time.
-
-# Coin with observations only AFTER the event open -> incomplete coverage
 write_funding(fund_dir6, "BTC", [(T0 + 10000, 0.0001), (T0 + 20000, 0.0002)])
 
-# Position opens at T0, closes at T0 + 30000
-# Rate at T0 is None (no observation <= T0 for this coin... wait,
-# the write_funding above starts at T0+10000). So open_rate is None.
+# Window (T0, T0+30000) contains the boundary T0+6300, which needs a
+# snapshot in [T0+6300-8h, T0+6300): none exists.
 result_incomplete = ca.funding_cost("BTC", T0, T0 + 30000,
-                                  funding_dir=fund_dir6, side=1)
+                                   funding_dir=fund_dir6, side=1)
 check("incomplete coverage -> cost is None, missing=False",
       result_incomplete.cost is None and not result_incomplete.missing,
       str(result_incomplete))
+check("incomplete coverage -> incomplete flag is set",
+      result_incomplete.incomplete, str(result_incomplete))
 
 
 print("\n=== case 15: holdout lock refuses second attempt ===")
@@ -479,6 +520,9 @@ if os.path.exists(lock_path):
     check("second holdout attempt is refused (holdout stays None)",
           report_h2.holdout is None,
           "second attempt should not re-evaluate holdout")
+    check("funding-adjusted holdout is also refused on the second look",
+          report_h2.holdout_funding_adjusted is None
+          and report_h2.holdout_slip2x_funding_adjusted is None)
 else:
     check("holdout lock mechanism present (skip if no events)",
           True,
@@ -511,6 +555,384 @@ check("BTC in funding_digests", "BTC" in report_ds.funding_digests)
 check("BTC in settlement_digests", "BTC" in report_ds.settlement_digests)
 check("AAA in funding_digests", "AAA" in report_ds.funding_digests)
 check("AAA in settlement_digests", "AAA" in report_ds.settlement_digests)
+
+
+print("\n=== case 17: observation -> funding-event mapping (no repeated sums) ===")
+
+# Dense snapshots every 15 minutes, constant rate. Each 8h boundary takes
+# exactly ONE value (the last snapshot of its cycle) -- snapshots inside a
+# cycle are never summed repeatedly.
+map_dir = os.path.join(tempfile.mkdtemp(prefix="ws5-map-"), "funding")
+os.makedirs(map_dir)
+dense = [(b - SETTLE_S + 900 * j, 0.0001)
+         for b in (B1, B1 + SETTLE_S, B1 + 2 * SETTLE_S)
+         for j in range(1, 2 * 4 + 1)]
+write_funding(map_dir, "MAP", sorted(dense))
+
+r_map1 = ca.funding_cost("MAP", B1 - 3600, B1 + 3600, funding_dir=map_dir)
+check("window around one boundary -> exactly one funding event",
+      r_map1.observations == 1, str(r_map1))
+check("dense snapshots are not summed (cost == one rate, not ~8 rates)",
+      r_map1.cost == 0.0001, str(r_map1))
+
+r_map2 = ca.funding_cost("MAP", B1 - 60, B1 + 3 * SETTLE_S - 60,
+                         funding_dir=map_dir)
+check("three boundaries in window -> exactly three funding events",
+      r_map2.observations == 3, str(r_map2))
+check("three boundaries -> 3 x one snapshot rate",
+      abs(r_map2.cost - 0.0003) < 1e-12, str(r_map2))
+
+# Last-snapshot-of-the-cycle attribution: a snapshot AFTER the boundary
+# belongs to the NEXT cycle and must not affect this one.
+map_dir2 = os.path.join(tempfile.mkdtemp(prefix="ws5-map2-"), "funding")
+os.makedirs(map_dir2)
+write_funding(map_dir2, "ETH2", [(B1 - SETTLE_S, 0.0005),
+                                 (B1 - 300, 0.0002),
+                                 (B1 + 60, 0.009),
+                                 (B1 + SETTLE_S - 100, 0.0007)])
+r_map3 = ca.funding_cost("ETH2", B1 - 60, B1 + 600, funding_dir=map_dir2)
+check("boundary takes the last snapshot strictly before it",
+      r_map3.cost == 0.0002 and r_map3.observations == 1, str(r_map3))
+
+# Sparse snapshots that cannot cover the boundary -> incomplete, excluded
+map_dir3 = os.path.join(tempfile.mkdtemp(prefix="ws5-map3-"), "funding")
+os.makedirs(map_dir3)
+write_funding(map_dir3, "ADA", [(B1 - 40000, 0.0001), (B1 + 100, 0.0002)])
+r_map4 = ca.funding_cost("ADA", B1 - 60, B1 + 600, funding_dir=map_dir3)
+check("unattributable boundary -> incomplete, cost None",
+      r_map4.cost is None and r_map4.incomplete and not r_map4.missing,
+      str(r_map4))
+
+
+print("\n=== case 18: settlement coverage wins; gaps fall back or exclude ===")
+
+sett_dir3 = os.path.join(tempfile.mkdtemp(prefix="ws5-sett3-"), "settlements")
+os.makedirs(sett_dir3)
+write_settlements(sett_dir3, "DOT",
+                  [(B1, 0.001, 8), (B1 + SETTLE_S, 0.002, 8),
+                   (B1 + 2 * SETTLE_S, 0.003, 8)])
+obs_dir = os.path.join(tempfile.mkdtemp(prefix="ws5-obs3-"), "funding")
+os.makedirs(obs_dir)
+write_funding(obs_dir, "DOT", [(B1 - 28800 + 450 + 900 * j, 0.5)
+                               for j in range(64)])
+
+r_sett = ca.funding_cost("DOT", B1 - 60, B1 + SETTLE_S + 60,
+                         funding_dir=obs_dir, settlements_dir=sett_dir3)
+check("settlement archive covers the window -> settlement source wins",
+      r_sett.source == "settlement", str(r_sett))
+check("settlement cost = venue settled rates at the two boundaries",
+      r_sett.cost == 0.001 + 0.002 and r_sett.observations == 2, str(r_sett))
+
+# Settlement archive with a GAP over the window; observations do cover it
+# -> observation-mapped fallback, clearly labeled as source=observation.
+write_settlements(sett_dir3, "ETC",
+                  [(B1, 0.001, 8), (B1 + 2 * SETTLE_S, 0.003, 8)])
+write_funding(obs_dir, "ETC", [(B1 - SETTLE_S + 450 + 900 * j, 0.0004)
+                               for j in range(64)])
+r_gap = ca.funding_cost("ETC", B1 - 60, B1 + SETTLE_S + 60,
+                        funding_dir=obs_dir, settlements_dir=sett_dir3)
+check("settlement gap + covering observations -> observation fallback",
+      r_gap.source == "observation", str(r_gap))
+check("observation fallback charges each boundary once",
+      r_gap.cost == 0.0008 and r_gap.observations == 2, str(r_gap))
+
+# Settlement archive with a GAP and observations too sparse to attribute
+# -> incomplete: excluded and counted, never estimated.
+write_funding(obs_dir, "XRP", [(B1 - 40000, 0.0001)])
+r_gap2 = ca.funding_cost("XRP", B1 - 60, B1 + SETTLE_S + 60,
+                         funding_dir=obs_dir, settlements_dir=sett_dir3)
+check("settlement gap + sparse observations -> incomplete, cost None",
+      r_gap2.cost is None and r_gap2.incomplete and not r_gap2.missing,
+      str(r_gap2))
+
+# No archive at all -> missing (distinct from incomplete)
+r_none = ca.funding_cost("SOL", B1 - 60, B1 + 600,
+                         funding_dir=obs_dir, settlements_dir=sett_dir3)
+check("no archive rows at all -> missing=True, not incomplete",
+      r_none.missing and r_none.cost is None and not r_none.incomplete,
+      str(r_none))
+
+
+print("\n=== case 19: FADE policy regression (side from rule + policy) ===")
+
+# The research harness derives the POSITION side from the selected rule's
+# policy: fade inverts the break direction (research.eval_config uses
+# `ev.side if rule.policy == 'cont' else -ev.side`). Funding signs,
+# exit-offset slot selection, and coverage must all use that same side.
+geoms = grid_geometries()
+g0 = geoms[0]                      # T48_ks1_R1
+dd0 = B.stop_distance(0.001, g0.horizon_bars, g0.k_stop)
+friction = DEFAULT.cost.round_trip(5e7)   # qv24=5e7 -> top slip tier
+
+ev19 = FakeEvent()
+ev19.coin, ev19.ts, ev19.day = "FADE", B1 - 3600, 10.0
+ev19.fam, ev19.param, ev19.side = "B", 9.9, 1        # up-break
+ev19.qv24, ev19.sigma, ev19.rvol = 5e7, 0.001, 9.9
+ev19.z1h, ev19.z4h, ev19.btc7d = 0.0, 0.0, 0.0
+ev19.gross, ev19.kind, ev19.exit_offset = [], [], []
+for gi, g in enumerate(geoms):
+    for s in (1, -1):
+        # long slot exits early (offset 5 -> before the boundary);
+        # short slot exits late (offset 20 -> after the boundary at B1)
+        ev19.gross.append(0.01 if s > 0 else 0.02)
+        ev19.kind.append(2)                       # TIME
+        ev19.exit_offset.append(5 if s > 0 else 20)
+
+fade_rule = RuleParams("breakout_start", "fade", rvol_min=2.0)
+cont_rule = RuleParams("breakout_start", "cont", rvol_min=2.0)
+
+check("trade_side: fade inverts the break side",
+      eh.trade_side(ev19, fade_rule) == -1)
+check("trade_side: cont keeps the break side",
+      eh.trade_side(ev19, cont_rule) == +1)
+
+# Exit-offset slot follows the SAME side: fade(short) exits at offset 20,
+# cont(long) at offset 5.
+check("_event_exit_ts: fade uses the short slot's exit offset",
+      eh._event_exit_ts(ev19, 0, fade_rule) == ev19.ts + (1 + 20) * BAR_S)
+check("_event_exit_ts: cont uses the long slot's exit offset",
+      eh._event_exit_ts(ev19, 0, cont_rule) == ev19.ts + (1 + 5) * BAR_S)
+
+# One venue settlement at B1 with a positive rate: a FADE of an up-break
+# is a SHORT -> the positive rate is a CREDIT (negative cost).
+sett_dir4 = os.path.join(tempfile.mkdtemp(prefix="ws5-fade-"), "settlements")
+os.makedirs(sett_dir4)
+write_settlements(sett_dir4, "FADE", [(B1, 0.001, 8)])
+
+r_fade = ca.funding_cost("FADE", ev19.ts + BAR_S,
+                         eh._event_exit_ts(ev19, 0, fade_rule),
+                         settlements_dir=sett_dir4, side=-1)
+check("fade (short) receives the positive rate as a credit",
+      r_fade.cost is not None and r_fade.cost == -0.001, str(r_fade))
+
+fa_fade = eh.funding_adjusted_config([ev19], fade_rule, 0, g0, (0.0, 100.0),
+                                     DEFAULT, None, sett_dir4)
+dd = dd0
+exp_fade = B.net_r(0.02, dd, friction + (-0.001))
+check("fade funding-adjusted metric: n_events/n_funding_adjusted = 1/1",
+      fa_fade["n_events"] == 1 and fa_fade["n_funding_adjusted"] == 1
+      and fa_fade["n_excluded_incomplete"] == 0
+      and fa_fade["n_excluded_missing_coin"] == 0, str(fa_fade))
+check("fade metric uses short gross, short exit slot and credit funding",
+      fa_fade["mean_r"] is not None
+      and abs(fa_fade["mean_r"] - exp_fade) < 1e-12,
+      f"got {fa_fade['mean_r']}, expected {exp_fade}")
+
+fa_cont = eh.funding_adjusted_config([ev19], cont_rule, 0, g0, (0.0, 100.0),
+                                     DEFAULT, None, sett_dir4)
+exp_cont = B.net_r(0.01, dd, friction + 0.0)   # long window has no boundary
+check("cont metric uses the long slot (no boundary -> zero funding events)",
+      fa_cont["mean_r"] is not None
+      and abs(fa_cont["mean_r"] - exp_cont) < 1e-12,
+      f"got {fa_cont['mean_r']}, expected {exp_cont}")
+check("fade and cont funding-adjusted metrics differ (side is consistent)",
+      fa_fade["mean_r"] != fa_cont["mean_r"])
+
+
+print("\n=== cases 20-22: integration with a patched event source ===")
+
+# collect_events is patched with deterministic synthetic events so the
+# harness logic (selection, funding attribution, holdout lock, report)
+# is exercised end-to-end without venue-shaped price dynamics. Every
+# event's entry (ts + BAR_S) sits 3300s before an 8h funding boundary,
+# so each event window contains that boundary (plus more for longer
+# geometries) -- attribution is deterministic against the archives below.
+INTEG_TMIN = T0
+INTEG_NDAYS = 92.0
+
+
+def integ_event(day, coin="BTC"):
+    target = INTEG_TMIN + day * 86400
+    b = SETTLE_S * ((target + 660) // SETTLE_S + 1)
+    ev = FakeEvent()
+    ev.coin = coin
+    ev.ts = int(b - 360)
+    ev.day = (ev.ts - INTEG_TMIN) / 86400.0
+    ev.fam, ev.param, ev.side = "B", 9.9, 1
+    ev.qv24, ev.sigma, ev.rvol = 5e7, 0.001, 9.9
+    ev.z1h, ev.z4h, ev.btc7d = 0.0, 0.0, 0.0
+    ev.gross, ev.kind, ev.exit_offset = [], [], []
+    for g in geoms:
+        for _s in (1, -1):
+            ev.gross.append(0.02)
+            ev.kind.append(2)
+            ev.exit_offset.append(g.horizon_bars - 1)
+    return ev
+
+
+def integ_events():
+    evs = []
+    for i in range(80):                    # dev window: day 6..61
+        evs.append(integ_event(8.0 + i * 0.6))
+    for i in range(40):                    # val window: day 63..77
+        evs.append(integ_event(64.0 + i * 0.3))
+    for i in range(40):                    # holdout window: day 79..92
+        evs.append(integ_event(80.0 + i * 0.3))
+    meta_integ = {"t_min": INTEG_TMIN,
+                  "t_max": INTEG_TMIN + INTEG_NDAYS * 86400,
+                  "n_days": INTEG_NDAYS}
+    return evs, meta_integ
+
+
+integ_bar_dir = os.path.join(tempfile.mkdtemp(prefix="ws5-integ-bars-"), "bars")
+os.makedirs(integ_bar_dir)
+write_bars(integ_bar_dir, "BTC", make_bars(400, seed=9, sigma=0.001))
+
+# Complete settlement archive: one venue settle per 8h boundary, rate 0.01.
+integ_sett_dir = os.path.join(tempfile.mkdtemp(prefix="ws5-integ-sett-"),
+                              "settlements")
+os.makedirs(integ_sett_dir)
+_all_settles = []
+b = SETTLE_S * (INTEG_TMIN // SETTLE_S)
+while b < INTEG_TMIN + (INTEG_NDAYS + 2) * 86400:
+    _all_settles.append((b, 0.01, 8))
+    b += SETTLE_S
+write_settlements(integ_sett_dir, "BTC", _all_settles)
+
+# Gap archive: identical but missing every settle in the val window.
+integ_sett_gap_dir = os.path.join(
+    tempfile.mkdtemp(prefix="ws5-integ-gap-"), "settlements")
+os.makedirs(integ_sett_gap_dir)
+gap_lo = INTEG_TMIN + 63 * 86400 - SETTLE_S - 60
+gap_hi = INTEG_TMIN + 77 * 86400 + 60
+write_settlements(integ_sett_gap_dir, "BTC",
+                  [row for row in _all_settles
+                   if not (gap_lo < row[0] < gap_hi)])
+
+_real_collect = R.collect_events
+DENOM_KEYS = ("n_events", "n_funding_adjusted", "n_excluded_missing_coin",
+              "n_excluded_incomplete")
+
+
+def check_denoms(label, blk):
+    ok = blk is not None and all(k in blk for k in DENOM_KEYS)
+    check(f"{label} carries explicit denominators", ok, str(blk))
+    if ok:
+        check(f"{label} denominators reconcile",
+              blk["n_funding_adjusted"] + blk["n_excluded_missing_coin"]
+              + blk["n_excluded_incomplete"] == blk["n_events"], str(blk))
+
+
+try:
+    R.collect_events = lambda *a, **k: integ_events()
+
+    print("\n=== case 20: funding-adjusted metrics differ from friction-only ===")
+
+    out20 = tempfile.mkdtemp(prefix="ws5-integ20-")
+    rep20 = eh.evaluate(integ_bar_dir, settlements_dir=integ_sett_dir,
+                        out_dir=out20, spend_holdout=True)
+
+    check("dev funding-adjusted exists", rep20.dev_funding_adjusted is not None)
+    check_denoms("dev funding-adjusted", rep20.dev_funding_adjusted)
+    check_denoms("val funding-adjusted", rep20.val_funding_adjusted)
+    check_denoms("holdout funding-adjusted", rep20.holdout_funding_adjusted)
+    check_denoms("holdout slip2x funding-adjusted",
+                 rep20.holdout_slip2x_funding_adjusted)
+
+    check("dev funding-adjusted covers every event",
+          rep20.dev_funding_adjusted["n_funding_adjusted"]
+          == rep20.dev_funding_adjusted["n_events"] == 80,
+          str(rep20.dev_funding_adjusted))
+    check("val funding-adjusted covers every event",
+          rep20.val_funding_adjusted["n_funding_adjusted"]
+          == rep20.val_funding_adjusted["n_events"] == 40,
+          str(rep20.val_funding_adjusted))
+
+    check("dev funding-adjusted mean differs from friction-only dev mean",
+          rep20.dev_funding_adjusted["mean_r"] is not None
+          and abs(rep20.dev_funding_adjusted["mean_r"] - rep20.dev["mean_r"])
+          > 0.5,
+          f"funding={rep20.dev_funding_adjusted['mean_r']} "
+          f"friction={rep20.dev['mean_r']}")
+    check("val funding-adjusted mean differs from friction-only val mean",
+          rep20.val_funding_adjusted["mean_r"] is not None
+          and abs(rep20.val_funding_adjusted["mean_r"] - rep20.val["mean_r"])
+          > 0.5,
+          f"funding={rep20.val_funding_adjusted['mean_r']} "
+          f"friction={rep20.val['mean_r']}")
+
+    check("holdout was spent", rep20.holdout is not None)
+    check("funding-adjusted holdout exists and differs from friction",
+          rep20.holdout_funding_adjusted is not None
+          and rep20.holdout_funding_adjusted["mean_r"] is not None
+          and abs(rep20.holdout_funding_adjusted["mean_r"]
+                  - rep20.holdout["mean_r"]) > 0.5,
+          str(rep20.holdout_funding_adjusted))
+    check("funding-adjusted holdout slip2x (sensitivity) exists and differs",
+          rep20.holdout_slip2x_funding_adjusted is not None
+          and rep20.holdout_slip2x_funding_adjusted["mean_r"] is not None
+          and abs(rep20.holdout_slip2x_funding_adjusted["mean_r"]
+                  - rep20.holdout_slip2x["mean_r"]) > 0.5,
+          str(rep20.holdout_slip2x_funding_adjusted))
+    check("no incomplete boundaries with a complete archive",
+          rep20.incomplete_boundary_events == 0
+          and rep20.incomplete_boundary_denominator == 160,
+          f"{rep20.incomplete_boundary_events}/"
+          f"{rep20.incomplete_boundary_denominator}")
+
+    print("\n=== case 21: no funding data -> funding-adjusted metrics are None ===")
+
+    out21 = tempfile.mkdtemp(prefix="ws5-integ21-")
+    rep21 = eh.evaluate(integ_bar_dir, funding_dir=None, settlements_dir=None,
+                        out_dir=out21)
+
+    check("dev funding-adjusted is None without funding data (not friction)",
+          rep21.dev_funding_adjusted is not None
+          and rep21.dev_funding_adjusted["mean_r"] is None
+          and rep21.dev_funding_adjusted["n_funding_adjusted"] == 0,
+          str(rep21.dev_funding_adjusted))
+    check("all dev events excluded as missing-coin",
+          rep21.dev_funding_adjusted["n_excluded_missing_coin"] == 80,
+          str(rep21.dev_funding_adjusted))
+    check("val funding-adjusted is None without funding data",
+          rep21.val_funding_adjusted is not None
+          and rep21.val_funding_adjusted["mean_r"] is None
+          and rep21.val_funding_adjusted["n_funding_adjusted"] == 0,
+          str(rep21.val_funding_adjusted))
+    check("no holdout funding-adjusted without a holdout spend",
+          rep21.holdout_funding_adjusted is None)
+    check("BTC surfaced in missing_cost_coins",
+          "BTC" in rep21.missing_cost_coins, str(rep21.missing_cost_coins))
+
+    print("\n=== case 22: settlement gap excluded+counted; holdout once ===")
+
+    out22 = tempfile.mkdtemp(prefix="ws5-integ22-")
+    rep22 = eh.evaluate(integ_bar_dir, settlements_dir=integ_sett_gap_dir,
+                        out_dir=out22, spend_holdout=True)
+
+    check("dev funding-adjusted complete despite the val gap",
+          rep22.dev_funding_adjusted["n_funding_adjusted"] == 80,
+          str(rep22.dev_funding_adjusted))
+    check("val events with missing settlement boundaries are excluded",
+          rep22.val_funding_adjusted["n_funding_adjusted"] == 0
+          and rep22.val_funding_adjusted["n_excluded_incomplete"] == 40
+          and rep22.val_funding_adjusted["mean_r"] is None,
+          str(rep22.val_funding_adjusted))
+    check("excluded-and-counted totals are reported",
+          rep22.incomplete_boundary_events == 40
+          and rep22.incomplete_boundary_denominator == 160,
+          f"{rep22.incomplete_boundary_events}/"
+          f"{rep22.incomplete_boundary_denominator}")
+    check("holdout funding-adjusted computed on the complete holdout window",
+          rep22.holdout_funding_adjusted is not None
+          and rep22.holdout_funding_adjusted["n_funding_adjusted"] == 40,
+          str(rep22.holdout_funding_adjusted))
+
+    # Holdout spent at most once: a second evaluate() on the same out_dir
+    # must refuse -- no friction holdout AND no funding-adjusted holdout.
+    check("holdout lock file was written",
+          os.path.exists(os.path.join(out22, "holdout_evaluated.json")))
+    rep22b = eh.evaluate(integ_bar_dir, settlements_dir=integ_sett_gap_dir,
+                         out_dir=out22, spend_holdout=True)
+    check("second run: friction holdout refused",
+          rep22b.holdout is None, str(rep22b.holdout))
+    check("second run: funding-adjusted holdout refused (no second look)",
+          rep22b.holdout_funding_adjusted is None
+          and rep22b.holdout_slip2x_funding_adjusted is None,
+          f"{rep22b.holdout_funding_adjusted}")
+
+finally:
+    R.collect_events = _real_collect
 
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
