@@ -388,6 +388,10 @@ def main(argv=None):
                         help="Expected bar/observation spacing in seconds "
                              "(default 300 = 5m bars; funding observation "
                              "archives use their snapshot cadence).")
+    parser.add_argument("--ts-field", default="ts",
+                        help="Timestamp column name for the grid check "
+                             "(default 'ts' for bar/funding/price archives; "
+                             "'settle_ts' for funding-settlement archives).")
     parser.add_argument("--now", type=float, default=None,
                         help="Override wall-clock seconds for staleness.")
     parser.add_argument("--json", action="store_true",
@@ -420,10 +424,12 @@ def main(argv=None):
     now = namespace.now
     max_examples = namespace.max_examples
     tf_sec = namespace.tf_sec
+    ts_field = namespace.ts_field
     results = []
     for coin in coins:
         audit = audit_archive_file(data_dir, coin, tf_sec=tf_sec, now=now,
-                                   max_examples=max_examples)
+                                   max_examples=max_examples,
+                                   ts_field=ts_field)
         results.append(audit)
 
     if namespace.json:
