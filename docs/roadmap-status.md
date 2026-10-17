@@ -4,38 +4,49 @@ Product goal: quantitative research and analysis for MEXC altcoin perpetual
 futures. Rules support quant analysis; heuristic scores are not evidence of
 edge. Read-only; no order execution. BTC is labeled market context only.
 
-Last updated: 2026-10-15 (late — R1–R4 + WS5-1 closed, full suite green).
-Verified against code/data, not inherited summaries.
+Last updated: 2026-10-17 (WS4 venue-reported settlement history and
+mark/index price history delivered in code; the live service predates
+them). Verified against code/data/live probes, not inherited summaries.
 
-## Deployment gap (verified 2026-10-15 ~22:05 UTC, live system)
+## Current deployment state (verified live 2026-10-17)
 
-- The running backend (ActiveEnterTimestamp 2026-10-15 11:09) **predates
-  all of today's commits**: `GET /scanner-health` answers `404 NOT_FOUND`
-  ("no such route") although the route exists at `proto/service.py:653`,
-  and `data/funding/` does not exist although `proto/funding.py` is
-  committed and the collect cycle is running (569 coins, bars flowing).
-  Cause is a stale process, not a code bug.
-- Action required before any WS2/WS3/WS4 behavior is live:
-  `systemctl --user restart altradar.service`, then re-verify
-  `/scanner-health` (expect 200 with lifecycle state) and
-  `data/funding/*.csv.gz` after one collect cadence. Restart not performed
-  — it recycles the 24/7 collector, so it waits on user go-ahead.
+- Running service: systemd user unit `altradar.service`, **active**, pid
+  715, `ActiveEnterTimestamp` 2026-10-16 15:41 WAT, exactly one loopback
+  listener on 127.0.0.1:18741. It was **NOT** restarted for any of the
+  2026-10-17 commits, and the owner has not authorized a restart.
+- Live routes verified by read-only authenticated probe (2026-10-17):
+  `/healthz` 200, `/readyz` 200 (`ready: true`), `/scanner-health` 200
+  (`status: healthy`, sweep_count 17), `/funding?coin=BTC` 200 (ascending
+  rows).
+- **Deployed and live-verified:** `/funding` (WS4e, commit 858201c,
+  2026-10-16 00:53) — the 2026-10-16 15:41 restart is AFTER that commit,
+  so the funding route and `/scanner-health` are live.
+- **Code delivered, DEPLOY PENDING** (the running process predates the
+  commits; a restart waits on owner go-ahead because it recycles the 24/7
+  collector):
+  - `/quant-status` + `quant.shadow` SSE (WS5, commits e80c07c/139bcac,
+    2026-10-16 22:07+) → live probe returns
+    `404 no such route: /quant-status`.
+  - `/settlements` (WS4, commits 90a568a/2184f87/48ef382, 2026-10-17) →
+    live probe returns `404 no such route: /settlements`.
+  - `/prices` + `/index-price` (WS4 mark/index price history, this
+    change) → not present in the running process.
+- Restart + live-verification is therefore a single explicit operator
+  action awaiting approval (see "Deployment / live-verification steps").
 
-## Deployment gap RESOLVED (R1 verified 2026-10-15, post-restart)
+### Historical (superseded) deployment-gap record
 
-- Restart performed (`systemctl --user restart altradar.service`,
-  exit 0; new pid 200835, exactly one listener on 127.0.0.1:18741).
-- `GET /scanner-health` answers 200 `{"ok": true, "data":
-  {"status": "healthy", ...}}` (pre-restart probe confirmed the old
-  code: `NOT_FOUND no such route`).
-- Funding archive grew from baseline `(absent)` — `data/funding/` did
-  not exist pre-restart — to 569 files / 41,615 bytes with header
-  `ts,rate,cap` (spot-check `BTC.csv.gz`: one data row). Growth, not
-  mere existence. First collect took ~10min (universe refresh + slow
-  first scan/measure), slower than the nominal 300s cadence.
-- Note: the old process needed SIGKILL after SIGTERM timed out
-  (mid-measure-cycle); pre-existing shutdown behavior, new process
-  acquired the lock cleanly.
+- Pre-restart (verified 2026-10-15 ~22:05 UTC): the then-running backend
+  (ActiveEnterTimestamp 2026-10-15 11:09) predated that day's commits;
+  `GET /scanner-health` returned `404 NOT_FOUND` and `data/funding/` did
+  not exist, although both were committed. Cause was a stale process, not
+  a code bug.
+- Resolved (R1, 2026-10-15 post-restart to pid 200835): `/scanner-health`
+  answered 200 healthy and the funding archive grew from absent to 569
+  files (header `ts,rate,cap`). A later restart (2026-10-16 15:41, pid
+  715) superseded that process and included the `/funding` route. The old
+  process needed SIGKILL after SIGTERM timed out (mid-measure-cycle);
+  pre-existing shutdown behavior.
 
 ## Workstream status
 
@@ -202,19 +213,30 @@ Verified against code/data, not inherited summaries.
   rows, `count == len(rows)`, `data_as_of == last_ts`.
   - Verification: `tests/test_funding_route.py` → ALL PASS (39 checks);
     `tests/run_all.py` → ALL SUITES PASS (66 files).
-  - Deploy status PENDING (no restart performed — it recycles the 24/7
-    collector, so it waits on user go-ahead): the running backend (pid
-    200835, started 2026-10-15 22:59 WAT) predates commit 858201c
-    (2026-10-16 00:53 WAT), so the live process cannot serve the route
-    yet. After `systemctl --user restart altradar.service`, live-verify
-    with `curl` on an observed coin (expect 200, ascending rows,
-    `count == len(rows)`).
-- Remaining: mark/index archive; book/spread history; OI series;
-  DEPLOY + live-verify the funding and settlements read routes
-  (delivered in code, pending restart — see above). UI evidence is WS6.
-  Persisted today: 5m OHLCV bars, funding observations, and (as of this
-  change, filling on next backfill/collect) venue-reported funding
-  settlements.
+  - Deploy status: **LIVE-VERIFIED (2026-10-17).** The 2026-10-16 15:41
+    restart (pid 715) is AFTER commit 858201c (2026-10-16 00:53), and an
+    authenticated loopback probe returns 200 with ascending rows and
+    `count == len(rows)`. (The historical note that pid 200835, 2026-10-15
+    22:59, predated the route is superseded by that later restart.)
+- Remaining (WS4 market-data history): mark/index price history,
+  book/spread history, OI series, and DEPLOY + live-verify the
+  code-delivered read routes. `/funding` is LIVE-verified; `/settlements`
+  is pending.
+- **Availability finding (verified against official MEXC contract docs,
+  2026-10-17):** public *history* endpoints DO exist for the INDEX PRICE
+  kline (`GET /api/v1/contract/kline/index_price/{symbol}`) and the FAIR
+  (mark) PRICE kline (`GET /api/v1/contract/kline/fair_price/{symbol}`) —
+  both public, columnar OHLC, 2000-candle cap per request, slow-capable
+  to `Day1`. There is **NO public historical OI endpoint** (open interest
+  appears only as the current `holdVol` snapshot on `/ticker`) and **NO
+  public historical order-book/spread endpoint** (only current `/depth`
+  and the live `/depth_commits` snapshot). OI-series and book/spread
+  archives therefore cannot be built from public venue data without
+  fabricating history; both stay OPEN-BLOCKED (see Outstanding).
+- Persisted today: 5m OHLCV bars, funding observations, and
+  venue-reported funding settlements (filling on the first
+  backfill/collect after deploy). Mark/index price history is the next
+  WS4 increment (design + code this session).
 - Delivered (2026-10-17, WS4 settlement history): venue-reported
   settled rates via public `/funding_rate/history`
   (`proto/settlements.py`: `fetch/parse/collect/backfill/collect_recent`
@@ -286,12 +308,21 @@ Verified against code/data, not inherited summaries.
   the shadow path (evaluation harness, Hurst/MF-DFA, competing outcomes,
   calibrated probs, clustered uncertainty) is unbuilt.
 
-### 6. Evidence communication in app — NOT STARTED
+### 6. Evidence communication in app — PARTIAL (Research view delivered; broader evidence display not started)
 - Deps: WS5 outputs to display; WS1/WS4 coverage labels.
 - Complete: `unavailable`-as-null hygiene across table/detail/cards;
   "silence is valid" empty states; reference-notional wording.
-- Remaining: no sample-n / CI / calibration / coverage / validation-status
-  / insufficiency-reason display; no research-vs-live distinction.
+- Delivered (2026-10-16, WS5 shadow path, commits 44df80f etc.): the
+  Research view on the Analysis page — SHADOW banner, event counts,
+  suppression rows, measured-range promotions, and an explicit
+  insufficient-evidence state, with no setup-table mixing and banned-word
+  hygiene. It renders quant shadow counts only; it never labels shadow
+  output as actionable.
+- Remaining (still NOT STARTED): sample-n / CI / calibration / coverage /
+  validation-status display beyond the Research view's counts +
+  suppression + measured range; no research-vs-live distinction beyond
+  the SHADOW banner; no representation of the new mark/index or
+  settlement archives. Gated on WS5 producing well-defined result data.
 
 ### 7. Change control (candidate vs validated) — PARTIAL; PROMOTION GATE DELIVERED (evaluation only)
 - Deps: WS5 promotion gates (outcome evidence still unbuilt — the gate
@@ -322,11 +353,24 @@ Verified against code/data, not inherited summaries.
 
 ## Outstanding (NOT in this plan — kept visible)
 
-- WS3 beyond R2/R3: 1m/venue-probe design stage; provisional-bar tier (decided against, needs per-bar markers + scorer re-validation to reopen).
-- WS4 beyond funding observations: funding SETTLEMENT history (code delivered, deploy pending live-verify), mark/index archive, book/spread history, OI series, service route for the funding series (code delivered 858201c, deploy pending live-verify).
-- WS5 beyond increment 1: evaluation harness, estimators, competing outcomes, calibrated probabilities (proposal §3–§5).
-- WS6 evidence UI: sample-n / CI / calibration / coverage / validation-status display (blocked on WS5 outputs).
-- WS7 beyond the decision log: champion/candidate persistence, outcome-based comparison (blocked on WS5).
+- WS3 beyond R2/R3: 1m/venue-probe design stage (read-only record
+  exists); provisional-bar tier (decided against, needs per-bar markers +
+  scorer re-validation to reopen).
+- WS4 beyond delivered work: **OPEN-BLOCKED (public venue data does not
+  exist)** — OI history (only a current `holdVol` snapshot) and
+  book/spread history (only current depth / live commits); **NEXT** —
+  mark/index price history (design + code this session); **DEPLOY
+  PENDING** — `/settlements` route + `/quant-status` route live-verify
+  (code delivered; running service predates the commits). `/funding` is
+  live-verified.
+- WS5 beyond increment 1: live-data evaluation evidence (engine on
+  production bars with funding-archive costs), a calibration record,
+  evaluation harness, estimators, competing outcomes, calibrated
+  probabilities (proposal §3–§5). No rule has passed promotion.
+- WS6 evidence UI: sample-n / CI / calibration / coverage /
+  validation-status display (blocked on WS5 outputs).
+- WS7 beyond the decision log: champion/candidate persistence,
+  outcome-based comparison (blocked on WS5).
 
 ## Stage log
 |- Stage 1 (WS1, complete): bar-archive audit library + CLI + tests (3 commits:
@@ -360,6 +404,28 @@ Verified against code/data, not inherited summaries.
 |  validator (47ff908); WS5-1 registry + validator (9d74b29) with
 |  illustrative HYD-0001 example + decision-log wiring (this commit).
 |  run_all.py ALL SUITES PASS (65 files).
+|- Stage G (WS5 shadow path, complete 2026-10-16): vendored
+|  proto/quant research-and-shadow engine + guarded --quant-shadow daemon
+|  hook + read-only GET /quant-status + quant.shadow SSE + Research view
+|  (commits 2c85807, deba410, e80c07c, 139bcac, 44df80f, 68bfd5a).
+|  Shadow-only promotion contract: a gates pass is a research fact and
+|  never switches live emission (b5ec5f8 + docstring/count corrections
+|  e442ad9). run_all.py ALL SUITES PASS (71 files); frontend 185 tests +
+|  typecheck + lint + build green. Deploy PENDING (live service predates
+|  e80c07c).
+|- Stage H (WS4 settlement history, complete in code 2026-10-17):
+|  venue-reported settled rates via public /funding_rate/history
+|  (proto/settlements.py + mexc.funding_history); append-only
+|  data/funding_settlements/<COIN>.csv.gz
+|  (settle_ts,settled_rate,cycle_hours); guarded daily daemon hook;
+|  read-only GET /settlements (commits 55f96b7, 237c7e0, 90a568a,
+|  cbb1351); auditable settle grid via bar_quality ts_field (cbb1351);
+|  spec/operator doc (2ee0438); post-review fixes — shared settlements
+|  dir, currentPage check, dedicated 20-req/2s limiter, read-path
+|  finiteness (2184f87) and correct history-endpoint limiter + data-dir
+|  default alignment (48ef382). No estimation anywhere; not fed into
+|  scoring/costs/gates/emission. Deploy PENDING.
+|  NOTE: no raw archive was ever rewritten in any stage.
 
 ## Handoff (committed-state reference — NOT part of the stage log above)
 
@@ -396,23 +462,46 @@ Verified against code/data, not inherited summaries.
 - Stage 1 audit: `8073b63`, `0bd1938`, `f11b789` (carried forward, untouched)
 
 ### Next priorities by workstream
-- WS4 (point-in-time coverage): funding/mark/book/OI archives — R1 has
-  now verified the funding observation archive IS accumulating live
-  (569 files); still NOT STARTED as archives: funding SETTLEMENT
-  history, mark/index, book/spread history, OI series, service route
-  for the funding series. The audit pattern (`proto/bar_quality.py`) is
-  directly reusable for new archives once collection exists.
-- WS5 (research foundation): hypothesis registry DELIVERED (this plan);
-  still NOT STARTED: evaluation harness, purge/embargo splits usage,
-  competing outcomes, calibrated probabilities (proposal §3–§5) — NOT
-  STARTED. The promotion gate already states its outcome inputs are
-  unbuilt rather than inventing them.
-- WS6 (evidence-focused UI): sample-n / CI / calibration / coverage /
-  validation-status display — NOT STARTED.
-- WS7: decision log file + validator DELIVERED (empty log awaits first
-  entry); still pending: champion/candidate objects + outcome-based
-  comparison (needs WS5) — evaluation delivered, persistence pending.
+- WS4 (market-data history): DELIVERED in code — funding observations,
+  venue-reported settlements, and (this session) mark/index price
+  history; `/funding` live-verified. DEPLOY PENDING: `/settlements`,
+  `/quant-status`, and the new price routes (restart not authorized).
+  OPEN-BLOCKED: OI series + book/spread history (no public history
+  endpoint — do not fabricate). The audit pattern
+  (`proto/bar_quality.py`) is reused by every archive.
+- WS5 (research foundation): hypothesis registry + shadow engine
+  DELIVERED; NOT STARTED: live-data evaluation evidence, calibration
+  record, evaluation harness, purge/embargo splits usage, competing
+  outcomes, calibrated probabilities (proposal §3–§5). The promotion gate
+  states its outcome inputs are unbuilt rather than inventing them; no
+  rule has passed.
+- WS6 (evidence-focused UI): Research view DELIVERED (shadow counts);
+  sample-n / CI / calibration / coverage / validation-status display NOT
+  STARTED (blocked on WS5 outputs).
+- WS7: decision log file + validator DELIVERED (empty log awaits its
+  first genuine entry); still pending: champion/candidate objects +
+  outcome-based comparison (needs WS5).
 - WS3: 1m design stage (venue probe + request budget + archive
   decision); stale-coins uptime look.
-- The overall quantitative research system is NOT complete: WS4–WS6
-  remain, and WS5/WS7 need outcome evidence.
+- The overall quantitative research system is NOT complete: WS4 deploy +
+  WS5 outcome evidence + WS6/WS7 remain.
+
+### Committed state (2026-10-16 → 2026-10-17)
+- `48ef382` fix(WS4): correct settlement-endpoint rate limiter + data-dir
+  default alignment
+- `2184f87` fix(WS4): shared settlements dir, currentPage check, rate
+  limiting, read-path finiteness
+- `2ee0438` docs(WS4): settlement history spec, operator reference, status
+- `cbb1351` feat(WS4): auditable timestamp column for settle grid
+- `90a568a` feat(WS4): settlements read route
+- `237c7e0` feat(WS4): guarded settlement collect hook
+- `55f96b7` feat(WS4): venue-reported settlement archive
+- `e442ad9` docs(WS5): shadow-only docstring, suite count, QuantStatus
+  actionable_events
+- `b5ec5f8` feat(WS5): shadow-only promotion contract with regression cover
+- `68bfd5a` docs(WS5): quant integration architecture and status
+- `44df80f` feat(WS5): research view for shadow findings
+- `139bcac` test(WS5): route-level unavailable-status coverage
+- `e80c07c` feat(WS5): quant status route and shadow event
+- `deba410` feat(WS5): guarded quant-shadow daemon hook
+- `2c85807` feat(WS5): vendor quant research-and-shadow engine (additive)
