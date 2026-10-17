@@ -327,41 +327,52 @@ Verified against code/data/live probes/tests, not inherited summaries.
   `docs/quant-analytics-system-proposal.md` §3–§5 beyond the registry and
   the shadow path (evaluation harness, Hurst/MF-DFA, competing outcomes,
   calibrated probs, clustered uncertainty) is unbuilt.
-  - Delivered (2026-10-17, WS5 evaluation harness):
+  - Delivered (2026-10-17, WS5 evaluation harness; corrected same day):
   `proto/quant/cost_attribution.py` — funding cost attribution from the
-  WS4 archives. Attaches venue-reported funding rates to event holding
-  windows using the settlement archive (`data/funding_settlements/`) first,
-  falling back to the observation archive (`data/funding/`). Missing
-  funding data for a coin is surfaced as ``missing=True`` / ``cost=None``
-  — never zero-filled or estimated. The cost is additive to the existing
-  round-trip friction in ``barrier.net_r``; funding is included in net R
-  only when the archive covers the position window. Position sign is
-  applied: positive rates are costs for longs (side=+1) and credits for
-  shorts (side=-1), using the trade side from the barrier labeler. Funding
-  is charged only through the event's actual exit timestamp (TP/SL exit
-  early via the retained exit_offset; TIME exits use max horizon). Events
-  with incomplete boundary coverage are excluded from funding-adjusted
-  metrics; affected counts are reported. Reproducible via
-  ``config_hash(funding_dir, settlements_dir, cfg)`` (SH-16 of the
-  quant config hash + archive paths + settle-seconds).
-  `proto/quant/eval_harness.py` + CLI `python3 -m proto.quant evaluate`
-  — runs `research.collect_events` → `run_stage_dev_val` → one-shot
-  holdout over production bar archives with the dev/val/holdout splits
-  and embargo from `config.Splits`. The split discipline is the same as
-  the research harness (embargo >= max horizon + entry bar, holdout
-  once-only via `holdout_evaluated.json` lock, second attempt refused
-  gracefully). Explicit leakage check (`check_no_leakage`) asserts no
-  event window crosses a split boundary. Reports carry config_hash,
-  cost_hash, git_rev, bar file digests for ALL coins (no cap),
-  funding/settlement archive digests for every contributing coin, and
-  the list of coins with missing cost data. All output goes to a temp or
-  `--out` directory -- production `data/` is never written, the service
-  is never restarted, and no quant.db is created. Verification:
-  `tests/test_ws5_eval_harness.py` → ALL PASS (51 checks covering cost
-  attribution, missing-data handling, sign correctness, early-exit
-  exit-timestamp charging, splits, leakage, holdout lock, archive digests,
-  incomplete-boundary exclusion, and no-production-write guarantees);
-  all pre-existing quant and WS4 tests remain green.
+  WS4 archives at the venue's OWN settle boundaries. Venue-reported
+  settlement rows (`settle_ts`/`settled_rate`) are the funding events and
+  are used when they cover every boundary inside a holding window; the
+  observation archive (`data/funding/`) is a documented fallback for
+  observation-only periods — each boundary takes the last snapshot in
+  `[b - cycle, b)`, counted once, NEVER summed per snapshot. Windows whose
+  funding events cannot all be attributed are `incomplete`: excluded from
+  funding-adjusted metrics and counted, never zero-filled or estimated. A
+  coin with no archive rows at all is `missing`. The position side comes
+  from the SELECTED rule's policy (`fade` inverts the break, `cont` keeps
+  it) and drives the funding sign, the exit-offset slot (funding charged
+  only through the actual exit timestamp; TIME exits use the horizon), and
+  the coverage accounting. The cost is additive to friction in
+  `barrier.net_r`. Reproducible via `config_hash(funding_dir,
+  settlements_dir, cfg)` (SHA16 of the quant config hash + archive paths +
+  settle-seconds + boundary tolerance).
+  `proto/quant/eval_harness.py` + CLI `python3 -m proto.quant evaluate` —
+  runs `research.collect_events` → `run_stage_dev_val` → one-shot holdout
+  with the dev/val/holdout splits and embargo from `config.Splits`.
+  Selection stays friction-only (fees+slippage); the report adds
+  funding-adjusted dev/val/holdout/2x-slip metrics for the selected config
+  with EXPLICIT denominators (`n_events`, `n_funding_adjusted`,
+  `n_excluded_missing_coin`, `n_excluded_incomplete`, `coverage`) — a
+  funding-adjusted metric with nothing attributable is null, never a
+  friction-only number under a funding label. Holdout once-only via the
+  `holdout_evaluated.json` lock (second attempt refused gracefully,
+  including the funding-adjusted fields); explicit `check_no_leakage`
+  asserts no event window crosses a split boundary. Reports carry
+  config_hash, cost_hash, git_rev, all-coin bar digests (no cap),
+  funding/settlement archive digests for every contributing coin, and the
+  list of coins with missing cost data. Output goes to a temp/`--out` dir
+  only — production `data/` is never written, the service is never
+  restarted, no quant.db is created. Also fixed a latent holdout crash:
+  the one-shot path re-summarized an already-summarized holdout, so any
+  real holdout spend would have failed. Verification:
+  `tests/test_ws5_eval_harness.py` → ALL PASS (117 checks covering
+  settlement-boundary attribution, snapshot-vs-boundary mapping, sign
+  correctness, actual-exit charging, fade-policy side regression,
+  funding-adjusted vs friction-only divergence, no-funding null metrics,
+  missing-boundary exclusion+count, holdout-once, splits, leakage, archive
+  digests, and no-production-write guarantees); full offline backend suite
+  `tests/run_all.py` → ALL SUITES PASS (77 files). The venue-network suite
+  `tests/test_app.py` is excluded from run_all and timed out in this
+  environment (unverified here).
 
 ### 6. Evidence communication in app — PARTIAL (Research view delivered; broader evidence display not started)
 - Deps: WS5 outputs to display; WS1/WS4 coverage labels.

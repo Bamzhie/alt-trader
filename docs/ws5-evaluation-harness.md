@@ -42,49 +42,106 @@ The harness asserts no event's label window crosses a split boundary via
 `check_no_leakage()`. Any violation is reported in `evaluation.json` under
 `leakage_violations`.
 
+**Selection is friction-only.** The dev -> val selection and the max-t
+multiplicity control use the research harness's friction (fees + slippage)
+net R. Funding-adjusted numbers are computed afterwards, for the selected
+config, as reporting only — they never select a config, and nothing is
+tuned on validation or holdout.
+
 ## Funding cost attribution
 
-Costs attach venue-reported funding rates to each event's holding window:
+Costs attach venue funding to each event's holding window. Funding is paid
+or received **only at the venue's settle boundaries** (the funding events);
+an observation timestamp is not a funding event.
 
-1. **Settlement archive** (`data/funding_settlements/`) is consulted first --
-   these are venue-reported settled rates at exact `settle_ts` boundaries.
-2. **Observation archive** (`data/funding/`) is the fallback -- these are
-   point-in-time observed rates (the rate at `ts`, not a settled fact).
-3. The cost is the sum of rates at each settle boundary (observation
-   timestamp) in the position's holding window `[open_ts, exit_ts)`,
-   multiplied by the trade side.
-4. **Position sign**: positive funding rates are costs for long positions
-   (side=+1) and credits for short positions (side=-1). Negative rates
-   reverse the effect. The actual trade side from the barrier labeler is
-   used.
-5. **Actual exit timestamp**: funding is charged only through the event's
+1. **Settlement archive** (`data/funding_settlements/`) first. Each row's
+   `settle_ts` IS a funding event timestamp and `settled_rate` is what the
+   venue actually paid there. When the archive holds a row for every
+   boundary inside the window, those settled rates are the cost.
+2. **Observation archive** (`data/funding/`) is the fallback for
+   observation-only periods. Observation rows record the MUTATING rate at
+   `ts`; they are **never summed per snapshot**. The documented mapping is:
+   a funding event at boundary `b` takes the **last snapshot in
+   `[b - cycle, b)`**, each boundary charged at most once. A snapshot after
+   `b` belongs to the next cycle.
+3. **Grid phase.** Boundaries are `phase + k * cycle`: `cycle` comes from
+   the settlement archive's own `cycle_hours` (8h default, the MEXC
+   standard) and `phase` is inferred from the coin's settlement archive
+   when it has one, otherwise the observation mapping assumes the
+   epoch-aligned 8h UTC grid. `BOUNDARY_TOL_S` (one 5m bar) absorbs
+   whole-second rounding when matching a venue row to its boundary.
+4. **Incomplete means excluded, never estimated.** If any funding event
+   inside the holding window cannot be attributed — a missing venue
+   settlement row, or no snapshot covers a boundary's cycle — the event's
+   cost is `None` (`incomplete=True`) and the event is excluded from the
+   funding-adjusted metric and counted. Snapshot rates are never summed
+   repeatedly to fill a gap.
+5. **Position side from the rule policy.** The position side is derived from
+   the SELECTED rule (`trade_side`): `cont` trades with the break
+   (`ev.side`), `fade` trades against it (`-ev.side`). That same side is
+   used for the funding sign, for exit-offset slot selection, and for
+   coverage accounting.
+6. **Sign**: positive funding rates are costs for long positions (side=+1)
+   and credits for short positions (side=-1). Negative rates reverse the
+   effect.
+7. **Actual exit timestamp**: funding is charged only through the event's
    actual exit, not the maximum horizon. TP/SL events exit early (the
-   barrier labeler's `exit_offset` is retained on the `Event` struct and
-   used to compute the real exit timestamp). Only TIME exits go to the
-   full horizon.
-6. **Missing data is missing** -- if a coin has no funding archive at all,
-   `cost=None, missing=True`. The harness does NOT estimate, interpolate,
-   or zero-fill. Coins with missing cost data are listed under
-   `missing_cost_coins` in the report.
-7. **Incomplete boundary coverage**: events whose funding data does not
-   cover the full holding window are excluded from funding-adjusted metrics.
-   The report carries `incomplete_boundary_events` (count excluded) and
-   `incomplete_boundary_denominator` (total events with cost data available).
+   barrier labeler's `exit_offset`, keyed by the trade side, is retained on
+   the `Event` struct). Only TIME exits go to the full horizon.
+8. **Missing data is missing** — if a coin has no cost archive rows at all,
+   `missing=True`, `cost=None`. The harness does NOT estimate, interpolate,
+   or zero-fill. Such coins are listed under `missing_cost_coins`.
 
 The cost is additive to the round-trip friction in `barrier.net_r`:
 
 ```
-net_r = (gross_log_return - round_trip_cost - funding_cost) / stop_distance
+friction-only net R      = (gross_log_return - round_trip_cost) / stop_distance
+funding-adjusted net R   = (gross_log_return - round_trip_cost - funding_cost) / stop_distance
 ```
+
+## Funding-adjusted metrics and denominators
+
+Every window reports two clearly separated views:
+
+| Report field | Basis | Selection |
+|--------------|-------|-----------|
+| `dev`, `val` | friction-only (fees + slippage) | used for dev->val selection |
+| `holdout`, `holdout_slip2x` | friction-only | one-shot holdout + 2x-slip sensitivity |
+| `dev_funding_adjusted`, `val_funding_adjusted` | friction + funding | reporting only |
+| `holdout_funding_adjusted`, `holdout_slip2x_funding_adjusted` | friction + funding | reporting only, computed in the same single holdout look |
+
+Each `*_funding_adjusted` block makes its denominator explicit:
+
+| Field | Meaning |
+|-------|---------|
+| `n_events` | selected, tradeable events in the window (the coverage denominator) |
+| `n_funding_adjusted` | events with a fully attributed funding cost — **the metric's denominator** |
+| `n_excluded_missing_coin` | events on coins with no cost archive rows |
+| `n_excluded_incomplete` | events with unattributable funding events in their window |
+| `coverage` | `n_funding_adjusted / n_events` |
+| `missing_coins` | sorted coins counted as missing |
+
+`n_funding_adjusted + n_excluded_missing_coin + n_excluded_incomplete ==
+n_events` always holds. When `n_funding_adjusted` is 0, every metric field
+is `null` — a funding-adjusted label never carries a friction-only number.
+`dev_funding_adjusted` / `val_funding_adjusted` are `null` when no config
+was selected (insufficient data), and the holdout funding-adjusted fields
+are `null` unless the one-shot holdout was actually spent.
+
+Top-level `incomplete_boundary_events` / `incomplete_boundary_denominator`
+aggregate the excluded-and-counted totals across every window whose
+funding-adjusted metric was computed (dev + val + holdout-if-spent; the
+2x-slip variant is the same events and is not double-counted).
 
 ## Reproducibility
 
 Every report carries:
 
-- `config_hash` -- SHA16 of the frozen quant config (version, cost tiers,
+- `config_hash` -- SHA12 of the frozen quant config (version, cost tiers,
   feature params, grid, splits, selector, risk).
 - `cost_hash` -- SHA16 of the config hash + funding_dir + settlements_dir
-  + settle-seconds. Any change to cost inputs changes this hash.
+  + settle-seconds + boundary tolerance. Any change to cost inputs or the
+  attribution rule changes this hash.
 - `git_rev` -- the git HEAD at run time (enables exact reproduction).
 - `bar_digests` -- SHA256 of each coin's bar archive file (all coins, no cap).
 - `funding_digests` -- SHA256 of each contributing coin's funding observation
@@ -108,14 +165,24 @@ Results are only comparable within the same `config_hash` + `cost_hash`.
   "val": {"n": 89, "mean_r": 0.03, ...},
   "holdout": {"n": 45, "mean_r": -0.01, ...} | null,
   "holdout_slip2x": {...} | null,
+  "dev_funding_adjusted": {
+    "n_events": 234, "n_funding_adjusted": 210,
+    "n_excluded_missing_coin": 12, "n_excluded_incomplete": 12,
+    "coverage": 0.897, "missing_coins": ["AAA", "BBB"],
+    "mean_r": 0.021, "ci_lo": -0.14, "ci_hi": 0.18, "days": 54, "coins": 40,
+    "tp": 0.31, "sl": 0.28, "time": 0.41, "t": 1.8
+  },
+  "val_funding_adjusted": {...} | null,
+  "holdout_funding_adjusted": {...} | null,
+  "holdout_slip2x_funding_adjusted": {...} | null,
   "leakage_violations": [],
   "missing_cost_coins": ["AAA", "BBB", ...],
   "git_rev": "4e644cc...",
   "bar_digests": {"BTC": "sha256...", ...},
   "funding_digests": {"BTC": "sha256...", ...},
   "settlement_digests": {"BTC": "sha256...", ...},
-  "incomplete_boundary_events": 0,
-  "incomplete_boundary_denominator": 89,
+  "incomplete_boundary_events": 12,
+  "incomplete_boundary_denominator": 323,
   "produced_at": 1792262400
 }
 ```
@@ -126,9 +193,14 @@ Results are only comparable within the same `config_hash` + `cost_hash`.
   With shorter archives (e.g. the current ~16-day production set), the
   dev window may be truncated and no holdout is spent. This is honest,
   not a defect.
-- Funding is charged at the observation/settlement timestamps directly,
-  not a synthetic 8h grid. The venue-reported rate at each boundary
-  applies piecewise-constant until the next observation.
+- The settlement archive must cover every funding event in a window for
+  its rates to be used. Collections that started mid-archive leave earlier
+  windows incomplete (excluded and counted), not back-filled.
+- The observation mapping's grid phase is inferred from the settlement
+  archive when present; observation-only coins assume the epoch-aligned
+  8h UTC grid. A coin on a different phase without a settlement archive
+  can only be attributed for windows whose boundaries it can cover, and
+  is otherwise reported incomplete.
 - The harness does NOT model funding on unrealized positions, partial
   fills, or mark-price divergence. It is a research tool, not a trading
   calculator.

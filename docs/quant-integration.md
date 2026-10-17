@@ -64,8 +64,15 @@ python3 -m proto.quant gates --research <out/research.json> --db <quant.db>  # p
 The `evaluate` command (WS5 evaluation harness) runs `research.collect_events`
 + `run_stage_dev_val` + one-shot holdout over production bar archives with
 funding-cost attribution from the WS4 archives. Splits, embargo, and the
-holdout lock are inherited from the research harness. Missing funding data
-is surfaced as `missing_cost_coins`, never zero-filled. The report carries
+holdout lock are inherited from the research harness. Selection stays
+friction-only; the report adds funding-adjusted dev/val/holdout/2x-slip
+metrics for the selected config with explicit denominators
+(`n_events`, `n_funding_adjusted`, `n_excluded_*`). Funding is charged at
+the venue's settle boundaries (venue settlement rows first; observation
+snapshots are mapped to funding events, never summed per snapshot), using
+the position side from the selected rule's policy. Unattributable windows
+are excluded and counted; missing cost data is surfaced as
+`missing_cost_coins`, never zero-filled. The report carries
 `config_hash`, `cost_hash`, `git_rev`, and `bar_digests` for reproducibility.
 See `docs/ws5-evaluation-harness.md` for the full operator reference.
 
