@@ -2061,10 +2061,8 @@ def build_service_parser():
     ap.add_argument("--funding-dir", default=None,
                     help="funding archive dir for /funding "
                          "(default: funding sibling of --data-dir)")
-    ap.add_argument("--settlements-dir", default=None,
-                    help="settlement archive dir for /settlements "
-                         "(default: funding_settlements sibling of "
-                         "--data-dir)")
+    # --settlements-dir is inherited from the daemon parser (build_parser),
+    # so it is available to both the loop and the route without duplication.
     # No --quant-db here: the inherited daemon parser already owns it
     # (same default data/quant.db); main() passes args.quant_db through.
     return ap
@@ -2080,7 +2078,7 @@ _DAEMON_ARGV_NAMES = ("stake", "coins", "interval", "log_threshold",
                       "use_v3", "collect_every", "resolve_every",
                       "measure_every", "iterations", "no_scan",
                       "quant_shadow", "quant_db", "quant_bars",
-                      "quant_equity")
+                      "quant_equity", "settlements_dir")
 
 
 def _daemon_argv_for(args):

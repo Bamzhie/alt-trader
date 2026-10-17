@@ -103,6 +103,11 @@ def build_parser():
     ap.add_argument("--quant-db", default="data/quant.db")
     ap.add_argument("--quant-bars", default="data/bars")
     ap.add_argument("--quant-equity", type=float, default=1000.0)
+    ap.add_argument("--settlements-dir", default=None,
+                    help="settlement archive dir for the WS4 collect hook "
+                         "(default: data/funding_settlements sibling of "
+                         "--quant-bars); when None the module default "
+                         "SETTLEMENTS_DIR is used")
     return ap
 
 
@@ -324,7 +329,9 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                 # load). Guarded on its own like funding: a settlements
                 # failure must never fail the bars sweep.
                 try:
-                    settle_out = smod.maybe_collect()
+                    settle_dir = getattr(args, "settlements_dir", None)
+                    settle_out = smod.maybe_collect(
+                        data_dir=settle_dir)
                     if settle_out:
                         print(f"[{time.strftime('%H:%M:%S')}] settlements: "
                               f"{len(settle_out)} coins "

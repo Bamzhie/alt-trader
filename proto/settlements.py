@@ -77,7 +77,7 @@ def _as_cycle(value):
     return hours if hours > 0 else None
 
 
-def parse_page(symbol, data):
+def parse_page(symbol, data, expected_page=None):
     """Validate one history page; return ``(rows, info, skipped)``.
 
     ``rows`` are ``{settle_ts, settled_rate, cycle_hours|None}``
@@ -85,6 +85,10 @@ def parse_page(symbol, data):
     ``info`` is ``{page, total_pages, total_count}``. ``skipped`` maps
     rejection categories to counts. Malformed pagination raises
     ``SettlementError``. Never invents data.
+
+    When ``expected_page`` is provided, the response's ``currentPage`` must
+    match it — a mismatch indicates the venue returned the wrong page and
+    is rejected loudly rather than silently archived out of order.
     """
     if not isinstance(data, dict):
         raise SettlementError(f"history page for {symbol} is not a mapping")
@@ -96,6 +100,10 @@ def parse_page(symbol, data):
     except (KeyError, TypeError, ValueError):
         raise SettlementError(
             f"history page for {symbol} has malformed pagination")
+    if expected_page is not None and page != expected_page:
+        raise SettlementError(
+            f"history page for {symbol}: currentPage {page} != requested "
+            f"page {expected_page}")
     if page < 1 or total_pages < 1 or total_count < 0:
         raise SettlementError(
             f"history page for {symbol} has impossible pagination: "
@@ -141,23 +149,32 @@ def parse_page(symbol, data):
 
 
 def read_settlements(data_dir, coin):
-    """Every archived settlement for one coin, chronological."""
+    """Every archived settlement for one coin, chronological.
+
+    Non-finite rates (NaN/inf/non-numeric) and invalid cycle values are
+    rejected and skipped — never emitted — so the API can never produce
+    non-standard JSON (``NaN``/``Infinity`` from ``json.dumps``). The
+    same validators used at ingest guard the read path.
+    """
     p = _path(data_dir, coin)
     if not os.path.exists(p):
         return []
     out = []
     with gzip.open(p, "rt", newline="") as f:
         for r in csv.DictReader(f):
+            rate = _as_finite_rate(r.get("settled_rate"))
+            if rate is None:
+                continue  # non-finite rate rejected, never emitted
             try:
-                out.append({
-                    "settle_ts": int(r["settle_ts"]),
-                    "settled_rate": float(r["settled_rate"]),
-                    "cycle_hours": (int(r["cycle_hours"])
-                                    if r["cycle_hours"] not in (None, "")
-                                    else None),
-                })
+                ts = int(r["settle_ts"])
             except (KeyError, TypeError, ValueError):
-                continue  # a malformed row never masks the good history
+                continue
+            cycle = _as_cycle(r.get("cycle_hours"))
+            out.append({
+                "settle_ts": ts,
+                "settled_rate": rate,
+                "cycle_hours": cycle,
+            })
     out.sort(key=lambda r: r["settle_ts"])
     return out
 
@@ -169,6 +186,8 @@ def append_settlements(data_dir, coin, rows):
     the same page records nothing), writes in append order, never
     rewrites.
     """
+    if data_dir is None:
+        data_dir = SETTLEMENTS_DIR
     os.makedirs(data_dir, exist_ok=True)
     seen = {r["settle_ts"] for r in read_settlements(data_dir, coin)}
     new = [r for r in sorted(rows, key=lambda r: r["settle_ts"])
@@ -205,14 +224,22 @@ def collect_coin(data_dir, coin, symbol, max_pages=10):
     silent). Transport errors propagate.
     """
     from . import mexc
+    from .scan import LIMITER
+    if data_dir is None:
+        data_dir = SETTLEMENTS_DIR
     new_total = 0
     skipped_total = {}
     pages = 0
     truncated = False
     page = 1
     while True:
+        # Pace every venue request through the shared venue-wide rate
+        # limiter (documented 20 req/s cap) so backfill/collect never
+        # bursts the endpoint the way a raw per-coin loop would.
+        LIMITER.acquire()
         data = mexc.funding_history(symbol, page, 1000)
-        rows, info, skipped = parse_page(symbol, data)
+        rows, info, skipped = parse_page(symbol, data,
+                                         expected_page=page)
         _merge_skipped(skipped_total, skipped)
         new_total += append_settlements(data_dir, coin, rows)
         pages += 1
@@ -248,6 +275,8 @@ def backfill(data_dir=SETTLEMENTS_DIR, max_pages_per_coin=3, coins=None):
     Per-coin failures are captured as ``{"coin", "new": 0, "error"}``
     and never abort the run. Returns ``{coin: result}``.
     """
+    if data_dir is None:
+        data_dir = SETTLEMENTS_DIR
     mapping = dict(coins) if coins is not None else _universe_coins()
     out = {}
     for coin, symbol in sorted(mapping.items()):
@@ -267,14 +296,21 @@ def collect_recent(data_dir=SETTLEMENTS_DIR, coins=None):
     Returns ``{coin: collect_coin result}`` with ``pages`` always 1.
     """
     from . import mexc
+    from .scan import LIMITER
+    if data_dir is None:
+        data_dir = SETTLEMENTS_DIR
     mapping = dict(coins) if coins is not None else _universe_coins()
     out = {}
     for coin, symbol in sorted(mapping.items()):
         try:
+            # Pace every venue request through the shared venue-wide rate
+            # limiter (documented 20 req/s cap) so incremental collection
+            # never bursts the endpoint either.
+            LIMITER.acquire()
             data = mexc.funding_history(symbol, 1, 1000)
-            rows, _, skipped = parse_page(symbol, data)
-            new = append_settlements(data_dir, coin, rows)
-            out[coin] = {"coin": coin, "new": new, "skipped": skipped,
+            rows, _, skipped = parse_page(symbol, data, expected_page=1)
+            added = append_settlements(data_dir, coin, rows)
+            out[coin] = {"coin": coin, "new": added, "skipped": skipped,
                          "pages": 1, "truncated": False}
         except Exception as e:
             out[coin] = {"coin": coin, "new": 0,
@@ -284,6 +320,8 @@ def collect_recent(data_dir=SETTLEMENTS_DIR, coins=None):
 
 def _throttle_due(data_dir, every_s=COLLECT_EVERY_S, now=None):
     """Daily throttle for the daemon hook; True means collect now."""
+    if data_dir is None:
+        data_dir = SETTLEMENTS_DIR
     now = int(time.time()) if now is None else int(now)
     try:
         with open(os.path.join(data_dir, THROTTLE_FILE)) as f:
@@ -294,6 +332,8 @@ def _throttle_due(data_dir, every_s=COLLECT_EVERY_S, now=None):
 
 
 def _throttle_mark(data_dir, now=None):
+    if data_dir is None:
+        data_dir = SETTLEMENTS_DIR
     now = int(time.time()) if now is None else int(now)
     os.makedirs(data_dir, exist_ok=True)
     with open(os.path.join(data_dir, THROTTLE_FILE), "w") as f:
@@ -303,6 +343,8 @@ def _throttle_mark(data_dir, now=None):
 def maybe_collect(data_dir=SETTLEMENTS_DIR, every_s=COLLECT_EVERY_S,
                   now=None):
     """Daemon entry: collect when the daily throttle is due, else {}."""
+    if data_dir is None:
+        data_dir = SETTLEMENTS_DIR
     if not _throttle_due(data_dir, every_s, now):
         return {}
     out = collect_recent(data_dir)
