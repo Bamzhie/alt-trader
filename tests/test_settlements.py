@@ -365,10 +365,15 @@ check("batch dedupe keeps first rate for duplicate ts",
       str(rows10))
 
 print("\n=== case 11: maybe_collect throttle on total vs partial failure ===")
-# Total failure: every coin errors → throttle NOT marked.
+# Total failure: every coin errors → throttle NOT marked, retries next call.
 total_fail = {"BTC": {"coin": "BTC", "new": 0, "error": "MexcError: boom"}}
 real_recent = smod.collect_recent
-smod.collect_recent = lambda *a, **k: total_fail
+calls11 = []
+
+def _fail_recent(*a, **k):
+    calls11.append(1)
+    return total_fail
+smod.collect_recent = _fail_recent
 tmp11 = tempfile.mkdtemp(prefix="settle-throttle-fail-")
 try:
     out = smod.maybe_collect(tmp11)
@@ -378,14 +383,25 @@ try:
         os.path.join(tmp11, smod.THROTTLE_FILE))
     check("total failure leaves throttle unmarked",
           not throttle_exists, "throttle file written on total failure")
+    # A second call must retry (invoke collect_recent again).
+    calls11.clear()
+    out2 = smod.maybe_collect(tmp11)
+    check("total failure retries on second call",
+          calls11 == [1] and "error" in out2["BTC"],
+          str((calls11, out2)))
 finally:
     smod.collect_recent = real_recent
 
-# Partial failure: one coin succeeds, one errors → throttle marked.
+# Partial failure: one coin succeeds, one errors → throttle marked + refreshed.
 partial_out = {
     "BTC": {"coin": "BTC", "new": 1, "skipped": {}},
     "BOOM": {"coin": "BOOM", "new": 0, "error": "MexcError: boom"}}
-smod.collect_recent = lambda *a, **k: partial_out
+calls_p = []
+
+def _partial_recent(*a, **k):
+    calls_p.append(1)
+    return partial_out
+smod.collect_recent = _partial_recent
 import time as _time
 old_ts = _time.time() - smod.COLLECT_EVERY_S - 1
 os.makedirs(tmp11, exist_ok=True)
@@ -395,9 +411,18 @@ try:
     out = smod.maybe_collect(tmp11)
     check("partial failure returns mixed result",
           out == partial_out, str(out))
+    throttle_path = os.path.join(tmp11, smod.THROTTLE_FILE)
     check("partial failure marks throttle",
-          os.path.exists(os.path.join(tmp11, smod.THROTTLE_FILE)),
-          "throttle not marked on partial failure")
+          os.path.exists(throttle_path), "throttle not marked on partial")
+    with open(throttle_path) as f:
+        new_ts = int(f.read().strip().split()[0])
+    check("partial throttle timestamp refreshed",
+          new_ts > int(old_ts), f"{new_ts} <= {int(old_ts)}")
+    # Second call must not re-invoke collect_recent.
+    calls_p.clear()
+    out2 = smod.maybe_collect(tmp11)
+    check("partial second call skips collect",
+          calls_p == [] and out2 == {}, str((calls_p, out2)))
 finally:
     smod.collect_recent = real_recent
 
@@ -408,14 +433,28 @@ os.makedirs(tmp12, exist_ok=True)
 with open(os.path.join(tmp12, smod.THROTTLE_FILE), "w") as f:
     f.write(f"{int(old_ts2)}\n")
 idempotent_out = {"BTC": {"coin": "BTC", "new": 0, "skipped": {}}}
-smod.collect_recent = lambda *a, **k: idempotent_out
+calls12 = []
+
+def _counting_collect12(*a, **k):
+    calls12.append(1)
+    return idempotent_out
+smod.collect_recent = _counting_collect12
 try:
     out = smod.maybe_collect(tmp12)
     check("idempotent collect returns result",
           out == idempotent_out, str(out))
-    check("successful zero-new marks throttle (idempotent pass)",
-          os.path.exists(os.path.join(tmp12, smod.THROTTLE_FILE)),
-          "throttle not marked on zero-new success")
+    throttle_path = os.path.join(tmp12, smod.THROTTLE_FILE)
+    check("successful zero-new marks throttle",
+          os.path.exists(throttle_path), "throttle file not written")
+    with open(throttle_path) as f:
+        new_ts = int(f.read().strip().split()[0])
+    check("throttle timestamp refreshed",
+          new_ts > int(old_ts2), f"{new_ts} <= {int(old_ts2)}")
+    # Second call within interval must NOT re-invoke collect_recent.
+    calls12.clear()
+    out2 = smod.maybe_collect(tmp12)
+    check("second call within interval skips collect",
+          calls12 == [] and out2 == {}, str((calls12, out2)))
 finally:
     smod.collect_recent = real_recent
 
@@ -428,14 +467,28 @@ with open(os.path.join(tmp13, smod.THROTTLE_FILE), "w") as f:
 mixed_zeronew = {
     "BTC": {"coin": "BTC", "new": 0, "skipped": {}},
     "BOOM": {"coin": "BOOM", "new": 0, "error": "MexcError: boom"}}
-smod.collect_recent = lambda *a, **k: mixed_zeronew
+calls13 = []
+
+def _counting_collect13(*a, **k):
+    calls13.append(1)
+    return mixed_zeronew
+smod.collect_recent = _counting_collect13
 try:
     out = smod.maybe_collect(tmp13)
     check("mixed zero-new+error returns result",
           out == mixed_zeronew, str(out))
+    throttle_path = os.path.join(tmp13, smod.THROTTLE_FILE)
     check("mixed zero-new success + error marks throttle",
-          os.path.exists(os.path.join(tmp13, smod.THROTTLE_FILE)),
-          "throttle not marked on mixed zero-new+error")
+          os.path.exists(throttle_path), "throttle not marked on mixed")
+    with open(throttle_path) as f:
+        new_ts3_val = int(f.read().strip().split()[0])
+    check("mixed throttle timestamp refreshed",
+          new_ts3_val > int(old_ts3), f"{new_ts3_val} <= {int(old_ts3)}")
+    # Second call must not re-invoke collect_recent.
+    calls13.clear()
+    out2 = smod.maybe_collect(tmp13)
+    check("mixed second call skips collect",
+          calls13 == [] and out2 == {}, str((calls13, out2)))
 finally:
     smod.collect_recent = real_recent
 
