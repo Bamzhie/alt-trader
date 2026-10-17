@@ -452,6 +452,47 @@ try:
 finally:
     pmod.collect_recent = real_cr
 
+print("\n=== case 10: successful zero-new marks throttle (idempotent) ===")
+tmp10 = tempfile.mkdtemp(prefix="prices-throttle-idem-")
+import time as _time
+old_ts = _time.time() - pmod.COLLECT_EVERY_S - 1
+os.makedirs(tmp10, exist_ok=True)
+with open(os.path.join(tmp10, pmod.THROTTLE_FILE), "w") as f:
+    f.write(f"{int(old_ts)}\n")
+idempotent_out = {"mark": {
+    "BTC": {"series": "mark", "coin": "BTC", "new": 0, "skipped": {}}}}
+pmod.collect_recent = lambda *a, **k: idempotent_out
+try:
+    out = pmod.maybe_collect(tmp10)
+    check("idempotent collect returns result",
+          out == idempotent_out, str(out))
+    check("successful zero-new marks throttle (idempotent pass)",
+          os.path.exists(os.path.join(tmp10, pmod.THROTTLE_FILE)),
+          "throttle not marked on zero-new success")
+finally:
+    pmod.collect_recent = real_cr
+
+print("\n=== case 11: mixed zero-new success + error marks throttle ===")
+tmp11b = tempfile.mkdtemp(prefix="prices-throttle-mixed-zeronew-")
+old_ts2 = _time.time() - pmod.COLLECT_EVERY_S - 1
+os.makedirs(tmp11b, exist_ok=True)
+with open(os.path.join(tmp11b, pmod.THROTTLE_FILE), "w") as f:
+    f.write(f"{int(old_ts2)}\n")
+mixed_zeronew = {"mark": {
+    "BTC": {"series": "mark", "coin": "BTC", "new": 0, "skipped": {}},
+    "BOOM": {"series": "mark", "coin": "BOOM", "new": 0,
+             "error": "MexcError: boom"}}}
+pmod.collect_recent = lambda *a, **k: mixed_zeronew
+try:
+    out = pmod.maybe_collect(tmp11b)
+    check("mixed zero-new+error returns result",
+          out == mixed_zeronew, str(out))
+    check("mixed zero-new success + error marks throttle",
+          os.path.exists(os.path.join(tmp11b, pmod.THROTTLE_FILE)),
+          "throttle not marked on mixed zero-new+error")
+finally:
+    pmod.collect_recent = real_cr
+
 from proto.bar_quality import audit_archive_file
 tmp8 = tempfile.mkdtemp(prefix="prices-audit-")
 pmod.append_prices(tmp8, "mark", "BTC", [crow(BASE + i * 3600)

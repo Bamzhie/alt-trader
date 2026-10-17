@@ -401,6 +401,44 @@ try:
 finally:
     smod.collect_recent = real_recent
 
+print("\n=== case 12: successful zero-new marks throttle (idempotent) ===")
+tmp12 = tempfile.mkdtemp(prefix="settle-throttle-idem-")
+old_ts2 = _time.time() - smod.COLLECT_EVERY_S - 1
+os.makedirs(tmp12, exist_ok=True)
+with open(os.path.join(tmp12, smod.THROTTLE_FILE), "w") as f:
+    f.write(f"{int(old_ts2)}\n")
+idempotent_out = {"BTC": {"coin": "BTC", "new": 0, "skipped": {}}}
+smod.collect_recent = lambda *a, **k: idempotent_out
+try:
+    out = smod.maybe_collect(tmp12)
+    check("idempotent collect returns result",
+          out == idempotent_out, str(out))
+    check("successful zero-new marks throttle (idempotent pass)",
+          os.path.exists(os.path.join(tmp12, smod.THROTTLE_FILE)),
+          "throttle not marked on zero-new success")
+finally:
+    smod.collect_recent = real_recent
+
+print("\n=== case 13: mixed zero-new success + error marks throttle ===")
+tmp13 = tempfile.mkdtemp(prefix="settle-throttle-mixed-zeronew-")
+old_ts3 = _time.time() - smod.COLLECT_EVERY_S - 1
+os.makedirs(tmp13, exist_ok=True)
+with open(os.path.join(tmp13, smod.THROTTLE_FILE), "w") as f:
+    f.write(f"{int(old_ts3)}\n")
+mixed_zeronew = {
+    "BTC": {"coin": "BTC", "new": 0, "skipped": {}},
+    "BOOM": {"coin": "BOOM", "new": 0, "error": "MexcError: boom"}}
+smod.collect_recent = lambda *a, **k: mixed_zeronew
+try:
+    out = smod.maybe_collect(tmp13)
+    check("mixed zero-new+error returns result",
+          out == mixed_zeronew, str(out))
+    check("mixed zero-new success + error marks throttle",
+          os.path.exists(os.path.join(tmp13, smod.THROTTLE_FILE)),
+          "throttle not marked on mixed zero-new+error")
+finally:
+    smod.collect_recent = real_recent
+
 print()
 if FAILURES:
     print(f"FAIL  tests/test_settlements.py  "

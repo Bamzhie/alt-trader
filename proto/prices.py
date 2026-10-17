@@ -345,22 +345,27 @@ def _throttle_mark(data_dir, now=None):
 def _collect_outcome(out):
     """Classify a collect_recent result for throttle marking.
 
-    Returns ``("success", n_coins)`` when at least one coin recorded rows
-    (even if others errored), ``("error", 0)`` when every coin failed or
-    no coins were attempted. Partial success still gets its rows kept;
-    total failure leaves the throttle unmarked so the next sweep retries.
+    Success is defined by whether at least one coin result completed
+    **without** an ``error`` key, regardless of whether ``new`` is zero.
+    This correctly handles the idempotent re-run case: a collect_recent
+    that succeeds but records zero new rows (everything already archived)
+    is still a successful pass, so the throttle is marked and we avoid
+    re-pulling the entire universe every sweep.
+
+    Returns ``("success", n_new)`` when at least one coin has no error
+    key (even if all recorded zero new rows). Returns
+    ``("error", 0)`` when every coin errored or no coins were attempted,
+    so the next sweep retries.
     """
     total_new = 0
-    total_coins = 0
     any_success = False
     any_attempted = False
     for series_results in out.values():
         for coin, res in series_results.items():
             any_attempted = True
-            if "error" not in res and res.get("new", 0) > 0:
+            if "error" not in res:
                 any_success = True
-                total_new += res["new"]
-            total_coins += 1
+                total_new += res.get("new", 0)
     if not any_attempted:
         return ("error", 0)
     return ("success" if any_success else "error", total_new)
