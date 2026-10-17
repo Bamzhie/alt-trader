@@ -4,9 +4,11 @@ Product goal: quantitative research and analysis for MEXC altcoin perpetual
 futures. Rules support quant analysis; heuristic scores are not evidence of
 edge. Read-only; no order execution. BTC is labeled market context only.
 
-Last updated: 2026-10-17 (WS4 venue-reported settlement history and
-mark/index price history delivered in code; the live service predates
-them). Verified against code/data/live probes, not inherited summaries.
+Last updated: 2026-10-17 (WS4 settlement history, mark/index price
+history delivered in code; bar_quality CLI --ts-field added; docs updated).
+The live service (pid 715, 2026-10-16 15:41) predates all 2026-10-17
+commits and has not been restarted — deploy is pending owner approval.
+Verified against code/data/live probes/tests, not inherited summaries.
 
 ## Current deployment state (verified live 2026-10-17)
 
@@ -27,10 +29,11 @@ them). Verified against code/data/live probes, not inherited summaries.
   - `/quant-status` + `quant.shadow` SSE (WS5, commits e80c07c/139bcac,
     2026-10-16 22:07+) → live probe returns
     `404 no such route: /quant-status`.
-  - `/settlements` (WS4, commits 90a568a/2184f87/48ef382, 2026-10-17) →
-    live probe returns `404 no such route: /settlements`.
-  - `/prices` + `/index-price` (WS4 mark/index price history, this
-    change) → not present in the running process.
+  - `/settlements` (WS4 settlement history, commits 90a568a/2184f87/
+    48ef382, 2026-10-17) → live probe returns
+    `404 no such route: /settlements`.
+  - `/prices` (WS4 mark/index price history, commits ce97d5f + 6d27543,
+    2026-10-17) → not present in the running process.
 - Restart + live-verification is therefore a single explicit operator
   action awaiting approval (see "Deployment / live-verification steps").
 
@@ -218,10 +221,27 @@ them). Verified against code/data/live probes, not inherited summaries.
     authenticated loopback probe returns 200 with ascending rows and
     `count == len(rows)`. (The historical note that pid 200835, 2026-10-15
     22:59, predated the route is superseded by that later restart.)
-- Remaining (WS4 market-data history): mark/index price history,
-  book/spread history, OI series, and DEPLOY + live-verify the
-  code-delivered read routes. `/funding` is LIVE-verified; `/settlements`
-  is pending.
+- Delivered (2026-10-17, WS4 mark/index price history): fair/mark and
+  index hourly candles via public
+  `GET /kline/{fair_price|index_price}/{symbol}`
+  (`proto/prices.py`: `parse_candles/collect_coin/backfill/collect_recent`
+  + CLI, idempotent by ts; `proto/ratelimit.py`
+  `RollingRateLimiter(20, 2.0)` — the endpoint's documented 20 req/2s
+  cap, NOT scan.LIMITER); append-only
+  `data/prices/{mark|index}/<COIN>.csv.gz`
+  (`ts,o,h,l,c`); guarded daily daemon hook; read-only `GET /prices`
+  mirroring `/settlements` (auth, limits, 404/503/400s, exact keys);
+  `bar_quality --tf-sec 3600` audits the hourly grid. Only CLOSED hourly
+  candles stored (forming hour dropped at parse); `vol`/`amount` absent
+  (venue returns 0.0 — not a measurement); `real*` columns not archived
+  (undocumented). Operator reference in
+  `docs/ws4-mark-index-history.md`; spec in
+  `docs/superpowers/specs/2026-10-17-mark-index-history-design.md`.
+- Remaining (WS4 market-data history): book/spread history, OI series
+  (both OPEN-BLOCKED — no public history endpoint, see availability
+  finding below); DEPLOY + live-verify the code-delivered read routes
+  (`/settlements`, `/prices`, `/quant-status`). `/funding` is
+  LIVE-verified.
 - **Availability finding (verified against official MEXC contract docs,
   2026-10-17):** public *history* endpoints DO exist for the INDEX PRICE
   kline (`GET /api/v1/contract/kline/index_price/{symbol}`) and the FAIR
@@ -233,10 +253,10 @@ them). Verified against code/data/live probes, not inherited summaries.
   and the live `/depth_commits` snapshot). OI-series and book/spread
   archives therefore cannot be built from public venue data without
   fabricating history; both stay OPEN-BLOCKED (see Outstanding).
-- Persisted today: 5m OHLCV bars, funding observations, and
-  venue-reported funding settlements (filling on the first
-  backfill/collect after deploy). Mark/index price history is the next
-  WS4 increment (design + code this session).
+- Persisted today: 5m OHLCV bars, funding observations, venue-reported
+  funding settlements (filling on the first backfill/collect after deploy),
+  and mark/index price history (filling on the first backfill/collect after
+  deploy).
 - Delivered (2026-10-17, WS4 settlement history): venue-reported
   settled rates via public `/funding_rate/history`
   (`proto/settlements.py`: `fetch/parse/collect/backfill/collect_recent`
@@ -357,12 +377,13 @@ them). Verified against code/data/live probes, not inherited summaries.
   exists); provisional-bar tier (decided against, needs per-bar markers +
   scorer re-validation to reopen).
 - WS4 beyond delivered work: **OPEN-BLOCKED (public venue data does not
-  exist)** — OI history (only a current `holdVol` snapshot) and
-  book/spread history (only current depth / live commits); **NEXT** —
-  mark/index price history (design + code this session); **DEPLOY
-  PENDING** — `/settlements` route + `/quant-status` route live-verify
-  (code delivered; running service predates the commits). `/funding` is
-  live-verified.
+  exist)** — OI history (only a current `holdVol` snapshot on `/ticker`)
+  and book/spread history (only current `/depth` and `/depth_commits`
+  snapshot); **DEPLOY PENDING** — `/settlements` + `/prices` + `/quant-status`
+  routes live-verify (code delivered; running service predates the commits).
+  `/funding` is live-verified. Mark/index price history is **DELIVERED in
+  code** with operator reference `docs/ws4-mark-index-history.md`; deploy
+  pending.
 - WS5 beyond increment 1: live-data evaluation evidence (engine on
   production bars with funding-archive costs), a calibration record,
   evaluation harness, estimators, competing outcomes, calibrated
@@ -426,6 +447,18 @@ them). Verified against code/data/live probes, not inherited summaries.
 |  default alignment (48ef382). No estimation anywhere; not fed into
 |  scoring/costs/gates/emission. Deploy PENDING.
 |  NOTE: no raw archive was ever rewritten in any stage.
+|- Stage I (WS4 mark/index, complete in code 2026-10-17): hourly mark (fair)
+|  and index candles via public kline endpoints (proto/prices.py +
+|  proto/ratelimit.py RollingRateLimiter(20, 2.0), matching the documented
+|  20 req/2s cap, NOT scan.LIMITER); append-only
+|  data/prices/{mark|index}/<COIN>.csv.gz (ts,o,h,l,c, closed candles only,
+|  vol/amount deliberately absent); guarded daily daemon hook; read-only
+|  GET /prices mirroring /settlements; bar_quality --tf-sec 3600 audits the
+|  hourly grid; CLI --ts-field flag added so the settlement grid audit
+|  works from the CLI too. Tests: test_prices.py + test_prices_api.py
+|  (52 checks). No estimation; not fed into scoring/costs/gates/emission.
+|  Operator reference docs/ws4-mark-index-history.md. Deploy PENDING (live
+|  service not restarted). NOTE: no raw archive was ever rewritten.
 
 ## Handoff (committed-state reference — NOT part of the stage log above)
 
@@ -463,9 +496,9 @@ them). Verified against code/data/live probes, not inherited summaries.
 
 ### Next priorities by workstream
 - WS4 (market-data history): DELIVERED in code — funding observations,
-  venue-reported settlements, and (this session) mark/index price
-  history; `/funding` live-verified. DEPLOY PENDING: `/settlements`,
-  `/quant-status`, and the new price routes (restart not authorized).
+  venue-reported settlements, and mark/index price history; `/funding`
+  live-verified. DEPLOY PENDING: `/settlements`, `/prices`, and
+  `/quant-status` routes live-verify (restart not authorized).
   OPEN-BLOCKED: OI series + book/spread history (no public history
   endpoint — do not fabricate). The audit pattern
   (`proto/bar_quality.py`) is reused by every archive.
@@ -487,6 +520,10 @@ them). Verified against code/data/live probes, not inherited summaries.
   WS5 outcome evidence + WS6/WS7 remain.
 
 ### Committed state (2026-10-16 → 2026-10-17)
+- `ce97d5f` feat(WS4): mark/index price history archive and /prices route
+- `6d27543` feat(WS4): --ts-field CLI for archive grid audit
+- `c207b4a` docs(roadmap): reconcile deployment state, WS4 findings,
+  WS5/WS6 status
 - `48ef382` fix(WS4): correct settlement-endpoint rate limiter + data-dir
   default alignment
 - `2184f87` fix(WS4): shared settlements dir, currentPage check, rate
