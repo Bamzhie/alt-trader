@@ -23,6 +23,7 @@ from .app import App
 from . import collector as colmod
 from . import funding as fmod
 from . import settlements as smod
+from . import prices as pmod
 from . import measurement as measuremod
 from . import outcomes as outmod
 from .scan import MAX_WORKERS, build_universe
@@ -108,6 +109,10 @@ def build_parser():
                          "(default: data/funding_settlements sibling of "
                          "--quant-bars); when None the module default "
                          "SETTLEMENTS_DIR is used")
+    ap.add_argument("--prices-dir", default=None,
+                    help="mark/index price archive root for the WS4 collect "
+                         "hook (default: data/prices sibling of --quant-bars); "
+                         "when None the module default PRICES_DIR is used")
     return ap
 
 
@@ -339,6 +344,23 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                               "new rows", flush=True)
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] settlements FAILED: "
+                          f"{type(e).__name__}: {e}", flush=True)
+                # WS4 mark/index price history: incremental recent-window
+                # pass, throttled to daily inside maybe_collect. Guarded on
+                # its own like funding/settlements: a prices failure must
+                # never fail the bars sweep.
+                try:
+                    price_dir = getattr(args, "prices_dir", None)
+                    price_out = pmod.maybe_collect(data_dir=price_dir)
+                    if price_out:
+                        total = sum(r.get("new", 0)
+                                    for s in price_out.values()
+                                    for r in s.values())
+                        print(f"[{time.strftime('%H:%M:%S')}] prices: "
+                              f"{len(price_out)} series {total} new rows",
+                              flush=True)
+                except Exception as e:
+                    print(f"[{time.strftime('%H:%M:%S')}] prices FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
             if resolve_future is not None and resolve_future.done():
                 try:

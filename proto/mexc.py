@@ -180,6 +180,66 @@ def klines(symbol, interval="5m", limit=200, end=None):
     return bars
 
 
+# Index / fair (mark) price kline paths. Both are public columnar OHLC
+# series with the same params/limits as /kline/{symbol}.
+PRICE_KINDS = {"mark": "fair_price", "index": "index_price"}
+
+
+def price_klines(kind, symbol, interval="1H", start=None, end=None):
+    """One window of index-priced or fair (mark)-priced candles.
+
+    ``kind`` is ``"mark"`` (venue fair price) or ``"index"`` (venue index
+    price). Returns ``[{ts, o, h, l, c}]`` oldest-first — the documented
+    OHLC columns only (the venue's ``vol``/``amount`` are 0.0 for these
+    computed series and the ``real*`` columns are undocumented, so neither
+    is returned). Shape and raw column-order are validated here; the
+    ``now``-relative forming-candle drop and value checks belong to
+    ``proto.prices``. Transport/venue errors propagate.
+    """
+    if kind not in PRICE_KINDS:
+        raise ValueError(f"unknown price kind {kind!r}; known: "
+                         f"{sorted(PRICE_KINDS)}")
+    if interval not in INTERVALS:
+        raise ValueError(f"unknown interval {interval!r}; known: "
+                         f"{sorted(INTERVALS)}")
+    mexc_iv, secs = INTERVALS[interval]
+    now = int(time.time())
+    stop = now if end is None else int(end)
+    st = (stop - MAX_BARS * secs) if start is None else int(start)
+    d = _get(f"/kline/{PRICE_KINDS[kind]}/{symbol}"
+             f"?interval={mexc_iv}&start={st}&end={stop}")
+    if not d:
+        return []
+    required = ("time", "open", "high", "low", "close")
+    for k in required:
+        if k not in d:
+            raise MexcError(
+                f"{symbol} {kind} {interval}: missing column {k!r} "
+                f"(got {sorted(d)})")
+    n = len(d["time"])
+    for k in required:
+        if len(d[k]) != n:
+            raise MexcError(f"{symbol} {kind} {interval}: ragged columns, "
+                            f"{k} has {len(d[k])} vs {n}")
+    for i in range(1, n):
+        if int(d["time"][i]) <= int(d["time"][i - 1]):
+            raise MexcError(
+                f"{symbol} {kind} {interval}: non-monotonic timestamps "
+                f"({d['time'][i - 1]} -> {d['time'][i]}) in payload")
+    rows = [
+        {
+            "ts": int(d["time"][i]),
+            "o": float(d["open"][i]),
+            "h": float(d["high"][i]),
+            "l": float(d["low"][i]),
+            "c": float(d["close"][i]),
+        }
+        for i in range(n)
+    ]
+    rows.sort(key=lambda r: r["ts"])
+    return rows
+
+
 def min_notional(symbol, detail_row, last_price):
     """Minimum tradeable notional in USDT: minVol contracts x contractSize x price."""
     try:

@@ -182,6 +182,17 @@ def service_argv(lock, db, token="lifecycle-test-token", **kw):
 def main():
     from proto import service as svc
     from proto import daemon as dmod
+    # The daemon collect cycle consults the funding / settlements / prices
+    # hooks. This file exercises the collect block (collect_every=0) with
+    # tmp DBs, so stub the venue-reading hooks: tests stay offline and never
+    # append to the repo's real data/ archives. The funding hook is
+    # re-stubbed locally where its own isolation is asserted.
+    from proto import funding as _fmod
+    from proto import settlements as _smod
+    from proto import prices as _pmod
+    _fmod.collect_funding = lambda *a, **k: {}
+    _smod.maybe_collect = lambda *a, **k: {}
+    _pmod.maybe_collect = lambda *a, **k: {}
 
     tmp = tempfile.mkdtemp(prefix="svc-lifecycle-")
     try:

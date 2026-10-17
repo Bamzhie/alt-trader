@@ -264,14 +264,20 @@ finally:
 from proto import daemon as dmod
 from proto import collector as colmod
 from proto import funding as fmod
+from proto import prices as pmod
 
 real_collect = colmod.collect_full_universe
 real_maybe = smod.maybe_collect
 real_app = dmod.App
 real_funding = fmod.collect_funding
+real_prices = pmod.maybe_collect
 sweeps = []
 colmod.collect_full_universe = lambda *a, **k: {}
 fmod.collect_funding = lambda *a, **k: {}
+# The daemon loop also consults the mark/index price hook on the collect
+# cycle; isolate it too so this test never touches a venue or the repo's
+# real data/prices dir.
+pmod.maybe_collect = lambda *a, **k: {}
 
 
 class _FakeApp:
@@ -306,6 +312,7 @@ finally:
     smod.maybe_collect = real_maybe
     dmod.App = real_app
     fmod.collect_funding = real_funding
+    pmod.maybe_collect = real_prices
 
 print("\n=== case 8: bar-quality audit covers the settle grid ===")
 from proto.bar_quality import audit_archive_file
@@ -321,6 +328,24 @@ check("settle grid audits perfect",
 rep = audit_archive_file(tmp8, "BTC", tf_sec=28800)
 check("default ts field still rejects foreign schema",
       rep["invalid_rows"] == 5, str(rep["invalid_rows"]))
+
+print("\n=== case 9: CLI audit with --ts-field for settle grid ===")
+from proto.bar_quality import main as bq_main
+import subprocess
+
+# CLI audit with --ts-field=settle_ts + --tf-sec=28800 should report the
+# settlement grid as clean (ratio 1.0, zero findings).
+rc = bq_main(["--data-dir", tmp8, "--all", "--tf-sec", "28800",
+              "--ts-field", "settle_ts", "--json"])
+check("CLI --ts-field=200 OK exit", rc == 0, str(rc))
+# Re-derive the JSON output to assert cleanliness.
+rc2 = bq_main(["--data-dir", tmp8, "--all", "--tf-sec", "28800",
+               "--ts-field", "settle_ts"])
+rep2 = audit_archive_file(tmp8, "BTC", tf_sec=28800, ts_field="settle_ts")
+check("CLI --ts-field settle grid clean",
+      rep2["count"] == 5 and rep2["coverage"]["ratio"] == 1.0
+      and rep2["missing_count"] == 0 and rep2["invalid_rows"] == 0,
+      str({k: rep2[k] for k in ("count", "missing_count", "invalid_rows")}))
 
 print()
 if FAILURES:

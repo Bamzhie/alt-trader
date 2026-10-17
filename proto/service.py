@@ -35,6 +35,7 @@ from urllib.parse import parse_qs, urlparse
 from .collector import read_bars
 from .funding import read_funding
 from .settlements import read_settlements
+from .prices import read_prices
 from . import daemon as _daemon_mod
 from .planner import REFERENCE_NOTIONAL, reference_plan
 from . import watcher as _watcher_mod
@@ -386,6 +387,9 @@ _SAFE_FUNDING_COIN = re.compile(r"^[A-Za-z0-9_-]+$")
 # Same route-local rule for /settlements (own constant so neither route
 # can weaken the other's check by editing a shared one).
 _SAFE_SETTLEMENTS_COIN = re.compile(r"^[A-Za-z0-9_-]+$")
+# And for /prices (same route-local rationale).
+_SAFE_PRICES_COIN = re.compile(r"^[A-Za-z0-9_-]+$")
+_PRICE_SERIES = frozenset({"mark", "index"})
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 SETUP_STATES = frozenset({"active", "invalidated", "expired", "resolved"})
@@ -618,7 +622,7 @@ def _resolve_archive_dir(custom_dir, data_dir, default_name):
 
 
 def _make_handler(token, ready, store_path=None, data_dir=None,
-                   funding_dir=None, settlements_dir=None,
+                   funding_dir=None, settlements_dir=None, prices_dir=None,
                    is_ready=None, scanner_health=None,
                    quant_db=None):
     cfg_store = store_path or os.path.join("data", "signals.db")
@@ -631,6 +635,9 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
     # beside data/bars (matching proto.settlements.SETTLEMENTS_DIR).
     cfg_settlements = _resolve_archive_dir(
         settlements_dir, data_dir, "funding_settlements")
+    # And the mark/index price archive root: data/prices beside data/bars
+    # (matching proto.prices.PRICES_DIR); series are subdirectories.
+    cfg_prices = _resolve_archive_dir(prices_dir, data_dir, "prices")
     # Same pattern for the quant shadow store: quant.db beside the bars
     # dir unless the caller passes an explicit path (tests use tmp dirs).
     cfg_quant = (quant_db or os.path.join(
@@ -778,6 +785,10 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
 
             if self.command == "GET" and path == "/settlements":
                 self._handle_settlements(gated, qs, cfg_settlements)
+                return
+
+            if self.command == "GET" and path == "/prices":
+                self._handle_prices(gated, qs, cfg_prices)
                 return
 
             if self.command == "GET" and path == "/quant-status":
@@ -1279,6 +1290,62 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                        "data_as_of": last_ts, "last_ts": last_ts}),
                 origin=origin)
 
+        def _handle_prices(self, origin, qs, prices_dir):
+            """Read-only mark/index price history for one coin+series.
+
+            Mirrors _handle_settlements idioms exactly (own allowlist, own
+            messages): venue ts/o/h/l/c rows, ascending, last-`limit`
+            slice, `count == len(rows)`. `series` selects the archive
+            subdirectory (mark = fair price, index = index price).
+            """
+            series = (qs.get("series") or [None])[0]
+            if not series:
+                self._deny(400, "BAD_REQUEST", "series is required",
+                           origin=origin)
+                return
+            if series not in _PRICE_SERIES:
+                self._deny(400, "BAD_REQUEST",
+                           "series must be mark or index", origin=origin)
+                return
+            coin = (qs.get("coin") or [None])[0]
+            if not coin:
+                self._deny(400, "BAD_REQUEST",
+                           "coin is required", origin=origin)
+                return
+            if not _SAFE_PRICES_COIN.match(coin):
+                self._deny(400, "BAD_REQUEST",
+                           "invalid coin name", origin=origin)
+                return
+            if not os.path.exists(os.path.join(prices_dir, series,
+                                               f"{coin}.csv.gz")):
+                self._deny(404, "NOT_FOUND",
+                           f"no prices for {series} {coin}", origin=origin)
+                return
+            raw_limit = (qs.get("limit") or ["1000"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                self._deny(400, "BAD_REQUEST", "limit must be an integer",
+                           origin=origin)
+                return
+            if limit < 1 or limit > 5000:
+                self._deny(400, "BAD_REQUEST",
+                           "limit must be between 1 and 5000", origin=origin)
+                return
+            try:
+                rows = read_prices(prices_dir, series, coin)
+            except Exception:
+                self._deny(503, "UNAVAILABLE", "prices unavailable",
+                           origin=origin)
+                return
+            rows = rows[-limit:]
+            last_ts = rows[-1]["ts"] if rows else None
+            self._send_json(200, envelope(
+                True, {"series": series, "coin": coin, "rows": rows,
+                       "count": len(rows),
+                       "data_as_of": last_ts, "last_ts": last_ts}),
+                origin=origin)
+
         def _handle_quant_status(self, origin, quant_db):
             """Read-only shadow-watcher status over the quant store.
 
@@ -1634,7 +1701,7 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
 
 
 def serve(port, token, ready, store_path=None, data_dir=None,
-           funding_dir=None, settlements_dir=None,
+           funding_dir=None, settlements_dir=None, prices_dir=None,
            is_ready=None, scanner_health=None,
            quant_db=None):
     """Bind 127.0.0.1:port and serve in a daemon thread; return the server.
@@ -1646,7 +1713,9 @@ def serve(port, token, ready, store_path=None, data_dir=None,
     `quant_db` locates the quant shadow store the /quant-status route
     reads (default: quant.db sibling of `data_dir`); `settlements_dir`
     locates the settlement archive the /settlements route reads
-    (default: funding_settlements sibling of `data_dir`); `is_ready`
+    (default: funding_settlements sibling of `data_dir`); `prices_dir`
+    locates the mark/index price archive root the /prices route reads
+    (default: prices sibling of `data_dir`); `is_ready`
     optionally overrides readiness; `scanner_health` optionally supplies
     the scanner lifecycle state for `GET /scanner-health` (a callable
     returning a dict, or a dict). All are optional so Task 1 callers keep
@@ -1656,6 +1725,7 @@ def serve(port, token, ready, store_path=None, data_dir=None,
     handler = _make_handler(token, ready, store_path=store_path,
                             data_dir=data_dir, funding_dir=funding_dir,
                             settlements_dir=settlements_dir,
+                            prices_dir=prices_dir,
                             is_ready=is_ready,
                             scanner_health=scanner_health,
                             quant_db=quant_db)
@@ -1813,7 +1883,7 @@ def close_sessions(app=None):
 
 
 def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
-                funding_dir=None, settlements_dir=None,
+                funding_dir=None, settlements_dir=None, prices_dir=None,
                 lock_path=None, daemon_argv=None, stop_event=None,
                 install_signals=True, on_serving=None, on_health=None,
                 backoff_base_s: float = DEFAULT_BACKOFF_BASE_S,
@@ -1941,6 +2011,7 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
             store_path=db, data_dir=data_dir,
             funding_dir=funding_dir,
             settlements_dir=settlements_dir,
+            prices_dir=prices_dir,
             is_ready=sweep_done.is_set,
             scanner_health=_scanner_health,
             quant_db=quant_db)
@@ -2090,7 +2161,7 @@ _DAEMON_ARGV_NAMES = ("stake", "coins", "interval", "log_threshold",
                       "use_v3", "collect_every", "resolve_every",
                       "measure_every", "iterations", "no_scan",
                       "quant_shadow", "quant_db", "quant_bars",
-                      "quant_equity", "settlements_dir")
+                      "quant_equity", "settlements_dir", "prices_dir")
 
 
 def _daemon_argv_for(args):
@@ -2133,15 +2204,20 @@ def main(argv=None):
         args.settlements_dir, data_dir, "funding_settlements")
     resolved_funding = _resolve_archive_dir(
         args.funding_dir, data_dir, "funding")
-    # Rebuild the daemon argv with the resolved value so the embedded loop
-    # uses the same settlements dir the route will resolve to.
+    resolved_prices = _resolve_archive_dir(
+        args.prices_dir, data_dir, "prices")
+    # Rebuild the daemon argv with the resolved values so the embedded loop
+    # uses the same directories the routes will resolve to.
     daemon_argv = _daemon_argv_for(args)
     if args.settlements_dir is None:
         daemon_argv += ["--settlements-dir", resolved_settlements]
+    if args.prices_dir is None:
+        daemon_argv += ["--prices-dir", resolved_prices]
     result = run_service(port=args.port, token=token, db=args.db,
                          data_dir=data_dir,
                          funding_dir=resolved_funding,
                          settlements_dir=resolved_settlements,
+                         prices_dir=resolved_prices,
                          lock_path=args.lock_file,
                          daemon_argv=daemon_argv,
                          quant_db=getattr(args, "quant_db", None))
