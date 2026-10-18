@@ -4,37 +4,40 @@ Product goal: quantitative research and analysis for MEXC altcoin perpetual
 futures. Rules support quant analysis; heuristic scores are not evidence of
 edge. Read-only; no order execution. BTC is labeled market context only.
 
-Last updated: 2026-10-18 (research-data readiness inventory; WS5 harness
-remains unrun on the current bar snapshot).
+Last updated: 2026-10-18 (research-data readiness corrected; WS5 dev/val
+harness run on the current ~97-day bar snapshot with venue settlement costs).
 The live service (pid 715, 2026-10-16 15:41) predates all 2026-10-17
 commits and has not been restarted — deploy is pending owner approval.
 Verified against code/data/live probes/tests, not inherited summaries.
 
-## Research data readiness snapshot (2026-10-18)
+## Research data readiness snapshot (2026-10-18, corrected)
 
 VERIFIED by direct archive read (2026-10-18):
 
-- `data/bars/`: **578** coin archives (incl. BTC). BTC has 28,043 rows
-  spanning ~16.41 days — **not** 96.98 days as previously stated (the bar
-  files were refreshed and the prior span claim is stale). **No coin
-  has ≥91 days of bars; the maximum span across the entire universe is
-  ~16.41 days.** The default WS5 dev→val→holdout split (which requires
-  ~91 days) is therefore not satisfiable for any coin. Per-altcoin
-  coverage has now been fully audited: spans range from ~2.1 days
-  (DOPE, 594 bars) to ~16.4 days (542 coins ≥16 days), median ~16.1 days.
-- `data/funding/`: observations for 571 coins, 11–98 obs per coin
-  (median 98), spanning ~0.09–2.56 days (median ~2.56 days / 61h). These
-  are funding observations, not settlement history, and cover only the
-  tail of the bar archive.
-- `data/funding_settlements/` and `data/quant_research/` are absent. The
-  settlement collector and research harness are implemented, but no local
-  settlement backfill or evaluation report exists yet.
-- Next evidence step: backfill venue-reported settlement history (requires
-  network access), audit the resulting coverage, then run dev/validation
-  research. **The one-shot holdout is NOT spent**: with only ~16 days of
-  bars, the default split cannot complete and the holdout is kept sealed
-  until data is sufficient. Full-window funding-adjusted metrics are not
-  currently supported by local data.
+- `data/bars/`: **578** coin archives (incl. BTC). **Correction:** the
+  earlier "~16.41 days / no coin ≥91 days" claim was the classic
+  unsorted-file first/last-line artifact that WS1 already fixed in code —
+  the bar files are batch-appended and are NOT chronologically ordered, so
+  span must be taken from **sorted unique min/max**. Measured this way:
+  **523 of 578 coins have ≥91 days** of 5m bars. BTC has 28,067 unique bars
+  spanning **97.45 days**; the universe maximum is 97.46 days (ALL). Span
+  distribution: ≥91d **523**; 79–91d **3** (CATE 83.3, GRVT 80.1,
+  MARSCOIN 80.0); 63–79d **4**; 30–63d **24**; <30d **24**. Zero duplicate
+  timestamps, zero invalid rows; the perfect-300s-grid invariant (WS1)
+  still holds. **The default WS5 dev→val→holdout split (~91 days) is
+  therefore satisfiable for the great majority of the universe.**
+- `data/funding_settlements/`: **559** coin archives, 1,366,260 rows,
+  header `settle_ts,settled_rate,cycle_hours`; per-coin spans up to ~540
+  days; venue cycles 1h/2h/4h/8h (some coins mixed). Backfilled
+  2026-10-18. (The earlier snapshot's "absent" claim is superseded.)
+- `data/funding/`: observations for 571 coins, ~2 days each
+  (`ts,rate,cap`) — observations, not settlement history.
+- `data/quant_research/`: absent; evaluation output goes to temp/`--out`
+  only (production `data/` is never written by the harness).
+- Next evidence step: the WS5 dev→val harness has been run on the current
+  bars with settlement-derived funding costs; **the one-shot holdout
+  remains SEALED** pending review of coverage, dev/validation results and
+  the frozen evaluation setup (see WS5 below).
 
 ## Current deployment state (verified live 2026-10-17)
 
@@ -60,6 +63,10 @@ VERIFIED by direct archive read (2026-10-18):
     `404 no such route: /settlements`.
   - `/prices` (WS4 mark/index price history, commits ce97d5f + 6d27543,
     2026-10-17) → not present in the running process.
+  - Re-verified 2026-10-18 (read-only authenticated probe, same pid 715):
+    `/quant-status`, `/settlements`, `/prices` all return
+    `404 no such route`; `/funding` returns 200. The deploy gap is
+    unchanged and still waits on owner approval.
 - Restart + live-verification is therefore a single explicit operator
   action awaiting approval (see "Deployment / live-verification steps").
 
