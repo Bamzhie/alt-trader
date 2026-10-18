@@ -10,7 +10,7 @@ Covers:
   6. policy is derived from the splits object (custom splits honoured)
   7. audit_spans reads a temp bar dir and classifies by sorted min/max
      (unsorted archives must not be mis-measured)
-  8. no production writes / read-only
+  8. audit_spans is read-only and tolerates corrupt archives
   9. CLI main(): human summary and --json audit output
 """
 import gzip
@@ -103,8 +103,28 @@ with tempfile.TemporaryDirectory() as d:
     check("audit classify SHORT insufficient",
           C.classify_coverage(spans["SHORT"]) == "insufficient")
 
-# 8. no production writes (the temp dir was removed; repo data untouched)
-check("no data dir created by import", not os.path.exists("data/quant_research"))
+# 4b. non-finite spans are never silently eligible
+check("+inf -> insufficient", C.classify_coverage(float("inf")) == "insufficient")
+check("-inf -> insufficient",
+      C.classify_coverage(float("-inf")) == "insufficient")
+
+# 8. audit_spans is read-only and tolerates a corrupt archive
+with tempfile.TemporaryDirectory() as d:
+    _write(os.path.join(d, "COIN.csv.gz"),
+           [1_700_000_000 + i * 300 for i in range(100)])
+    before = sorted(os.listdir(d))
+    C.audit_spans(d)
+    after = sorted(os.listdir(d))
+    check("audit_spans is read-only (no files created/removed)", before == after)
+
+    with open(os.path.join(d, "BAD.csv.gz"), "wb") as f:
+        f.write(b"not a gzip stream")
+    try:
+        spans_bad = C.audit_spans(d)
+        ok = spans_bad["BAD"] is None and spans_bad["COIN"] is not None
+    except OSError:
+        ok = False
+    check("corrupt archive -> None without aborting the audit", ok)
 
 # 9. CLI main(): human summary and --json
 import contextlib                                            # noqa: E402

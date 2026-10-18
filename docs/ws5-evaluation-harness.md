@@ -20,9 +20,10 @@ python3 -m proto.quant evaluate --data data/bars \
     --out data/quant_research
 ```
 
-Both commands are **research-only**: they never write to `data/`, never
-create `data/quant.db`, never start the service, and never change emission
-modes.
+Both commands are **research-only**: they never write to the bar, funding
+or settlement archives, never create `data/quant.db`, never start the
+service, and never change emission modes. The report is written only to the
+`--out` directory you pass (the CLI default is `data/quant_research`).
 
 ## Split discipline
 

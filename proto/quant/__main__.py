@@ -55,7 +55,9 @@ def main(argv=None):
     ev.add_argument("--out", default="data/quant_research")
     ev.add_argument("--holdout", action="store_true",
                     help="spend the one-shot holdout (only if val kept the config)")
-    ev.add_argument("--coins", default=None)
+    ev.add_argument("--coins", default=None,
+                    help="comma list of traded coins (default: all); BTC is "
+                         "always loaded as the market factor")
 
     a = ap.parse_args(argv)
 
@@ -127,8 +129,12 @@ def main(argv=None):
         from . import eval_harness
         from .config import DEFAULT as _cfg
         # Restrict the traded universe when --coins is given (comma list);
-        # BTC is still loaded internally as the market factor.
-        coins = a.coins.split(",") if a.coins else None
+        # BTC is still loaded internally as the market factor. Whitespace is
+        # tolerated; a list that is entirely blank means the whole universe.
+        if a.coins:
+            coins = [c.strip() for c in a.coins.split(",") if c.strip()] or None
+        else:
+            coins = None
         report = eval_harness.evaluate(
             a.data,
             funding_dir=a.funding_dir if os.path.isdir(a.funding_dir) else None,

@@ -19,11 +19,17 @@ This module is pure and offline: it never touches the archives except in
 IMPORTANT subtlety.  The evaluation's ``n_days`` is the UNION span across
 coins (``research.collect_events`` takes min/max over the whole archive), so
 a single long coin fixes the day coordinates for every coin.  Per-coin span
-does not change the split boundaries; it decides which windows a coin can
-actually populate.  That is exactly what ``classify_coverage`` reports.
+does not change the split boundaries; it bounds which windows a coin can
+populate.  ``classify_coverage`` measures that **span** support only --
+internal gaps and bar density are not measured here (``collect_events``
+iterates ``contiguous_runs``, and ``proto.bar_quality`` audits gaps), so a
+span-qualified coin with a large internal hole can still contribute little
+to a window.
 """
 
-from typing import Dict, Iterable, List, Mapping, Optional, Tuple
+import math
+
+from typing import Dict, Iterable, List, Mapping, Optional
 
 from .config import DEFAULT, Splits
 
@@ -74,7 +80,7 @@ def classify_coverage(span_days,
         s = float(span_days)
     except (TypeError, ValueError):
         return INSUFFICIENT
-    if s != s or s < 0.0:          # NaN or negative
+    if not math.isfinite(s) or s < 0.0:   # NaN / +-inf / negative
         return INSUFFICIENT
     if s >= min_span_days(splits, min_holdout_days):
         return FULL
@@ -115,7 +121,13 @@ def audit_spans(data_dir: str,
     names = list(coins) if coins is not None else list_coins(data_dir)
     out: Dict[str, Optional[float]] = {}
     for coin in names:
-        bars = load_coin(data_dir, coin)
+        try:
+            bars = load_coin(data_dir, coin)
+        except (OSError, EOFError):
+            # A corrupt/unreadable archive is reported as unknown, never as
+            # zero-coverage-but-eligible, and never aborts the whole audit.
+            out[coin] = None
+            continue
         if not bars or len(bars["ts"]) < 2:
             out[coin] = None
             continue

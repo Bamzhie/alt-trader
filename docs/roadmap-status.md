@@ -19,8 +19,9 @@ VERIFIED by direct archive read (2026-10-18):
   unsorted-file first/last-line artifact that WS1 already fixed in code —
   the bar files are batch-appended and are NOT chronologically ordered, so
   span must be taken from **sorted unique min/max**. Measured this way:
-  **523 of 578 coins have ≥91 days** of 5m bars. BTC has 28,067 unique bars
-  spanning **97.45 days**; the universe maximum is 97.46 days (ALL). Span
+  **523 of 578 coins have ≥91 days** of 5m bars. BTC has ≈28.1k unique bars
+  spanning **≈97.5 days** (counts grow with live collection; measured at
+  this snapshot); the universe maximum is ≈97.5 days. Span
   distribution: ≥91d **523**; 79–91d **3** (CATE 83.3, GRVT 80.1,
   MARSCOIN 80.0); 63–79d **4**; 30–63d **24**; <30d **24**. Zero duplicate
   timestamps, zero invalid rows; the perfect-300s-grid invariant (WS1)
@@ -32,8 +33,9 @@ VERIFIED by direct archive read (2026-10-18):
   2026-10-18. (The earlier snapshot's "absent" claim is superseded.)
 - `data/funding/`: observations for 571 coins, ~2 days each
   (`ts,rate,cap`) — observations, not settlement history.
-- `data/quant_research/`: absent; evaluation output goes to temp/`--out`
-  only (production `data/` is never written by the harness).
+- `data/quant_research/`: absent. The harness writes its report to its own
+  `--out` directory (CLI default `data/quant_research`, an output dir, never
+  a bar/funding/settlement archive). No production archive is rewritten.
 - Next evidence step: the WS5 dev→val harness has been run on the current
   bars with settlement-derived funding costs; **the one-shot holdout
   remains SEALED** pending review of coverage, dev/validation results and
