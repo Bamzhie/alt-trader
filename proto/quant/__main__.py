@@ -126,15 +126,17 @@ def main(argv=None):
     if a.cmd == "evaluate":
         from . import eval_harness
         from .config import DEFAULT as _cfg
-        # Filter bar archive to requested coins if --coins given
-        fargs = [x for x in ("--coins", a.coins) if x is not None]
+        # Restrict the traded universe when --coins is given (comma list);
+        # BTC is still loaded internally as the market factor.
+        coins = a.coins.split(",") if a.coins else None
         report = eval_harness.evaluate(
             a.data,
             funding_dir=a.funding_dir if os.path.isdir(a.funding_dir) else None,
             settlements_dir=a.settlements_dir if os.path.isdir(a.settlements_dir) else None,
             cfg=_cfg,
             spend_holdout=a.holdout,
-            out_dir=a.out)
+            out_dir=a.out,
+            coins=coins)
         print(report.to_json())
         if report.leakage_violations:
             print("LEAKAGE VIOLATIONS:", file=sys.stderr)

@@ -371,11 +371,14 @@ def evaluate(data_dir: str, funding_dir: Optional[str] = None,
              settlements_dir: Optional[str] = None,
              cfg: QuantConfig = DEFAULT,
              spend_holdout: bool = False,
-             out_dir: Optional[str] = None) -> EvaluationReport:
+             out_dir: Optional[str] = None,
+             coins: Optional[List[str]] = None) -> EvaluationReport:
     """Run the full WS5 evaluation on production bar data.
 
     Steps:
-      1. collect_events over the bar archive (reuses research.collect_events)
+      1. collect_events over the bar archive (reuses research.collect_events).
+         ``coins`` restricts the traded universe (BTC is always loaded as the
+         market factor); ``None`` means every archived altcoin.
       2. resolve splits + assert no leakage
       3. run_stage_dev_val (dev -> val, with max-t multiplicity control);
          selection uses friction-only metrics
@@ -390,7 +393,7 @@ def evaluate(data_dir: str, funding_dir: Optional[str] = None,
     temp dir) -- production data/ is never written.
     """
     # 1. Collect events from the archive
-    events, meta = R.collect_events(data_dir, cfg, progress=False)
+    events, meta = R.collect_events(data_dir, cfg, coins=coins, progress=False)
 
     # 2. Resolve splits + check leakage
     splits = resolve_splits(meta, cfg)

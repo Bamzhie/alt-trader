@@ -33,6 +33,8 @@ Covers:
       (never a friction-only number under a funding-adjusted label)
   22. Integration: missing settlement boundaries are excluded AND counted;
       the holdout is spent at most once (incl. funding-adjusted fields)
+  23. --coins is forwarded to collect_events (restricted universe); the
+      default stays None (whole universe)
 """
 
 import gzip
@@ -978,6 +980,29 @@ try:
           rep22b.holdout_funding_adjusted is None
           and rep22b.holdout_slip2x_funding_adjusted is None,
           f"{rep22b.holdout_funding_adjusted}")
+
+    print("\n=== case 23: --coins restricts the evaluated universe ===")
+
+    _captured = {}
+
+    def _spy_collect(*args, **kwargs):
+        _captured["coins"] = kwargs.get("coins")
+        return integ_events()
+
+    R.collect_events = _spy_collect
+    try:
+        out23 = tempfile.mkdtemp(prefix="ws5-coins-")
+        eh.evaluate(integ_bar_dir, coins=["AAA", "BBB"], out_dir=out23)
+        check("evaluate forwards coins to collect_events",
+              _captured.get("coins") == ["AAA", "BBB"],
+              str(_captured.get("coins")))
+
+        eh.evaluate(integ_bar_dir,
+                    out_dir=tempfile.mkdtemp(prefix="ws5-coins-all-"))
+        check("evaluate defaults coins=None (whole universe)",
+              _captured.get("coins") is None, str(_captured.get("coins")))
+    finally:
+        R.collect_events = lambda *a, **k: integ_events()
 
 finally:
     R.collect_events = _real_collect
