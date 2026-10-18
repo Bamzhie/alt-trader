@@ -334,8 +334,15 @@ Verified against code/data/live probes/tests, not inherited summaries.
   are used when they cover every boundary inside a holding window; the
   observation archive (`data/funding/`) is a documented fallback for
   observation-only periods — each boundary takes the last snapshot in
-  `[b - cycle, b)`, counted once, NEVER summed per snapshot. Windows whose
-  funding events cannot all be attributed are `incomplete`: excluded from
+  `[b - cycle, b)`, counted once, NEVER summed per snapshot. The fallback
+  maps snapshots to the VENUE grid (phase/cycle inferred from the
+  settlement archive), so an off-epoch venue still maps to its real
+  boundaries; only a coin with NO settlement archive at all assumes the
+  epoch-aligned 8h UTC grid, and a settlement archive without a usable
+  `cycle_hours` yields an uninferable grid. Windows whose
+  funding events cannot all be attributed — a missing settlement row, an
+  uncovered boundary cycle, or an uninferable venue grid — are
+  `incomplete`: excluded from
   funding-adjusted metrics and counted, never zero-filled or estimated. A
   coin with no archive rows at all is `missing`. The position side comes
   from the SELECTED rule's policy (`fade` inverts the break, `cont` keeps
@@ -364,8 +371,9 @@ Verified against code/data/live probes/tests, not inherited summaries.
   restarted, no quant.db is created. Also fixed a latent holdout crash:
   the one-shot path re-summarized an already-summarized holdout, so any
   real holdout spend would have failed. Verification:
-  `tests/test_ws5_eval_harness.py` → ALL PASS (117 checks covering
-  settlement-boundary attribution, snapshot-vs-boundary mapping, sign
+  `tests/test_ws5_eval_harness.py` → ALL PASS (120 checks covering
+  settlement-boundary attribution, snapshot-vs-boundary mapping,
+  off-epoch venue-grid fallback / uninferable-grid exclusion, sign
   correctness, actual-exit charging, fade-policy side regression,
   funding-adjusted vs friction-only divergence, no-funding null metrics,
   missing-boundary exclusion+count, holdout-once, splits, leakage, archive

@@ -69,7 +69,9 @@ friction-only; the report adds funding-adjusted dev/val/holdout/2x-slip
 metrics for the selected config with explicit denominators
 (`n_events`, `n_funding_adjusted`, `n_excluded_*`). Funding is charged at
 the venue's settle boundaries (venue settlement rows first; observation
-snapshots are mapped to funding events, never summed per snapshot), using
+snapshots are mapped to the venue's own settle grid, never summed per
+snapshot, with an uninferable grid reported incomplete rather than
+epoch-assumed), using
 the position side from the selected rule's policy. Unattributable windows
 are excluded and counted; missing cost data is surfaced as
 `missing_cost_coins`, never zero-filled. The report carries

@@ -64,18 +64,24 @@ an observation timestamp is not a funding event.
    a funding event at boundary `b` takes the **last snapshot in
    `[b - cycle, b)`**, each boundary charged at most once. A snapshot after
    `b` belongs to the next cycle.
-3. **Grid phase.** Boundaries are `phase + k * cycle`: `cycle` comes from
-   the settlement archive's own `cycle_hours` (8h default, the MEXC
-   standard) and `phase` is inferred from the coin's settlement archive
-   when it has one, otherwise the observation mapping assumes the
-   epoch-aligned 8h UTC grid. `BOUNDARY_TOL_S` (one 5m bar) absorbs
-   whole-second rounding when matching a venue row to its boundary.
+3. **Grid phase.** Boundaries are `phase + k * cycle`, the VENUE's own
+   settle grid. When the coin has a settlement archive, **both** `cycle`
+   (its `cycle_hours`) and `phase` (`settle_ts % cycle`) are inferred from
+   that archive and used for the observation fallback too, so snapshots
+   map to the boundaries the venue actually settles on — even when the
+   phase is off-epoch. Only a coin with **no** settlement archive at all
+   uses the epoch-aligned 8h UTC grid. If a settlement archive exists but
+   carries no usable `cycle_hours`, the grid is **uninferable** and the
+   window is incomplete (`reason="venue-grid-unknown"`); epoch alignment
+   is never assumed in place of the venue grid. `BOUNDARY_TOL_S` (one 5m
+   bar) absorbs whole-second rounding when matching a venue row to its
+   boundary.
 4. **Incomplete means excluded, never estimated.** If any funding event
    inside the holding window cannot be attributed — a missing venue
-   settlement row, or no snapshot covers a boundary's cycle — the event's
-   cost is `None` (`incomplete=True`) and the event is excluded from the
-   funding-adjusted metric and counted. Snapshot rates are never summed
-   repeatedly to fill a gap.
+   settlement row, no snapshot covers a boundary's cycle, or an
+   uninferable venue grid — the event's cost is `None` (`incomplete=True`)
+   and the event is excluded from the funding-adjusted metric and counted.
+   Snapshot rates are never summed repeatedly to fill a gap.
 5. **Position side from the rule policy.** The position side is derived from
    the SELECTED rule (`trade_side`): `cont` trades with the break
    (`ev.side`), `fade` trades against it (`-ev.side`). That same side is
@@ -196,11 +202,12 @@ Results are only comparable within the same `config_hash` + `cost_hash`.
 - The settlement archive must cover every funding event in a window for
   its rates to be used. Collections that started mid-archive leave earlier
   windows incomplete (excluded and counted), not back-filled.
-- The observation mapping's grid phase is inferred from the settlement
-  archive when present; observation-only coins assume the epoch-aligned
-  8h UTC grid. A coin on a different phase without a settlement archive
-  can only be attributed for windows whose boundaries it can cover, and
-  is otherwise reported incomplete.
+- The observation mapping uses the venue grid (phase + cycle) inferred
+  from the coin's settlement archive when present, so an off-epoch venue is
+  mapped to its real boundaries. Observation-only coins (no settlement
+  archive at all) assume the epoch-aligned 8h UTC grid. A settlement
+  archive that carries no usable `cycle_hours` yields an uninferable grid
+  and its windows are reported incomplete — never epoch-assumed.
 - The harness does NOT model funding on unrealized positions, partial
   fills, or mark-price divergence. It is a research tool, not a trading
   calculator.
