@@ -196,9 +196,21 @@ Results are only comparable within the same `config_hash` + `cost_hash`.
 ## Limitations
 
 - The default Splits assume >=91 days of bars for full dev/val/holdout.
-  With shorter archives (e.g. the current ~16-day production set), the
-  dev window may be truncated and no holdout is spent. This is honest,
-  not a defect.
+  VERIFIED 2026-10-18: the BTC archive contains 28,043 bars spanning ~16.41
+  days, and the entire universe (578 coins) maxes out at ~16.41 days —
+  **no coin has ≥91 days, so the full default split is not satisfiable
+  for any coin.** The evaluation harness has not been run against this
+  data snapshot because the data is insufficient for the default splits.
+  Inspect per-coin coverage before interpreting universe-wide results;
+  the ~16-day span only admits a truncated dev window.
+- Local funding observations exist for 571 coins, but span only ~0.09 to
+  ~2.56 days (median ~2.56 days, 98 obs median). These are observation
+  snapshots, not a 95-day settlement history. As of 2026-10-18 there is no
+  local `data/funding_settlements/` archive, so funding-adjusted results
+  cannot yet represent full-window historical costs. Backfill venue-reported
+  settlement history before treating those metrics as historical evidence.
+  Do not spend the one-shot holdout until dev/validation results and data
+  coverage have been reviewed.
 - The settlement archive must cover every funding event in a window for
   its rates to be used. Collections that started mid-archive leave earlier
   windows incomplete (excluded and counted), not back-filled.

@@ -4,11 +4,37 @@ Product goal: quantitative research and analysis for MEXC altcoin perpetual
 futures. Rules support quant analysis; heuristic scores are not evidence of
 edge. Read-only; no order execution. BTC is labeled market context only.
 
-Last updated: 2026-10-17 (WS4 settlement history, mark/index price
-history delivered in code; bar_quality CLI --ts-field added; docs updated).
+Last updated: 2026-10-18 (research-data readiness inventory; WS5 harness
+remains unrun on the current bar snapshot).
 The live service (pid 715, 2026-10-16 15:41) predates all 2026-10-17
 commits and has not been restarted — deploy is pending owner approval.
 Verified against code/data/live probes/tests, not inherited summaries.
+
+## Research data readiness snapshot (2026-10-18)
+
+VERIFIED by direct archive read (2026-10-18):
+
+- `data/bars/`: **578** coin archives (incl. BTC). BTC has 28,043 rows
+  spanning ~16.41 days — **not** 96.98 days as previously stated (the bar
+  files were refreshed and the prior span claim is stale). **No coin
+  has ≥91 days of bars; the maximum span across the entire universe is
+  ~16.41 days.** The default WS5 dev→val→holdout split (which requires
+  ~91 days) is therefore not satisfiable for any coin. Per-altcoin
+  coverage has now been fully audited: spans range from ~2.1 days
+  (DOPE, 594 bars) to ~16.4 days (542 coins ≥16 days), median ~16.1 days.
+- `data/funding/`: observations for 571 coins, 11–98 obs per coin
+  (median 98), spanning ~0.09–2.56 days (median ~2.56 days / 61h). These
+  are funding observations, not settlement history, and cover only the
+  tail of the bar archive.
+- `data/funding_settlements/` and `data/quant_research/` are absent. The
+  settlement collector and research harness are implemented, but no local
+  settlement backfill or evaluation report exists yet.
+- Next evidence step: backfill venue-reported settlement history (requires
+  network access), audit the resulting coverage, then run dev/validation
+  research. **The one-shot holdout is NOT spent**: with only ~16 days of
+  bars, the default split cannot complete and the holdout is kept sealed
+  until data is sufficient. Full-window funding-adjusted metrics are not
+  currently supported by local data.
 
 ## Current deployment state (verified live 2026-10-17)
 
@@ -438,12 +464,14 @@ Verified against code/data/live probes/tests, not inherited summaries.
   `/funding` is live-verified. Mark/index price history is **DELIVERED in
   code** with operator reference `docs/ws4-mark-index-history.md`; deploy
   pending.
-- WS5 beyond delivered work: calibration record (engine on production
-  bars), estimators (Hurst/MF-DFA), competing outcomes (stop/tp/time/
+- WS5 beyond delivered work: run the harness on current production bars
+  (not yet run as of 2026-10-18; audit per-altcoin coverage and backfill
+  settlement history before interpreting funding-adjusted metrics), then
+  produce a calibration record; estimators (Hurst/MF-DFA), competing outcomes (stop/tp/time/
   invalidation/censor per proposal §3.4), calibrated probabilities
   (proposal §3–§5). No rule has passed promotion. The evaluation harness
-  and cost attribution are delivered and tested; the calibration run on
-  production data is research-only (SHADOW, read-only, output to temp).
+  and cost attribution are delivered and tested; the production-data run
+  is research-only (SHADOW, read-only, output to temp) and remains pending.
 - WS6 evidence UI: sample-n / CI / calibration / coverage /
   validation-status display (blocked on WS5 outputs).
 - WS7 beyond the decision log: champion/candidate persistence,
@@ -521,9 +549,10 @@ Verified against code/data/live probes/tests, not inherited summaries.
 |  are costs for longs and credits for shorts) + proto/quant/eval_harness.py
 |  (research splits + leakage check + holdout-once + reproducibility
 |  metadata on production data); tests/test_ws5_eval_harness.py
-|  (51 checks: cost attribution, missing-data, sign correctness, early-exit
+|  (120 checks: cost attribution, missing-data, sign correctness, early-exit
 |  exit-timestamp charging, splits, leakage, holdout lock, archive digests
-|  for every coin, incomplete-boundary exclusion, no-production-write).
+|  for every coin, incomplete-boundary exclusion, venue-grid phase fallback,
+|  unknown-grid exclusion, no-production-write).
 |  CLI: python3 -m proto.quant evaluate. All output to temp/ --data/
 |  append-only-or-untouched, service NOT restarted.
 |  Fixes (review round): (1) funding cost applies trade side from the
@@ -537,10 +566,10 @@ Verified against code/data/live probes/tests, not inherited summaries.
 ## Handoff (committed-state reference — NOT part of the stage log above)
 
 ### Working-tree state
-- This file (`docs/roadmap-status.md`) is tracked and committed;
-  working tree CLEAN of tracked modifications as of 2026-10-15. Only
-  untracked files are `docs/superpowers/plans/*.md` (new SDD plans,
-  not part of any stage). The `proto/collector.py` sort fix was
+- The following was a historical workspace snapshot recorded 2026-10-15,
+  not a current status assertion. The ignored `docs/superpowers/plans/`
+  directory holds local SDD plans and is intentionally preserved. The
+  `proto/collector.py` sort fix was
   reviewed as part of the WS1 stage and committed at 27299bf; the WS7
   promotion gate is committed (Stage D, 502df2e).
 
