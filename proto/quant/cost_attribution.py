@@ -20,15 +20,23 @@ Design rules (reused from WS4 archives, proposal §3.1/§4):
     timestamps. Observation timestamps are therefore NEVER summed as if
     they were settle boundaries. The documented mapping from snapshots to
     funding events is:
-        funding event at boundary ``b`` (b = phase + k * cycle, phase
-        inferred from the coin's settlement archive when present, else
-        epoch-aligned UTC) takes the LAST snapshot in ``[b - cycle, b)``.
+        funding event at boundary ``b`` (b = phase + k * cycle) takes the
+        LAST snapshot in ``[b - cycle, b)``.
       Each boundary is charged at most once, with the most recent
       point-in-time snapshot of its own cycle. A snapshot after ``b``
-      belongs to the next cycle and never affects this one.
+      belongs to the next cycle and never affects this one. The grid
+      (``phase``, ``cycle``) is the VENUE's own: when the coin has a
+      settlement archive it is inferred from that archive's rows and used
+      for the observation fallback too, so snapshots map to the boundaries
+      the venue actually settles on (which may be off-epoch). Only when the
+      coin has NO settlement archive at all does the epoch-aligned 8h UTC
+      grid apply. If a settlement archive exists but does not carry enough
+      information to infer the grid, the window is INCOMPLETE — epoch
+      alignment is never assumed in place of the venue grid.
   * INCOMPLETE, not estimated: if ANY funding event inside the holding
-    window cannot be attributed (a venue settlement row is missing, or no
-    snapshot covers a boundary's cycle), the window's cost is
+    window cannot be attributed (a venue settlement row is missing, no
+    snapshot covers a boundary's cycle, or a settlement archive cannot
+    yield the venue grid), the window's cost is
     ``cost=None, incomplete=True`` — the event is excluded from
     funding-adjusted metrics and counted, never zero-filled.
   * Missing data is MISSING — never estimated, interpolated, or
@@ -79,11 +87,13 @@ class FundingCostResult:
         "observation" (snapshot-mapped funding events), or "none".
     incomplete: bool -- True when archives exist for the coin but at
         least one funding event inside the holding window could not be
-        attributed (missing venue settlement row, or no snapshot covers
-        a boundary's cycle). The cost is excluded, not estimated.
+        attributed (missing venue settlement row, no snapshot covers a
+        boundary's cycle, or the venue grid cannot be inferred). The cost
+        is excluded, not estimated.
     reason: str | None -- machine-readable cause of incompleteness:
-        "settlement-boundaries-missing", "observation-coverage-gap", or
-        both joined by "+".
+        "settlement-boundaries-missing", "observation-coverage-gap",
+        "venue-grid-unknown" (a settlement archive exists but cannot
+        yield the phase/cycle grid), or several joined by "+".
     """
     cost: Optional[float]
     observations: int
@@ -152,29 +162,41 @@ def _grid_boundaries(lo: int, hi: int, phase: int,
     return out
 
 
-def _cycle_seconds(settle_rows: List[Tuple[int, float, Optional[float]]]
-                   ) -> int:
-    """The venue's funding cycle from its own reported cycle_hours."""
+def _settlement_grid(settle_rows: List[Tuple[int, float, Optional[float]]]
+                     ) -> Optional[Tuple[int, int]]:
+    """The venue's own settle grid ``(phase, cycle)`` from its reported rows.
+
+    phase: ``settle_ts % cycle`` -- venue rows sit ON the grid, so any row
+        reveals the phase (which need not be epoch-aligned).
+    cycle: the venue-reported ``cycle_hours`` (most common when they
+        differ), or ``None`` when the archive reports no usable cycle.
+
+    Returns ``None`` when the archive does not carry enough information to
+    infer the grid. Callers must NOT substitute an epoch-aligned assumption
+    for that case: an uninferable venue grid makes the window incomplete.
+    """
     cycles = [c for _, _, c in settle_rows if c and c > 0]
     if not cycles:
-        return SETTLE_SECONDS
-    return int(round(max(set(cycles), key=cycles.count))) * 3600
+        return None
+    cycle = int(round(max(set(cycles), key=cycles.count))) * 3600
+    if cycle <= 0:
+        return None
+    return settle_rows[0][0] % cycle, cycle
 
 
-def _settlement_attribution(settle_rows, open_ts, close_ts, side):
+def _settlement_attribution(settle_rows, open_ts, close_ts, side,
+                            phase, cycle):
     """Cost from venue-reported settlements over ``(open_ts, close_ts)``.
 
     The venue's own settle timestamps define both the funding events and
-    the grid phase.  EVERY expected boundary inside the window must have
-    a venue-reported row (within BOUNDARY_TOL_S); if any row is missing
-    the window is a GAP -- the caller reports it as incomplete instead of
-    silently undercounting.
+    the grid (phase/cycle supplied by ``_settlement_grid``).  EVERY
+    expected boundary inside the window must have a venue-reported row
+    (within BOUNDARY_TOL_S); if any row is missing the window is a GAP --
+    the caller reports it as incomplete instead of silently undercounting.
 
     Returns (cost, n_events, gap) with cost/n_events None on a gap.
     """
     tss = [t for t, _, _ in settle_rows]
-    cycle = _cycle_seconds(settle_rows)
-    phase = tss[0] % cycle
     expected = _grid_boundaries(open_ts, close_ts, phase, cycle)
     if not expected:
         return 0.0, 0, False
@@ -196,6 +218,11 @@ def _observation_attribution(obs_rows, open_ts, close_ts, side,
     mapping (see module docstring): the boundary ``b`` takes the LAST
     snapshot in ``[b - cycle, b)``; each boundary is charged at most
     once; a boundary with no covering snapshot makes the window a gap.
+
+    ``phase``/``cycle`` are the venue grid: when the coin has a settlement
+    archive, the caller passes the grid inferred from it so snapshots map
+    to the SAME boundaries the venue settles on. Only when the coin has no
+    settlement archive at all does the epoch-aligned default apply.
 
     Returns (cost, n_events, gap) with cost/n_events None on a gap.
     """
@@ -235,12 +262,16 @@ def funding_cost(
     Source discipline:
       * Venue-reported settlements first: when the coin's settlement
         archive covers every funding event in the window, the settled
-        rates are used as-is.
+        rates are used as-is; its rows also define the venue's settle grid
+        (phase/cycle).
       * Otherwise the observation archive is consulted through the
         documented snapshot -> funding-event mapping (last snapshot of
-        each boundary's cycle, each boundary charged once).
+        each boundary's cycle, each boundary charged once). The mapping
+        uses the venue grid inferred from the settlement archive; only a
+        coin with NO settlement archive at all uses the epoch-aligned grid.
       * When neither source can attribute EVERY funding event in the
-        window, the result is ``incomplete=True, cost=None``: excluded
+        window (including a settlement archive whose grid cannot be
+        inferred), the result is ``incomplete=True, cost=None``: excluded
         and counted by the harness, never estimated.
 
     ``close_bar_ts`` should be the event's ACTUAL exit timestamp (TP/SL
@@ -264,25 +295,52 @@ def funding_cost(
 
     reasons = []
 
+    # The venue's own grid (phase/cycle) from its settlement archive, when
+    # present. It is used for BOTH source disciplines: the settlement
+    # coverage check AND the observation fallback, so a gap-period fallback
+    # maps snapshots to the same boundaries the venue actually settles on
+    # (which may be off-epoch). None => the venue grid cannot be inferred.
+    grid = _settlement_grid(settles) if settles else None
+
     # Venue-reported settlements first (settled facts, no mapping).
     if settles:
-        cost, n, gap = _settlement_attribution(
-            settles, open_bar_ts, close_bar_ts, side)
-        if not gap:
-            return FundingCostResult(
-                cost=cost, observations=n, missing=False,
-                source="settlement")
-        reasons.append("settlement-boundaries-missing")
+        if grid is None:
+            # Settlements exist but report no usable cycle: we cannot even
+            # check coverage. Never assume an epoch-aligned grid.
+            reasons.append("venue-grid-unknown")
+        else:
+            cost, n, gap = _settlement_attribution(
+                settles, open_bar_ts, close_bar_ts, side, *grid)
+            if not gap:
+                return FundingCostResult(
+                    cost=cost, observations=n, missing=False,
+                    source="settlement")
+            reasons.append("settlement-boundaries-missing")
 
     # Observation-only fallback: snapshot -> funding-event mapping.
     if obs:
-        cost, n, gap = _observation_attribution(
-            obs, open_bar_ts, close_bar_ts, side)
-        if not gap:
-            return FundingCostResult(
-                cost=cost, observations=n, missing=False,
-                source="observation")
-        reasons.append("observation-coverage-gap")
+        if settles:
+            # Use the venue grid inferred above; if it is unknown, do NOT
+            # fall back to epoch alignment -- that would map snapshots to
+            # boundaries the venue never settles on.
+            obs_grid = grid
+        else:
+            # No settlement archive for this coin: the documented
+            # epoch-aligned assumption is the only available grid.
+            obs_grid = (0, SETTLE_SECONDS)
+        if obs_grid is None:
+            if "venue-grid-unknown" not in reasons:
+                reasons.append("venue-grid-unknown")
+        else:
+            phase, cycle = obs_grid
+            cost, n, gap = _observation_attribution(
+                obs, open_bar_ts, close_bar_ts, side,
+                cycle=cycle, phase=phase)
+            if not gap:
+                return FundingCostResult(
+                    cost=cost, observations=n, missing=False,
+                    source="observation")
+            reasons.append("observation-coverage-gap")
 
     # Data exists for the coin but at least one funding event in the
     # window could not be attributed: incomplete, excluded not estimated.

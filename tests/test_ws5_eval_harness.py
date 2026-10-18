@@ -22,7 +22,9 @@ Covers:
       repeatedly; each 8h boundary takes the last snapshot of its cycle;
       unattributable boundaries make the event incomplete
   18. Settlement archive wins when it covers the window; missing settle
-      boundaries -> incomplete; observation fallback for gap periods
+      boundaries -> incomplete; observation fallback for gap periods maps
+      snapshots to the VENUE grid (phase/cycle from settlements), and an
+      uninferable venue grid is incomplete (never epoch-assumed)
   19. FADE policy regression: trade side comes from the selected rule's
       policy, consistently for funding sign, exit-offset slot, coverage
   20. Integration: funding-adjusted dev/val/holdout/slip2x metrics differ
@@ -644,6 +646,52 @@ r_gap2 = ca.funding_cost("XRP", B1 - 60, B1 + SETTLE_S + 60,
 check("settlement gap + sparse observations -> incomplete, cost None",
       r_gap2.cost is None and r_gap2.incomplete and not r_gap2.missing,
       str(r_gap2))
+
+# Deliberately OFF-EPOCH venue grid: the venue settles at phase +03:00, not
+# on the epoch-aligned 8h grid, and its settlement archive has a GAP over
+# the window. The fallback MUST map snapshots to the VENUE boundaries (the
+# phase/cycle inferred from the settlement archive), never to the
+# epoch-aligned grid. Epoch mapping would charge the single snapshot at
+# Bv+18000-300s (0.009); venue mapping charges Bv and Bv+8h
+# (0.002 + 0.005).
+VENUE_PHASE = 3 * 3600
+Bv = VENUE_PHASE + 28800 * 100                     # off-epoch boundary
+write_settlements(sett_dir3, "OFFEPOCH",
+                  [(Bv - 28800, 0.001, 8),
+                   (Bv + 2 * 28800, 0.001, 8),
+                   (Bv + 3 * 28800, 0.001, 8)])    # gap: Bv, Bv+8h
+write_funding(obs_dir, "OFFEPOCH", [(Bv - 300, 0.002),
+                                    (Bv + 18000 - 300, 0.009),
+                                    (Bv + 28800 - 300, 0.005)])
+r_off = ca.funding_cost("OFFEPOCH", Bv - 60, Bv + 28800 + 60,
+                        funding_dir=obs_dir, settlements_dir=sett_dir3)
+check("off-epoch settlement gap -> observation fallback",
+      r_off.source == "observation", str(r_off))
+check("fallback maps snapshots to the VENUE grid, not epoch alignment",
+      r_off.cost == 0.002 + 0.005 and r_off.observations == 2, str(r_off))
+
+# Settlement archive exists but reports no usable cycle_hours -> the venue
+# grid cannot be inferred. Epoch alignment must NOT be assumed: the cost is
+# incomplete even though dense snapshots could cover an epoch grid.
+write_settlements(sett_dir3, "NOGRID",
+                  [(Bv, 0.001, 0), (Bv - 28800, 0.001, 0)])
+write_funding(obs_dir, "NOGRID",
+              [(Bv - 28800 + 900 * j, 0.0005) for j in range(65)])
+r_nogrid = ca.funding_cost("NOGRID", Bv - 60, Bv + 28800 + 60,
+                           funding_dir=obs_dir, settlements_dir=sett_dir3)
+check("uninferable venue grid -> incomplete, never epoch-assumed",
+      r_nogrid.cost is None and r_nogrid.incomplete
+      and not r_nogrid.missing, str(r_nogrid))
+
+# No settlement archive for a coin -> the documented epoch-aligned mapping
+# still applies (the only case where the grid is assumed).
+write_funding(obs_dir, "EPOCHONLY",
+              [(Bv - 300, 0.0004), (Bv + 18000 - 300, 0.0007)])
+r_epoch = ca.funding_cost("EPOCHONLY", Bv + 18000 - 60, Bv + 18000 + 600,
+                          funding_dir=obs_dir, settlements_dir=sett_dir3)
+check("no settlement archive -> documented epoch grid is used",
+      r_epoch.source == "observation" and r_epoch.cost == 0.0007
+      and r_epoch.observations == 1, str(r_epoch))
 
 # No archive at all -> missing (distinct from incomplete)
 r_none = ca.funding_cost("SOL", B1 - 60, B1 + 600,
