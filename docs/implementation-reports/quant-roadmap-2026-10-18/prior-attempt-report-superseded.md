@@ -1,5 +1,13 @@
 # ALT RADAR Quant Roadmap — Progress and Final Report
 
+> **SUPERSEDED — DO NOT RELY ON THIS FILE.** This is the preserved report from
+> an earlier attempt at the same task. Its data-readiness conclusions
+> ("BTC ~16.41 days", "no coin has ≥91 days", "settlements absent") were
+> artifacts of a **mid-backfill** read of batch-appended, non-chronological
+> archives. See `progress-and-final-report.md` for the correct, verified
+> figures. It also cites commit `11b32e9`, which is not part of this
+> repository's history (the baseline is `17e9a74`). Kept for the audit trail.
+
 **Date:** 2026-10-18
 **Plan:** `docs/superpowers/plans/quant-roadmap-2026-10-18.md`
 **Session:** Implementation lead for quant roadmap

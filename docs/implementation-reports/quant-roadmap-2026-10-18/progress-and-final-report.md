@@ -49,7 +49,9 @@ Span = (last − first)/86400 over **unique sorted** timestamps.
 | < 30 days | 24 |
 | **Total** | **578** |
 
-- BTC: 28,067 rows / 28,067 unique / **97.4514 days**; universe max 97.458 (ALL).
+- BTC: ≈28.1k unique bars / **≈97.45 days** at this snapshot; universe max
+  ≈97.5 days. Counts are deliberately approximate — the live collector
+  appends a 5m bar for every coin every 300 s, so exact row counts rot.
 - Duplicate timestamps: **0**. Invalid rows: **0**. (Perfect-300s-grid WS1
   invariant still holds.)
 - Corroborated by the project's own `python3 -m proto.bar_quality --data-dir
@@ -88,14 +90,14 @@ Span = (last − first)/86400 over **unique sorted** timestamps.
 
 | WS | Description | Owner | Status |
 |----|-------------|-------|--------|
-| A | Coverage audit (bars/settlements/funding) | lead + subagents 1,2 | in progress |
-| B | Correct data-readiness docs | lead | done (edits staged) |
-| C | Coverage policy + `--coins` defect (TDD) | lead | done (tests pass) |
-| D | WS5 dev/val run, holdout SEALED | lead | running |
+| A | Coverage audit (bars/settlements/funding) | lead + subagents 1,2 | done (verified) |
+| B | Correct data-readiness docs | lead | done (commit `faa7583`) |
+| C | Coverage policy + `--coins` defect (TDD) | lead | done (commit `168b960`, hardened `e51ce1c`) |
+| D | WS5 dev/val run, holdout SEALED | lead | **done** (§4) |
 | E | WS3/WS4 availability audit | subagent 3 | done |
 | F | WS6/WS7 status | subagent 3 + lead | done (findings) |
-| G | Deployment checklist (restart pending) | lead | planned |
-| H | Final review + commit + push | lead | planned |
+| G | Deployment checklist (restart pending) | lead | done (§10) |
+| H | Final review + commit + push | lead | done (§8) |
 
 ## 3. Code changes (TDD)
 
@@ -115,19 +117,42 @@ Span = (last − first)/86400 over **unique sorted** timestamps.
 
 ## 4. WS5 evaluation (holdout SEALED)
 
-- Concurrent artifact (not mine): `/tmp/ws5-eval-final/evaluation.json`
-  (2026-10-18 14:43, git_rev `17e9a74`): dev n=24749 mean_r −0.0154
-  CI[−0.0417,+0.0142]; val n=6495 −0.0166 CI[−0.0468,+0.0174]; holdout
-  null; leakage none; funding coverage ≈0.98; missing_cost_coins=3;
-  bar_digests=448.
-- **My own run** (reproducible, `/usr/bin/python3`, no `--holdout`):
-  `python3 -m proto.quant evaluate --data data/bars --funding-dir
-  data/funding --settlements-dir data/funding_settlements --out
-  /tmp/opencode/ws5-eval-<ts>` — results filled in when it completes.
-- Friction-only and funding-adjusted results are reported separately with
-  explicit denominators (the harness guarantees
-  `n_funding_adjusted + n_excluded_missing_coin + n_excluded_incomplete ==
-  n_events`).
+**My run** (reproducible; no `--holdout`), from `HEAD = e51ce1c`:
+
+```
+python3 -m proto.quant evaluate --data data/bars --funding-dir data/funding \
+  --settlements-dir data/funding_settlements --out /tmp/opencode/ws5-eval-1792331507
+# EXIT=0  -> /tmp/opencode/ws5-eval-1792331507/evaluation.json
+# sha256 5893481240e52d9ffb7e4b02e55b4a33ef3759b069a25547d803995afb8e69f5
+# config_hash d33cff513c30  cost_hash 762515f702934998
+# splits dev(6,61) val(63,77) holdout(79, 97.4514)  n_days 97.4514
+```
+
+| Split | n | days | coins | mean_r | 95% CI | t |
+|---|---:|---:|---:|---:|---|---:|
+| dev (friction-only) | 24,749 | 55 | 375 | −0.01542 | [−0.04171, +0.01424] | −1.062 |
+| val (friction-only) | 6,495 | 14 | 248 | −0.01661 | [−0.04676, +0.01742] | −1.013 |
+| dev (funding-adjusted) | 24,311 | 55 | 364 | −0.01485 | [−0.04114, +0.01526] | −1.007 |
+| val (funding-adjusted) | 6,374 | 14 | 241 | −0.01633 | [−0.04725, +0.01836] | −0.978 |
+
+- **Denominators reconcile** exactly (friction-only = funding-adj + excluded):
+  dev 24,311 + 5 (missing coin) + 433 (incomplete) = **24,749**;
+  val 6,374 + 0 + 121 = **6,495**. Funding coverage ≈0.982.
+  `missing_cost_coins = [1000BTT, RON, ZBCN]`; `leakage_violations = []`;
+  incomplete-boundary 554 / 31,244 events; digests bars 448 / funding 445 /
+  settlements 441.
+- **Every dev/val CI straddles zero and the point estimates are negative →
+  no edge.** Friction-only and funding-adjusted are reported **separately**
+  (never merged); funding adjustment moves the mean by only ~+0.0005.
+- **The one-shot holdout stays SEALED:** `holdout`, `holdout_slip2x`,
+  `holdout_funding_adjusted`, `holdout_slip2x_funding_adjusted` are all
+  `null`. No decision to spend it has been made, and none is warranted
+  without a positive, CI-clearing dev/val edge.
+- **Reproducibility:** an independent concurrent run at `17e9a74`
+  (`/tmp/ws5-eval-final/evaluation.json`, sha256 `011663b7…`, same
+  `config_hash`/`cost_hash`) produced **identical dev/val statistics** — only
+  `n_days` differed (97.399 vs 97.451) because the collector appended bars
+  between the runs (the dev/val windows are unaffected).
 
 ## 5. WS3/WS4/WS6/WS7 findings (subagent audit, VERIFIED probes)
 
@@ -155,24 +180,40 @@ Span = (last − first)/86400 over **unique sorted** timestamps.
 
 | Check | Result |
 |-------|--------|
-| `python3 tests/test_quant_coverage.py` | ALL PASS (new) |
-| `python3 tests/test_ws5_eval_harness.py` | ALL PASS (122 checks; case 23 added) |
-| `python3 tests/run_all.py` | _pending (run before commit)_ |
-| `proto.bar_quality --all` | _slow; independent 578-file pass used instead_ |
+| `python3 tests/test_quant_coverage.py` | ALL PASS (37 assertions) |
+| `python3 tests/test_ws5_eval_harness.py` | ALL PASS (123 checks; case 23 added) |
+| `python3 tests/run_all.py` | **ALL SUITES PASS (78 files, 0 failures)** |
+| `python3 -m proto.bar_quality --data-dir data/bars --all --json` | 578 coins; 0 gaps / 0 dups / 0 invalid; ratio 1.0 |
+| `python3 -m proto.quant evaluate …` (no `--holdout`) | `EXIT=0`; numbers in §4 |
+| `python3 -m proto.quant evaluate --help` | shows `--coins` |
+| independent code review (subagent) | 2 must-fix docs issues + hardening; all addressed in `e51ce1c` |
+| `tests/test_app.py` (venue-network smoke) | excluded — needs a live venue |
 
 ## 8. Commits
 
-- baseline (pre-existing, factually wrong): `17e9a74`.
-- _(to add)_ docs correction; coverage policy + `--coins`; report.
+- baseline (pre-existing, factually wrong snapshot): `17e9a74`.
+- `faa7583` docs(quant): correct 2026-10-18 data-readiness snapshot.
+- `168b960` feat(quant): minimum-coverage policy + forward `--coins` in evaluate.
+- `f44e1dc` docs(quant): 2026-10-18 roadmap-completion progress and final report.
+- `e51ce1c` fix(quant): harden coverage policy and `--coins` wiring (review round).
+- Final doc update (this report + `docs/roadmap-status.md`) committed and
+  pushed last; `origin/main` equals that tip (verified with `git fetch`).
+- No raw archive was rewritten; `data/` is gitignored and untouched by the
+  research runs (output went to a temp `--out` dir).
 
 ## 9. Blockers / open items
 
 - Externally blocked: OI history, book/spread history (no public endpoint).
 - Needs owner approval: service restart (`/settlements`, `/prices`,
   `/quant-status`); WS3 1m design; provisional tier.
-- Open (implementable): mark/index collection; WS5 calibration/estimators/
-  competing outcomes; WS6 broader display; WS7 champion/candidate + gate
-  records.
+- Open (implementable, evidence-gated): mark/index collection; WS5
+  calibration record + estimators (Hurst/MF-DFA) + competing outcomes
+  (stop/tp/time/invalidation/censor, proposal §3.4) + calibrated
+  probabilities (proposal §3–§5); WS6 broader evidence display; WS7
+  champion/candidate + gate records. **Because no config cleared dev→val,
+  there is nothing to promote** — the registry stays `research` and
+  `docs/decisions/log.jsonl` stays empty until a config shows a positive,
+  CI-clearing edge. These items are deliberately not forced.
 
 ## 10. Deployment / live-verification checklist (restart PENDING owner approval)
 

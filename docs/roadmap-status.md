@@ -473,14 +473,22 @@ VERIFIED by direct archive read (2026-10-18):
   `/funding` is live-verified. Mark/index price history is **DELIVERED in
   code** with operator reference `docs/ws4-mark-index-history.md`; deploy
   pending.
-- WS5 beyond delivered work: run the harness on current production bars
-  (not yet run as of 2026-10-18; audit per-altcoin coverage and backfill
-  settlement history before interpreting funding-adjusted metrics), then
-  produce a calibration record; estimators (Hurst/MF-DFA), competing outcomes (stop/tp/time/
-  invalidation/censor per proposal §3.4), calibrated probabilities
-  (proposal §3–§5). No rule has passed promotion. The evaluation harness
-  and cost attribution are delivered and tested; the production-data run
-  is research-only (SHADOW, read-only, output to temp) and remains pending.
+- WS5 beyond delivered work: the evaluation harness **HAS now been run** on
+  the current ~97.45-day bar snapshot with venue settlement costs
+  (`python3 -m proto.quant evaluate`, no `--holdout`, `EXIT=0`, git_rev
+  `e51ce1c`; output to a temp `--out` dir). Universe **dev** n=24,749
+  mean_r −0.0154 CI[−0.0417,+0.0142] and **val** n=6,495 mean_r −0.0166
+  CI[−0.0468,+0.0174] — both straddle zero, point estimates negative,
+  **no edge**. Funding-adjusted metrics are reported **separately**:
+  dev n=24,311 (excluded 5 missing-coin + 433 incomplete; coverage 0.982)
+  mean_r −0.0149 CI[−0.0411,+0.0153]; val n=6,374 (excluded 121 incomplete)
+  mean_r −0.0163 CI[−0.0473,+0.0184]. `missing_cost_coins=[1000BTT,RON,ZBCN]`,
+  no leakage, all holdout keys `null`. **The one-shot holdout remains
+  SEALED.** Still owned (not started, evidence-gated): a frozen-setup
+  decision to spend the holdout once; a calibration record; estimators
+  (Hurst/MF-DFA), competing outcomes (stop/tp/time/invalidation/censor per
+  proposal §3.4), calibrated probabilities (proposal §3–§5). No rule has
+  passed promotion; all outputs are SHADOW/read-only.
 - WS6 evidence UI: sample-n / CI / calibration / coverage /
   validation-status display (blocked on WS5 outputs).
 - WS7 beyond the decision log: champion/candidate persistence,
@@ -571,6 +579,34 @@ VERIFIED by direct archive read (2026-10-18):
 |  enforced with graceful refusal on second attempt; (4) archive digests
 |  for every contributing coin (no cap); (5) incomplete boundary coverage
 |  excluded from funding-adjusted metrics with affected counts reported.
+|- Stage K (roadmap completion, 2026-10-18): (1) Data-readiness docs
+|  corrected — the committed `17e9a74` snapshot was a mid-backfill read of
+|  batch-appended, non-chronological archives. By sorted unique min/max:
+|  523/578 coins have ≥91 d of 5m bars (BTC ≈97.45 d; median 97.44 d), and
+|  data/funding_settlements/ holds 559 archives / 1,366,260 venue settle
+|  rows. Confirmed independently (578-file pass + proto.bar_quality --all:
+|  0 gaps/dups/invalid, ratio 1.0). Commit faa7583.
+|  (2) New proto/quant/coverage.py — minimum-coverage policy (holdout
+|  starts day 79; full needs ≈91 d) + read-only audit CLI; TDD
+|  tests/test_quant_coverage.py. Fixed the silent `--coins` no-op in
+|  proto/quant/__main__.py and forwarded it through eval_harness.evaluate →
+|  research.collect_events (WS5 case 23). Commits 168b960 + e51ce1c
+|  (review-round guards: non-finite spans, corrupt archive, whitespace list,
+|  doc consistency).
+|  (3) WS5 dev/val run on the full snapshot (no --holdout, EXIT=0):
+|  dev n=24,749 mean_r −0.0154 CI[−0.0417,+0.0142], val n=6,495 −0.0166
+|  CI[−0.0468,+0.0174] — straddle zero, no edge; funding-adjusted reported
+|  separately (dev 24,311 excl. 5+433; val 6,374 excl. 121); holdout keys
+|  null. Reproduced identically by an independent concurrent run at
+|  17e9a74. Holdout remains SEALED. Report:
+|  docs/implementation-reports/quant-roadmap-2026-10-18/
+|  progress-and-final-report.md.
+|  (4) WS3/WS4/WS6/WS7 gap audit (read-only probes): OI + book/spread
+|  history externally blocked; 1m served but adapter unimplemented and the
+|  sweep ~25× off schedule; /settlements + /prices + /quant-status still
+|  404 on pid 715 (deploy pending owner approval). No promotion records;
+|  all registry rules `research`. run_all.py ALL SUITES PASS (78 files).
+|  NOTE: no raw archive was ever rewritten in any stage.
 
 ## Handoff (committed-state reference — NOT part of the stage log above)
 
@@ -648,5 +684,19 @@ VERIFIED by direct archive read (2026-10-18):
 - `e80c07c` feat(WS5): quant status route and shadow event
 - `deba410` feat(WS5): guarded quant-shadow daemon hook
 - `2c85807` feat(WS5): vendor quant research-and-shadow engine (additive)
-- (uncommitted, 2026-10-17 WS5 eval harness): proto/quant/cost_attribution.py
-  + proto/quant/eval_harness.py + tests/test_ws5_eval_harness.py
+
+### Committed state (2026-10-18)
+- `61e0616` fix(WS5): funding-adjusted metrics, settle-boundary attribution,
+  policy side
+- `45902c1` fix(WS5): map observation fallback to the venue settle grid
+- `9024f1b` docs(WS5): venue-grid observation fallback; uninferable grid
+  incomplete
+- `17e9a74` docs(quant): 2026-10-18 data-readiness snapshot; WS5 harness
+  still unrun
+- `faa7583` docs(quant): correct 2026-10-18 data-readiness snapshot
+- `168b960` feat(quant): minimum-coverage policy + forward `--coins` in
+  evaluate
+- `f44e1dc` docs(quant): 2026-10-18 roadmap-completion progress and final
+  report
+- `e51ce1c` fix(quant): harden coverage policy and `--coins` wiring
+  (review round)
