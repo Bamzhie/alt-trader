@@ -454,9 +454,14 @@ def main():
                           encoding="utf-8").read()
         check("daemon owns the loop (no copy in service)",
               "def run_daemon_loop" in daemon_src)
+        # WS-F: the daemon CALLS the app's scan entry point (plain, with
+        # the record_sweep flag, or through a getattr probe when the app
+        # has no scan at all).  The check below still means "no scan body
+        # was copied into the daemon": the daemon must neither define one
+        # nor inline the scoring.
         check("daemon has no copied scan body",
-              "scan_once" not in daemon_src.replace(
-                  "app.scan_once()", "").replace("FakeApp", ""),
+              "def scan_once" not in daemon_src
+              and "score_universe" not in daemon_src,
               "loop body leaked into the wrapper")
         check("daemon delegates to the service",
               "from .service import" in daemon_src
@@ -566,6 +571,13 @@ def main():
             # wide enough for the reachability checks to observe it.
             db_crash = os.path.join(tmp2, "crash.db")
             lock_crash = os.path.join(tmp2, "locks_crash", "scanner.lock")
+            # The readiness probe reads the DB, so the DB has to EXIST for
+            # the /readyz contract to be observable: create it up-front
+            # (an empty SQLite file is readable).  Without it the probe
+            # would answer 503 for a reason that has nothing to do with
+            # the scanner being down.
+            conn = sqlite3.connect(db_crash)
+            conn.close()
             svc.reset_events()
             loop_calls["n"] = 0  # per-scenario counter
             fail_mode["mode"] = "one"  # fail exactly the first attempt
@@ -635,14 +647,27 @@ def main():
                   in str(((failed_body or {}).get("data") or {})
                          .get("last_error")),
                   str(failed_body))
-            # API stays reachable while the scanner is down; readiness is
-            # the distinct first-sweep signal (no sweep ever ran).
+            # API stays reachable while the scanner is down.  WS-F:
+            # /readyz is API-SERVING readiness (HTTP serving + the DB
+            # readable) and no longer waits for the first sweep; the
+            # first-sweep signal lives in /scanner-health -> first_sweep
+            # and must never claim a sweep that did not complete.
             status, body = _get("/healthz")
             check("/healthz stays 200 while scanner failed",
                   status == 200, f"status={status}")
             status, body = _get("/readyz")
-            check("/readyz stays 503 while scanner failed (distinct signal)",
-                  status == 503, f"status={status}")
+            check("/readyz is API readiness (not sweep readiness): 200 "
+                  "while the scanner is down",
+                  status == 200 and body.get("ok") is True
+                  and (body.get("data") or {}).get("ready") is True,
+                  f"status={status} {str(body)[:160]}")
+            status, body = _get("/scanner-health")
+            fs = (body.get("data") or {}).get("first_sweep") or {}
+            check("scanner-health publishes the first-sweep state",
+                  fs.get("state") in ("pending", "in_progress", "complete"),
+                  str(fs))
+            check("a failed scanner never claims a completed first sweep",
+                  fs.get("completed_ts") is None, str(fs))
 
             # Recovery must be DEMONSTRATED: the retry's first completed
             # sweep is the only thing that moves the scanner from
@@ -882,6 +907,56 @@ def main():
         finally:
             server_u.shutdown()
             server_u.server_close()
+
+        # -- /readyz: the DB must be READABLE, and only that ---------------
+        # WS-F: /readyz is API-serving readiness.  A DB that cannot be read
+        # is the one thing that makes it answer 503 (the scanner state
+        # never does).
+        bad_db = os.path.join(tmp3, "not-a-database")
+        with open(bad_db, "w", encoding="utf-8") as f:
+            f.write("this is not a sqlite file\n")
+        server_b = svc.serve(0, "unwired-token", lambda: {},
+                             store_path=bad_db)
+        try:
+            port_b = server_b.server_address[1]
+            conn = http.client.HTTPConnection("127.0.0.1", port_b, timeout=5)
+            conn.request("GET", "/readyz",
+                         headers={"Authorization": "Bearer unwired-token"})
+            resp = conn.getresponse()
+            body = resp.read()
+            conn.close()
+            check("unreadable DB -> /readyz answers 503 UNAVAILABLE",
+                  resp.status == 503, f"status={resp.status}")
+            payload = json.loads(body.decode("utf-8"))
+            check("unreadable DB -> /readyz envelope is UNAVAILABLE",
+                  (payload.get("error") or {}).get("code") == "UNAVAILABLE",
+                  str(payload))
+        finally:
+            server_b.shutdown()
+            server_b.server_close()
+
+        # A readable DB answers 200, whatever the scanner state is.
+        good_db = os.path.join(tmp3, "readable.db")
+        conn = sqlite3.connect(good_db)
+        conn.close()
+        server_g = svc.serve(0, "unwired-token", lambda: {},
+                             store_path=good_db)
+        try:
+            port_g = server_g.server_address[1]
+            conn = http.client.HTTPConnection("127.0.0.1", port_g, timeout=5)
+            conn.request("GET", "/readyz",
+                         headers={"Authorization": "Bearer unwired-token"})
+            resp = conn.getresponse()
+            body = resp.read()
+            conn.close()
+            payload = json.loads(body.decode("utf-8"))
+            check("readable DB -> /readyz answers 200 with ready=true",
+                  resp.status == 200 and payload.get("ok") is True
+                  and (payload.get("data") or {}).get("ready") is True,
+                  f"status={resp.status} {str(payload)[:160]}")
+        finally:
+            server_g.shutdown()
+            server_g.server_close()
     finally:
         shutil.rmtree(tmp3, ignore_errors=True)
 

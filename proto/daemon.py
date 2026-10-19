@@ -9,6 +9,13 @@ scan cycle (signals AND shadow rows logged, same as the app), every
 If the GUI runs with auto-scan ON at the same time, both log signals and
 rows double up (harmless for stats denominators, but noisy) — pause the
 GUI (p) or close it while the daemon owns collection.
+
+Workstream F (startup & first-sweep): every stage of an iteration is timed
+and its outcome recorded (``proto/daemon_timing.py``), the per-stage
+due-times are persisted so a restart does NOT repeat work that is not due,
+the stop flag is observed between stages and between per-coin units so a
+SIGTERM drains promptly, and exactly ONE sweep record is written per
+completed iteration.
 """
 
 import argparse
@@ -26,8 +33,14 @@ from . import settlements as smod
 from . import prices as pmod
 from . import measurement as measuremod
 from . import outcomes as outmod
+from .daemon_timing import (Cadence, TimingLog, CADENCE_FILE, STAGES,
+                             TIMING_FILE, format_stages, sidecar_path)
 from .scan import MAX_WORKERS, build_universe
 from .store import Store
+
+
+class _StopRequested(Exception):
+    """Raised inside a stage that must stop now (the operator's SIGTERM)."""
 
 
 def full_symbol_map():
@@ -206,7 +219,26 @@ def _accepts_duration_kwarg(fn):
     return True
 
 
-def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
+def _accepts_kwarg(fn, name):
+    """True when *fn* can be called with the keyword *name*.
+
+    Same rule as :func:`_accepts_duration_kwarg`: the call shape is decided
+    ONCE, by signature inspection, never by catching a TypeError raised
+    inside the call (which would trigger a second, duplicate invocation).
+    """
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    try:
+        sig.bind(**{name: None})
+    except TypeError:
+        return False
+    return True
+
+
+def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None,
+                    timing=None):
     """The collection loop: scan + collect + resolve (+ measure cadence).
 
     Owned here and imported by the service (move-by-import — never copied).
@@ -227,7 +259,35 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
     error — reported, never retried.
     ``app_box``, when given,
     receives the App under ``app_box["app"]`` so the owner can close
-    sessions after the loop stops.
+    sessions after the loop stops.  It may also carry the shared
+    ``app_box["timing"]`` timing log (the service owns it so
+    ``/scanner-health`` can publish the stage durations and the first-sweep
+    state); the ``timing`` keyword below does the same.
+    ``timing``, when given, is the shared
+    :class:`proto.daemon_timing.TimingLog` (the service owns it so
+    ``/scanner-health`` can publish the stage durations and the first-sweep
+    state); otherwise the loop creates and owns its own.
+
+    Workstream F guarantees:
+    * every stage of the iteration is timed and recorded with its outcome
+      (ok / skipped / failed / not_due / partial) — a failure is never
+      recorded as a success;
+    * the per-stage due-times are PERSISTED (``data/.cadence.json`` next to
+      the DB), so a restart does not repeat work that is not due. The file
+      is only written when a stage actually completes, so the first boot
+      after this change behaves exactly like today;
+    * the stop flag is observed BETWEEN stages and BETWEEN per-coin units
+      (collector, quant step, measurement cycle), so a SIGTERM drains
+      inside the operator's grace;
+    * exactly ONE sweep record (one watcher_events row + one
+      dashboard_snapshot row) is written per completed iteration: the app's
+      own sweep write is suppressed on the daemon path, the CLI path keeps
+      its own;
+    * the first-sweep state (``/scanner-health``) moves to "complete" only
+      when an iteration ENDED NORMALLY with a completed sweep.  An
+      interrupted iteration (the operator's SIGTERM arrived mid-cycle)
+      leaves it at "in_progress" with ``completed_ts`` still null - no
+      route may claim a sweep completed that did not.
     """
     app = make_app(args)
     if app_box is not None:
@@ -239,13 +299,33 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
     # TypeError from inside the callback must never be mistaken for a
     # legacy signature and trigger a second, duplicate call.
     sweep_takes_duration = _accepts_duration_kwarg(on_sweep)
-    sym_map = {}
-    last_collect = 0.0
-    last_resolve = 0.0
-    last_measure = 0.0
+    # Same for the app's scan entry point: the daemon writes the sweep
+    # record itself, so the app must NOT write one too (one row per
+    # iteration).
+    scan_fn = getattr(app, "scan_once", None)
+    scan_takes_flag = (scan_fn is not None
+                       and _accepts_kwarg(scan_fn, "record_sweep"))
+    if timing is None and app_box is not None:
+        # The service hands the shared timing log over through the box, so
+        # the embedded loop's call shape never changes.
+        timing = app_box.get("timing")
+    if timing is None:
+        timing = TimingLog(sidecar_path(args.db, TIMING_FILE),
+                           db=args.db)
+    # Persisted per-stage due-times (WS-F).  A stage with no entry is due
+    # at once (first boot); the file is only written when a stage actually
+    # completes, so the first restart after this change still runs the work.
+    cadence = Cadence(sidecar_path(args.db, CADENCE_FILE), intervals={
+        "scan": int(args.interval),
+        "collect": int(args.collect_every),
+        "resolve": int(args.resolve_every),
+        "measure": int(args.measure_every),
+    }, db=args.db)
     resolver_pool = ThreadPoolExecutor(max_workers=1,
                                        thread_name_prefix="outcome-resolver")
     resolve_future = None
+    resolve_started = 0.0        # monotonic: the measured pass duration
+    resolve_started_wall = 0.0    # wall clock: the persisted due-time
     measure_cfg = measuremod.measurement_config(
         args.stake, args.log_threshold,
         getattr(args, "leverage_cap", None))
@@ -254,6 +334,7 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
     # leaves the watcher disabled — the loop below never depends on it.
     quant_watcher = None
     quant_last_shadow = (0, 0)
+    quant_takes_stop = False
     if getattr(args, "quant_shadow", False):
         try:
             from .quant.engine import Watcher as _QuantWatcher
@@ -262,8 +343,107 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                 getattr(args, "quant_bars", "data/bars"),
                 _QuantStore(getattr(args, "quant_db", "data/quant.db")),
                 equity=getattr(args, "quant_equity", 1000.0))
+            quant_takes_stop = _accepts_kwarg(quant_watcher.step,
+                                              "should_stop")
         except Exception as e:
             print(f"quant init FAILED: {type(e).__name__}: {e}", flush=True)
+
+    def _stopped():
+        return stop_event is not None and stop_event.is_set()
+
+    def _run_scan():
+        if scan_fn is None:
+            return
+        if scan_takes_flag:
+            scan_fn(record_sweep=False)
+        else:
+            scan_fn()
+
+    def _fill_missing_stages():
+        """Mark the stages an interrupted iteration never reached."""
+        done = set(((timing.current or {}).get("stages") or {}))
+        for name in STAGES:
+            if name not in done:
+                timing.record(name, 0.0, "skipped", interrupted=True)
+
+    def _venue_hooks(interrupted):
+        """funding + settlements + prices; they ride the collect cadence.
+
+        Each hook is guarded on its own: a failure is reported, never
+        raised, and never fails the bars sweep.  The stop flag is observed
+        between the hooks so a SIGTERM drains here too.
+        """
+        if interrupted or _stopped():
+            for name in ("funding", "settlements", "prices"):
+                timing.record(name, 0.0, "skipped", interrupted=True)
+            return True
+        # WS4 point-in-time funding: one observation per coin, recorded on
+        # the same cadence as the bars cycle (funding rides the bulk ticker
+        # row - one extra request).
+        t_stage = time.monotonic()
+        try:
+            fund_counts = fmod.collect_funding()
+            print(f"[{time.strftime('%H:%M:%S')}] funding: "
+                  f"{len(fund_counts)} coins recorded", flush=True)
+            timing.record("funding", time.monotonic() - t_stage, "ok",
+                          coins=len(fund_counts))
+        except Exception as e:
+            print(f"[{time.strftime('%H:%M:%S')}] funding FAILED: "
+                  f"{type(e).__name__}: {e}", flush=True)
+            timing.record("funding", time.monotonic() - t_stage, "failed",
+                          error=f"{type(e).__name__}: {e}")
+        if _stopped():
+            for name in ("settlements", "prices"):
+                timing.record(name, 0.0, "skipped", interrupted=True)
+            return True
+        # WS4 venue-reported settlement history: incremental page-1 pass,
+        # throttled to daily inside maybe_collect (3 settles/day/coin make
+        # sub-daily polling pure venue load).
+        t_stage = time.monotonic()
+        try:
+            settle_dir = getattr(args, "settlements_dir", None)
+            settle_out = smod.maybe_collect(data_dir=settle_dir)
+            if settle_out:
+                print(f"[{time.strftime('%H:%M:%S')}] settlements: "
+                      f"{len(settle_out)} coins "
+                      f"{sum(r.get('new', 0) for r in settle_out.values())} "
+                      "new rows", flush=True)
+                timing.record("settlements", time.monotonic() - t_stage, "ok",
+                              coins=len(settle_out))
+            else:
+                # The daily archive throttle said "not due".
+                timing.record("settlements", 0.0, "not_due")
+        except Exception as e:
+            print(f"[{time.strftime('%H:%M:%S')}] settlements FAILED: "
+                  f"{type(e).__name__}: {e}", flush=True)
+            timing.record("settlements", time.monotonic() - t_stage, "failed",
+                          error=f"{type(e).__name__}: {e}")
+        if _stopped():
+            timing.record("prices", 0.0, "skipped", interrupted=True)
+            return True
+        # WS4 mark/index price history: incremental recent-window pass,
+        # throttled to daily inside maybe_collect.
+        t_stage = time.monotonic()
+        try:
+            price_dir = getattr(args, "prices_dir", None)
+            price_out = pmod.maybe_collect(data_dir=price_dir)
+            if price_out:
+                total = sum(r.get("new", 0)
+                            for s in price_out.values()
+                            for r in s.values())
+                print(f"[{time.strftime('%H:%M:%S')}] prices: "
+                      f"{len(price_out)} series {total} new rows",
+                      flush=True)
+                timing.record("prices", time.monotonic() - t_stage, "ok",
+                              series=len(price_out))
+            else:
+                timing.record("prices", 0.0, "not_due")
+        except Exception as e:
+            print(f"[{time.strftime('%H:%M:%S')}] prices FAILED: "
+                  f"{type(e).__name__}: {e}", flush=True)
+            timing.record("prices", time.monotonic() - t_stage, "failed",
+                          error=f"{type(e).__name__}: {e}")
+        return interrupted
 
     run_id = f"{os.getpid()}-{int(time.time())}"
     n = 0
@@ -273,96 +453,109 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
           f"resolve {args.resolve_every}s", flush=True)
     try:
         while args.iterations is None or n < args.iterations:
-            if stop_event is not None and stop_event.is_set():
+            if _stopped():
                 break
             # Elapsed-time anchor on the MONOTONIC clock: both the WS3
             # sweep duration and the inter-sweep sleep budget derive from
             # it, so a wall-clock adjustment can distort neither.
             t0 = time.monotonic()
-            sweep_ok = False
+            timing.begin()
+            timing.mark_sweep_started()
+            interrupted = False
             # Sweep definition: one data-collection pass (scan OR collect).
             # In --no-scan mode scans never run, so a successful collect
             # cycle below completes the sweep for readiness/snapshot/
             # journal purposes (same on_sweep flag scan sweeps set).
+            sweep_ok = False
             collect_ok = False
             collect_coins = 0
             if args.no_scan:
                 print(f"[{time.strftime('%H:%M:%S')}] no-scan mode: "
                       f"collector + resolver only", flush=True)
+                timing.record("scan", 0.0, "skipped")
+            elif not cadence.due("scan"):
+                # The persisted cadence says the scan is not due yet: the
+                # restart does NOT repeat it.
+                timing.record("scan", 0.0, "not_due")
             else:
+                t_stage = time.monotonic()
+                stage_started = time.time()
                 try:
                     app.maybe_refresh_universe()
-                    app.scan_once()
+                    _run_scan()
                     st = app.store.stats()
                     print(f"[{time.strftime('%H:%M:%S')}] scan: "
                           f"{len(app.cards)} cards failed {app.failed} "
                           f"rows {st['rows']} outcomes {st.get('outcomes', 0)}",
                           flush=True)
                     sweep_ok = True
+                    failed = int(getattr(app, "failed", 0) or 0)
+                    timing.record("scan", time.monotonic() - t_stage,
+                                  "partial" if failed else "ok",
+                                  failed_coins=failed or None,
+                                  evaluated=len(app.cards))
+                    cadence.mark("scan", stage_started)
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] scan FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
-            now = time.time()
-            if now - last_collect >= args.collect_every:
+                    timing.record("scan", time.monotonic() - t_stage,
+                                  "failed", error=f"{type(e).__name__}: {e}")
+            if _stopped():
+                interrupted = True
+            # --- collect block (bars + funding + settlements + prices) ----
+            if not interrupted and not cadence.due("collect"):
+                timing.record("collect", 0.0, "not_due")
+                # The funding / settlement / price hooks ride the collect
+                # cadence: they did not run either.
+                timing.record("funding", 0.0, "not_due")
+                timing.record("settlements", 0.0, "not_due")
+                timing.record("prices", 0.0, "not_due")
+            elif not interrupted:
+                t_stage = time.monotonic()
+                stage_started = time.time()
+                counts = None
                 try:
-                    counts = colmod.collect_full_universe()
-                    last_collect = now
-                    collect_ok = True
+                    counts = colmod.collect_full_universe(
+                        stop_event=stop_event)
                     collect_coins = len(counts)
                     print(f"[{time.strftime('%H:%M:%S')}] collect: "
                           f"{len(counts)} coins "
                           f"{sum(counts.values())} new bars", flush=True)
+                    errors = dict(getattr(counts, "errors", {}) or {})
+                    stopped = bool(getattr(counts, "stopped", False))
+                    if stopped:
+                        outcome = "failed"
+                    elif errors and not counts:
+                        outcome = "failed"      # total failure: retry next time
+                    elif errors:
+                        outcome = "partial"
+                    else:
+                        outcome = "ok"
+                    collect_ok = outcome in ("ok", "partial")
+                    timing.record("collect", time.monotonic() - t_stage,
+                                  outcome, failed_coins=len(errors) or None,
+                                  coins=len(counts))
+                    if outcome in ("ok", "partial"):
+                        # Total failure is NOT marked (it retries on the next
+                        # iteration); a partial pass IS marked, exactly like
+                        # the settlements/prices archive throttles.
+                        cadence.mark("collect", stage_started)
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] collect FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
-                # WS4 point-in-time funding: one observation per coin,
-                # recorded on the same cadence as the bars cycle (funding
-                # rides the bulk ticker row — one extra request). Guarded
-                # on its own: a funding failure must never fail the bars
-                # sweep, and the sweep above still counts as complete.
-                try:
-                    fund_counts = fmod.collect_funding()
-                    print(f"[{time.strftime('%H:%M:%S')}] funding: "
-                          f"{len(fund_counts)} coins recorded",
-                          flush=True)
-                except Exception as e:
-                    print(f"[{time.strftime('%H:%M:%S')}] funding FAILED: "
-                          f"{type(e).__name__}: {e}", flush=True)
-                # WS4 venue-reported settlement history: incremental page-1
-                # pass, throttled to daily inside maybe_collect (3
-                # settles/day/coin make sub-daily polling pure venue
-                # load). Guarded on its own like funding: a settlements
-                # failure must never fail the bars sweep.
-                try:
-                    settle_dir = getattr(args, "settlements_dir", None)
-                    settle_out = smod.maybe_collect(
-                        data_dir=settle_dir)
-                    if settle_out:
-                        print(f"[{time.strftime('%H:%M:%S')}] settlements: "
-                              f"{len(settle_out)} coins "
-                              f"{sum(r.get('new', 0) for r in settle_out.values())} "
-                              "new rows", flush=True)
-                except Exception as e:
-                    print(f"[{time.strftime('%H:%M:%S')}] settlements FAILED: "
-                          f"{type(e).__name__}: {e}", flush=True)
-                # WS4 mark/index price history: incremental recent-window
-                # pass, throttled to daily inside maybe_collect. Guarded on
-                # its own like funding/settlements: a prices failure must
-                # never fail the bars sweep.
-                try:
-                    price_dir = getattr(args, "prices_dir", None)
-                    price_out = pmod.maybe_collect(data_dir=price_dir)
-                    if price_out:
-                        total = sum(r.get("new", 0)
-                                    for s in price_out.values()
-                                    for r in s.values())
-                        print(f"[{time.strftime('%H:%M:%S')}] prices: "
-                              f"{len(price_out)} series {total} new rows",
-                              flush=True)
-                except Exception as e:
-                    print(f"[{time.strftime('%H:%M:%S')}] prices FAILED: "
-                          f"{type(e).__name__}: {e}", flush=True)
+                    timing.record("collect", time.monotonic() - t_stage,
+                                  "failed", error=f"{type(e).__name__}: {e}")
+                # The funding / settlement / price hooks ride the collect
+                # cadence.  Each one is guarded on its own (a failure must
+                # never fail the bars sweep) and the stop flag is observed
+                # between them, so a SIGTERM drains here too.
+                interrupted = _venue_hooks(interrupted)
+            if _stopped():
+                interrupted = True
+            # --- resolve: a background pass, observed when it finishes ----
+            resolve_entry = None
             if resolve_future is not None and resolve_future.done():
+                duration_s = time.monotonic() - resolve_started
                 try:
                     result = resolve_future.result()
                     print(f"[{time.strftime('%H:%M:%S')}] resolve: "
@@ -370,27 +563,42 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                           f"{result['plans']} plan rows, "
                           f"{result['episode_outcomes']} episode outcomes",
                           flush=True)
+                    resolve_entry = (duration_s, "ok")
+                    cadence.mark("resolve", resolve_started_wall)
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] resolve FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
+                    resolve_entry = (duration_s, "failed")
                 resolve_future = None
-            if now - last_resolve >= args.resolve_every:
-                if resolve_future is not None:
+            if resolve_entry is None:
+                if not cadence.due("resolve"):
+                    resolve_entry = (0.0, "not_due")
+                elif resolve_future is not None:
                     print(f"[{time.strftime('%H:%M:%S')}] resolve remains "
                           "in progress; not starting a duplicate pass",
                           flush=True)
+                    resolve_entry = (0.0, "skipped")
                 else:
                     resolve_future = resolver_pool.submit(resolve_batch,
                                                           args.db)
-                    last_resolve = now
+                    resolve_started = time.monotonic()
+                    resolve_started_wall = time.time()
                     print(f"[{time.strftime('%H:%M:%S')}] resolve started "
                           "(background)", flush=True)
+                    resolve_entry = (0.0, "skipped")
+            timing.record("resolve", resolve_entry[0], resolve_entry[1])
+            if _stopped():
+                interrupted = True
             # Independent all-eligible measurement cycle (Task 3): cadence +
             # calibration over EVERY eligible coin, separate from the
             # interactive scan and never changing its rankings. Episode
             # creation stays disabled until enable_epoch() passes
             # calibration (spec §12, §17); this loop never enables it.
-            if now - last_measure >= args.measure_every:
+            if not interrupted and not cadence.due("measure"):
+                timing.record("measure", 0.0, "not_due")
+            elif not interrupted:
+                t_stage = time.monotonic()
+                stage_started = time.time()
                 try:
                     app.maybe_refresh_universe()   # cached 10min, no extra load
                     tk, det = app.tk, app.det
@@ -411,6 +619,11 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                         if done % 50 == 0 or done == total:
                             print(f"[{time.strftime('%H:%M:%S')}] measure "
                                   f"scoring {done}/{total}", flush=True)
+                        # WS-F: the stop flag is observed between the
+                        # per-coin units of the cycle, so a SIGTERM drains
+                        # instead of running the whole universe.
+                        if _stopped():
+                            raise _StopRequested()
 
                     counts = measuremod.run_cycle(
                         app.store, eligible, config=measure_cfg,
@@ -420,7 +633,6 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                             coin, cycle_ts, run_id),
                         max_workers=MAX_WORKERS,
                         progress_fn=_measure_progress)
-                    last_measure = now
                     stats = measuremod.cadence_stats(app.store)
                     print(f"[{time.strftime('%H:%M:%S')}] measure: "
                           f"attempted {counts['attempted']} "
@@ -434,9 +646,25 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                           f"{'PASS' if stats['calibration']['pass'] else 'FAIL'}"
                           f" p95 {stats['gap_p95_s']}s "
                           f"p99 {stats['gap_p99_s']}s", flush=True)
+                    failed = int(counts.get("failed", 0) or 0)
+                    timing.record("measure", time.monotonic() - t_stage,
+                                  "partial" if failed else "ok",
+                                  failed_coins=failed or None,
+                                  attempted=counts.get("attempted"))
+                    # The cycle completed (per-coin failures included): it
+                    # is marked, exactly like before this change.
+                    cadence.mark("measure", stage_started)
+                except _StopRequested:
+                    print(f"[{time.strftime('%H:%M:%S')}] measure "
+                          "interrupted by stop request", flush=True)
+                    timing.record("measure", time.monotonic() - t_stage,
+                                  "failed", interrupted=True)
+                    interrupted = True
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] measure FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
+                    timing.record("measure", time.monotonic() - t_stage,
+                                  "failed", error=f"{type(e).__name__}: {e}")
             # Quant shadow step: AFTER the measure block, BEFORE sweep
             # accounting. Guarded on its own — a watcher failure is
             # reported, never raised, and this block never touches
@@ -445,9 +673,30 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
             # fanned out as one in-process quant.shadow SSE event via the
             # service ring — inside this same guard, so a notify failure
             # is reported exactly like a watcher failure: never raised.
-            if quant_watcher is not None:
+            if quant_watcher is not None and not interrupted:
+                t_stage = time.monotonic()
                 try:
-                    _quant_step = quant_watcher.step()
+                    if quant_takes_stop:
+                        _quant_step = quant_watcher.step(
+                            should_stop=lambda: stop_event is not None
+                            and stop_event.is_set())
+                    else:
+                        _quant_step = quant_watcher.step()
+                    # The quant stage is logged even when it succeeds (it
+                    # used to print nothing at all).
+                    print(f"[{time.strftime('%H:%M:%S')}] quant: "
+                          f"{_quant_step.get('coins', 0)} coins "
+                          f"emitted {_quant_step.get('emitted', 0)} "
+                          f"resolved {_quant_step.get('resolved', 0)} "
+                          f"in {_quant_step.get('seconds', 0.0)}s", flush=True)
+                    outcome = "ok" if _quant_step.get("ok", True) else "failed"
+                    if _quant_step.get("interrupted"):
+                        outcome = "failed"
+                    timing.record("quant", time.monotonic() - t_stage,
+                                  outcome,
+                                  seconds=_quant_step.get("seconds"),
+                                  emitted=_quant_step.get("emitted"),
+                                  coins=_quant_step.get("coins"))
                     try:
                         from . import service as _service_mod
                     except Exception:
@@ -459,6 +708,8 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] quant FAILED: "
                           f"{type(e).__name__}: {e}", flush=True)
+                    timing.record("quant", time.monotonic() - t_stage,
+                                  "failed", error=f"{type(e).__name__}: {e}")
             n += 1
             sweep_counts = None
             if sweep_ok:
@@ -476,6 +727,17 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                 # signature inspection; any exception the callback raises
                 # is a real error, reported here and never retried.
                 duration_s = time.monotonic() - t0
+                # A COMPLETED sweep is the only thing that may move the
+                # first-sweep state to "complete" (WS-F) — and only when
+                # the iteration ENDED NORMALLY.  An interrupted iteration
+                # (the operator's SIGTERM arrived mid-cycle) leaves the
+                # state at "in_progress" with completed_ts still null: no
+                # route may claim a sweep completed that did not.
+                if not interrupted:
+                    timing.mark_sweep_completed(
+                        ts=time.time(), duration_s=duration_s,
+                        stages=dict((timing.current or {})
+                                    .get("stages") or {}))
                 try:
                     if sweep_takes_duration:
                         on_sweep(*sweep_counts, duration_s=duration_s)
@@ -485,6 +747,13 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None):
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] sweep record "
                           f"FAILED: {type(e).__name__}: {e}", flush=True)
+            if interrupted:
+                _fill_missing_stages()
+            iteration_s = time.monotonic() - t0
+            timing.end(duration_s=iteration_s)
+            print(f"[{time.strftime('%H:%M:%S')}] "
+                  f"{format_stages((timing.last() or {}).get('stages') or {})}",
+                  flush=True)
             if args.iterations is not None and n >= args.iterations:
                 break
             sleep_for = max(5.0, args.interval - (time.monotonic() - t0))
