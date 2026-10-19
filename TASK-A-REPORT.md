@@ -707,3 +707,301 @@ internal windowing.
 
 Branch: `feature/ws-a-measurement` (worktree `/tmp/opencode/wt-a`).
 **Not pushed**, no other branch checked out, no existing file modified.
+
+---
+
+# FIX ROUND 1 (reviewer findings)
+
+**Status: DONE** — every finding addressed; no finding was left unaddressed.
+
+- Branch: `feature/ws-a-measurement` (worktree `/tmp/opencode/wt-a`), not pushed.
+- The fix commit is the HEAD of the branch (see §7).
+- File map after the fixes (all under the ~700-line guidance):
+
+  | File | Lines | Note |
+  |---|---:|---|
+  | `proto/quant/structure.py` | 303 | pivots, resample, multi_timeframe |
+  | `proto/quant/estimators.py` | 508 | the `Estimate` core + the Hurst family + the re-exports |
+  | `proto/quant/mfdfa.py` | 325 | **new** — the MF-DFA family (split out, see F13) |
+  | `proto/quant/measures.py` | 413 | the market measures |
+  | `proto/quant/feature_store.py` | 275 | the point-in-time store |
+  | `tests/test_ws_a_measurement.py` | 680 | 134 checks (was 120) |
+
+## 1. Critical
+
+### F1 — a non-finite value outside the measured window changed the as-of estimate
+
+**Cause.** `_clean` rejected the WHOLE series on the first NaN/inf and was
+applied *before* windowing, so a value after the as-of instant poisoned the
+estimate (and the append-only store could never repair it).
+
+**Fix — clean only the slice that is actually read** (the slices are the ones
+the reviewer listed):
+
+| measure | slice that is read and cleaned | code |
+|---|---|---|
+| `volatility_measures` | the last `window` values | `measures.py:104` (`_clean(raw[-W:])`) |
+| `regime` | the window that ends at `as_of_index` **plus** the `W` calibration windows before it (`raw[start:idx+1]`, `start = max(0, idx-2W+1)`) | `measures.py:243` |
+| `dependence` | the aligned tails of the two series | `measures.py:321` |
+| `breadth` | each coin's last `window` values | `measures.py:382` |
+
+A non-finite value **inside** the slice yields `None` + `"non-finite-input"`
+(the breadth measure fails as a whole and counts the offending coin in
+`params["n_coins_corrupt"]` — a corrupted window is never scored as "not
+positive"). A non-finite value outside the slice cannot change the value
+*or* the `inputs_hash`.
+
+**Tests (new, section "estimators: only the measured slice is cleaned")**
+
+```
+  PASS  a non-finite value before the measured window does not change the estimate
+  PASS  a non-finite value inside the measured window yields None + a reason
+  PASS  a non-finite value inside the measured window yields None + a reason
+  PASS  the regime ignores a non-finite value after as_of_index
+  PASS  the regime ignores a non-finite value outside the window it reads
+  PASS  a non-finite value inside the regime window yields None + a reason
+  PASS  the dependence measure ignores a non-finite value outside its tails
+  PASS  a non-finite value inside the aligned tails yields None + a reason
+  PASS  the breadth measure ignores a non-finite value outside a coin's window
+  PASS  a non-finite value inside a coin's window yields None + a reason
+```
+
+The reviewer's own reproductions now behave correctly (measured on this
+tree):
+
+```
+volatility_measures(clean, 10)      -> 0.00937985646250592
+  with a NaN BEFORE the window        -> 0.00937985646250592   (identical)
+  with a NaN INSIDE the window        -> None ("non-finite-input")
+regime(base, 20, 50)                 -> 1.0
+  with +[nan]                         -> 1.0                   (identical)
+breadth({"A": base}, 20)            -> 0.0
+  with +[nan] (inside the window)     -> None ("non-finite-input")
+```
+
+## 2. Important
+
+### F2 — `Pivot.confirmed_ts` was wrong for non-base timeframes
+
+**Fix.** `confirmed_pivots` takes a keyword-only `frame_bars` (the number of
+base 5 m bars one analysed bar spans) and the confirmation is the close of
+the last confirming FRAME bar:
+
+```
+structure.py:105   def confirmed_pivots(bars, left=2, right=2, *, frame_bars=1)
+structure.py:169   confirmed_ts = ts[i] + (right + 1) * frame_bars * BAR_S
+structure.py:216   multi_timeframe passes frame_bars=fb
+```
+
+The base (5 m) series keeps the briefed timing (`ts + 3*BAR_S` for
+`right=2`); a 1 h frame now confirms at `ts + 3*12*BAR_S` — the close of the
+last confirming hourly bar, i.e. 45 minutes LATER than the buggy value
+(which claimed knowability before the frame had even closed).
+
+**Tests (new)**
+
+```
+  PASS  a frame pivot is confirmed when the last confirming FRAME bar closes
+  PASS  a frame pivot is not knowable before its frame closes
+  PASS  the base (5 m) frame keeps the documented confirmation timing
+```
+
+The test fixture is a genuine hourly frame series (bars 3600 s apart), so
+the assertion is `confirmed_ts == frame[last confirming frame bar].ts +
+12*BAR_S` — it FAILS against the old code (which returned `ts + 3*BAR_S`).
+Verified on the real archive (read-only): every pivot of every frame now
+satisfies `confirmed_ts == ts + 3*frame_bars*BAR_S` and
+`confirmed_ts <= as_of_ts`.
+
+### F3 — `hurst_generalized` returned no Hurst exponent
+
+**Fix.** It now implements the classical aggregated-variance estimator: for
+every block size `q` the series is cut into NON-OVERLAPPING blocks of `q`
+points, the block SUMS are formed, the variance `V(q)` of those sums is
+regressed on `log q`, and **H = slope / 2** (`estimators.py:364`,
+`_bootstrap_agg` at `estimators.py:425`).
+
+* A random walk now gives **H = 0.9843** (was 1.5279 — the DFA tau, the same
+  statistic `mfdfa` reports).
+* White noise gives **H = 0.5559**.
+* The value is a Hurst exponent in [0, 1] and the docstring states that it
+  is NOT the DFA structure exponent (which is H + 0.5 for a path with
+  stationary increments) and that the two must never be mixed up.
+* The scale range is capped so that every scale keeps at least
+  `MIN_BLOCKS = 16` non-overlapping blocks (with fewer blocks the variance
+  estimate is dominated by its own sampling error). The cap is reported in
+  `params["max_scale_used"]`.
+* The uncertainty is the slope standard error divided by two; the
+  assumptions, the `None`+reason behaviour and the determinism are kept.
+  The docstring now states explicitly that the band does NOT cover the
+  block-sampling error (the observed seed-to-seed spread on white noise is
+  about ±0.1).
+
+`mfdfa` keeps the DFA/tau statistic and is now reported under a name that
+cannot be misread: `Estimate.name == "dfa_tau"` (`mfdfa.py:195`) with
+`params["value_def"] = "dfa_tau = tau(1), the DFA structure exponent (NOT a
+Hurst exponent H)"`.
+
+**Tests (new)**
+
+```
+  PASS  hurst_generalized is a HURST exponent: a random walk is near 1.0
+  PASS  hurst_generalized is a HURST exponent: white noise is near 0.5
+  PASS  hurst_generalized differs from the DFA structure exponent
+  PASS  hurst_generalized stays inside the Hurst range [0, 1]
+  PASS  the DFA statistic is reported under a name that is not a Hurst exponent
+```
+
+### F4 — the parameter was named `returns` but takes a level path
+
+**Fix.** Renamed to `levels` in `hurst_rs`, `hurst_generalized`, `mfdfa` and
+`mfdfa_spectrum` (per the orchestrator's ruling). The module docstring, the
+per-function docstrings and `level_from_returns()` (the explicit bridge)
+say so; the distribution/tail/regime/dependence/breadth measures keep
+`returns` because increments ARE their domain.
+
+**Test (new)**
+
+```
+  PASS  the Hurst / MF-DFA estimators take a `levels` argument
+```
+
+### F5 — the feature store was single-thread-only and off house style
+
+**Fix** (`feature_store.py:141-142`), matching `proto/quant/qstore.py:63-65`
+and `proto/store.py:383-384`:
+
+```python
+self._conn = sqlite3.connect(path, timeout=5, check_same_thread=False)
+self._conn.execute("PRAGMA journal_mode=WAL")
+```
+
+**Test (new)** — the store is written and read from a worker thread:
+
+```
+  PASS  the store works from a worker thread
+```
+
+## 3. Minor findings
+
+| # | Fix | Test |
+|---|---|---|
+| **F6** | `_interp` no longer clamps: an `x0` outside the fitted range returns `None` (`mfdfa.py:86`, docstring corrected). `mfdfa` then returns `None` + `"alpha-outside-q-range"` instead of an extrapolated number. | `PASS  an alpha outside the fitted q range is not extrapolated` |
+| **F7** | `mfdfa_spectrum` now returns a `convention` dict stating, key by key, that `h` is the local slope of the DFA curve (**not** a Hurst exponent, **not** the price's Hölder exponent), that `D` is the Legendre transform rescaled to a peak of 1 (**not** a fractal dimension), that only the `width` is comparable across series, and that `alpha` is the DFA exponent (not H). It also returns `q_grid` and `tau`. | `PASS  the spectrum states its convention (h and D are not Hurst/dimension)`, `PASS  the spectrum exposes the moment-order grid it used` |
+| **F8** | The moment-order range is validated: a non-positive or inverted `q_range` returns `None` + `"invalid-q-range"` instead of raising `ZeroDivisionError` (`mfdfa.py:131` `_orders`). | `PASS  an invalid q range is refused with a reason`, `PASS  an invalid q range never raises` |
+| **F9** | `_vol`/`_amt` accept a 5-tuple (volume/amount default to 0.0) instead of indexing 5/6 unconditionally (`structure.py:91-99`); the docstring now says `(ts, o, h, l, c[, vol[, amt]])`. | `PASS  a 5-tuple bar is accepted and defaults the volume and the amount` |
+| **F10** | `put` refuses a record with `available_ts < bar_ts` (ValueError, nothing is written) and a reason outside `REASONS` (`feature_store.py:173-180`). | `PASS  put refuses a record that claims to be knowable before its bar`, `PASS  the refused record was not stored`, `PASS  put refuses a reason outside the documented enum` |
+| **F11** | A corrupt `meta` blob is surfaced (ValueError) instead of being silently swallowed (`feature_store.py:196-205`). | `PASS  a corrupted meta blob is surfaced instead of being swallowed` |
+| **F12** | `from_estimate` maps the estimate's reason onto the documented enum (`missing` / `stale` / `insufficient`) and keeps the estimator's own reason in `meta["estimator_reason"]`; `REASONS` is now enforced by `put`. | `PASS  from_estimate maps a good estimate to no reason`, `PASS  from_estimate maps a failed estimate to a documented reason`, `PASS  from_estimate keeps the estimator's own reason in the meta` |
+| **F13** | The version constants are now USED: `FeatureStore.version` / a `store_meta` row carry `FEATURE_STORE_VERSION`; `from_pivots()` stores the pivots under `PIVOT_VERSION`; `REASONS` validates the stored reason. `__all__` was added to `estimators.py`, `mfdfa.py` and `feature_store.py`, so `from proto.quant.estimators import *` now exposes the measures and the MF-DFA family. | `PASS  the store reports its schema version`, `PASS  from_pivots stores the pivots under the pivot version`, `PASS  \`import *\` exposes the market measures too` |
+| **F14** | The dead no-op loop in the test is gone and the no-lookahead check now compares the **pivots** of both frames, not only frame 3's structure. | `PASS  no lookahead: perturbing the future leaves the as-of structure AND pivots identical` |
+| **F15** | The "previous opposite pivot" must be strictly earlier: a bar that is both a high and a low pivot no longer counts as its own predecessor, so `leg_bars` and `size` stay consistent (`structure.py:159`). | `PASS  a bar can be a high and a low pivot at once`, `PASS  the previous opposite pivot is strictly earlier (the same bar is skipped)` |
+
+### Module split (F13 follow-up)
+
+`estimators.py` had grown to 804 lines with the F3/F7 rewrites — over the
+brief's "~700 lines is a signal to split it" guidance. The MF-DFA family
+moved to a new **`proto/quant/mfdfa.py`** (325 lines) and the Hurst family +
+the core stayed in `estimators.py` (508 lines). The public surface is
+unchanged: `proto.quant.estimators.mfdfa` / `.mfdfa_spectrum` /
+`.SPECTRUM_CONVENTION` resolve through the same lazy re-export used for the
+market measures, and a test asserts `from proto.quant.estimators import *`
+exposes them.
+
+## 4. Orchestrator rulings (recorded, no change)
+
+* **The Pivot field name stays `leg_bars`.** The plan's §1.2 said
+  `bars_of_leg`; the orchestrator is aligning the plan to the shipped name.
+  The divergence is recorded here and in §5.2 of the original report.
+* **`hurst_rs` / `hurst_generalized` / `mfdfa` keep their function names,
+  but the parameter is now `levels`** (F4).
+
+## 5. Numerical evidence after the fixes
+
+Seeds: synthetic series `seed = 20261019`, estimator `seed = 7`, `n = 4096`.
+
+| series | `hurst_rs` H | `hurst_generalized` H (aggregated variance) | `mfdfa` dfa_tau | spectrum width |
+|---|---|---|---|---|
+| white noise (monofractal) | **0.5498 ± 0.0149** | **0.5559 ± 0.0113** | **0.5316 ± 0.0041** | **0.0011** |
+| random walk | **0.9549 ± 0.0152** | **0.9843 ± 0.0042** | 1.5306 ± 0.0093 | 0.0022 |
+| bimultifractal (blocks) | 0.8578 ± 0.0655 | 0.7452 ± 0.0843 | 1.7814 ± 0.0721 | **0.1459** |
+
+Tolerances: white noise within **0.10** of 0.5 (dev 0.0498), random walk
+within **0.15** of 1.0 (dev 0.0451), dfa_tau within **0.15** of 0.5 (dev
+0.0316), the aggregated variance within **0.15** of 0.5 / 1.0 (dev 0.0559 /
+0.0157). The bimultifractal spectrum width stays 0.1459 vs 0.0011 (≈130×).
+
+**Seed robustness** (six series seeds; the result must not depend on a lucky
+seed):
+
+```
+  seed=        1  H_rs(noise)=0.5263  H_rs(walk)=0.9555  H_agg(noise)=0.5132  H_agg(walk)=0.9826  dfa_tau(noise)=0.4916  width(bi)=0.1773  width(mono)=0.0010
+  seed=        7  H_rs(noise)=0.5453  H_rs(walk)=0.9259  H_agg(noise)=0.4525  H_agg(walk)=0.9633  dfa_tau(noise)=0.5218  width(bi)=0.1138  width(mono)=0.0015
+  seed=       42  H_rs(noise)=0.5316  H_rs(walk)=0.9637  H_agg(noise)=0.5134  H_agg(walk)=0.9942  dfa_tau(noise)=0.5247  width(bi)=0.0969  width(mono)=0.0005
+  seed=      999  H_rs(noise)=0.5100  H_rs(walk)=0.9657  H_agg(noise)=0.5322  H_agg(walk)=1.0023  dfa_tau(noise)=0.5334  width(bi)=0.0782  width(mono)=0.0022
+  seed= 20261019  H_rs(noise)=0.5498  H_rs(walk)=0.9549  H_agg(noise)=0.5559  H_agg(walk)=0.9843  dfa_tau(noise)=0.5316  width(bi)=0.1459  width(mono)=0.0011
+  seed=    12345  H_rs(noise)=0.5567  H_rs(walk)=0.9787  H_agg(noise)=0.5970  H_agg(walk)=1.0045  dfa_tau(noise)=0.5013  width(bi)=0.2115  width(mono)=0.0013
+```
+
+Worst case over the six seeds: `hurst_rs` white noise |dev| 0.0567 (limit
+0.10), random walk |dev| 0.0741 (limit 0.15); `hurst_generalized` white
+noise |dev| 0.0970 and random walk |dev| 0.0367 (limit 0.15 — the
+aggregated variance is intrinsically noisier on a noisy series, which the
+docstring now states); `dfa_tau` |dev| 0.0334 (limit 0.15); the spectrum
+width stays 0.078–0.212 against a monofractal 0.0005–0.0022 (40–400×).
+
+**Real archive (read-only, no writes).** `0G`, 28 431 bars: 2 566 / 637 /
+146 pivots on the 15 m / 1 h / 4 h frames; every pivot satisfies
+`confirmed_ts == ts + 3*frame_bars*BAR_S` and `confirmed_ts <= as_of_ts`.
+The 1 h frame's trend label changed from "up" to "down" after the F2 fix —
+the old label was computed from pivots that were not yet knowable, i.e. it
+was a look-ahead; this is exactly the defect F2 describes.
+
+## 6. Test commands and their real output
+
+```
+$ cd /tmp/opencode/wt-a && python3 tests/test_ws_a_measurement.py
+...
+ALL PASS
+$ echo $?
+0
+```
+(134 PASS / 0 FAIL; the full output is reproduced in the fix commit message
+summary and the sections above.)
+
+```
+$ cd /tmp/opencode/wt-a && python3 tests/test_quant.py
+...
+ALL PASS
+$ echo $?
+0
+
+$ cd /tmp/opencode/wt-a && python3 tests/test_quant_engine.py
+...
+ALL PASS
+$ echo $?
+0
+```
+
+```
+$ cd /tmp/opencode/wt-a && python3 tests/run_all.py
+PASS  test_adapter.py  [ALL PASS]
+... (82 files) ...
+PASS  test_ws_a_measurement.py  [ALL PASS]
+
+ALL SUITES PASS (82 files)
+$ echo $?
+0
+```
+
+## 7. Commits
+
+| Hash | Message |
+|---|---|
+| `8a6f9ab` | feat(quant): add the market measurement & structure engine (workstream A) — round 0 |
+| `66a4a02` | docs(quant): task A report — round 0 |
+| _(HEAD)_ | fix(quant): task A review findings (F1-F15) + report |
+
+The fix commit's hash is the branch HEAD; it is printed in the handover
+message (writing it into this file would change the file and therefore the
+hash).

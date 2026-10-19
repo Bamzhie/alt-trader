@@ -18,6 +18,13 @@ Every measure
     "degenerate-zero-variance", "degenerate-zero-mean", "non-finite-input";
   * is trailing and therefore point-in-time: only the trailing window (or the
     window that ends at ``as_of_index``) is read, never anything after it;
+  * CLEANS ONLY THE SLICE IT READS.  A non-finite value (NaN, inf) outside
+    the measured slice - in particular AFTER the as-of instant - must not
+    change the estimate: the value is computed from the same numbers with or
+    without it.  A non-finite value INSIDE the measured slice yields
+    ``None`` + "non-finite-input" (for the breadth measure, a coin whose
+    window is not clean fails the whole measure and is counted in
+    ``params["n_coins_corrupt"]``);
   * is deterministic - the same inputs give the same value and the same
     ``inputs_hash``;
   * documents its assumptions in the docstring, including what the reported
@@ -52,7 +59,9 @@ def _quantile(sorted_vals, level):
 def volatility_measures(returns, window) -> list[Estimate]:
     """Return / volatility / tail measures of a trailing window of INCREMENTS.
 
-    The window is the last ``window`` observations of the series.  The
+    The window is the last ``window`` observations of the series - and ONLY
+    that window is read: a non-finite value elsewhere in the series (in
+    particular after the as-of instant) cannot change the result.  The
     measures are:
 
       realized_vol      sample standard deviation of the window (per-bar
@@ -80,21 +89,23 @@ def volatility_measures(returns, window) -> list[Estimate]:
         It does not cover autocorrelation, volatility clustering, the finite
         window, or the tail estimation error; the shape and tail measures
         therefore report no uncertainty rather than a misleading one.
-      * With fewer than ``window`` observations, or a non-finite value in the
-        window, every measure is None with a reason.  A zero-variance window
-        is reported as "degenerate-zero-variance" for the dispersion measures.
+      * With fewer than ``window`` observations, or a non-finite value inside
+        the window, every measure is None with a reason.  A zero-variance
+        window is reported as "degenerate-zero-variance" for the dispersion
+        measures.
     """
-    x, bad = _clean(returns)
+    raw = list(returns or ())
     W = int(window)
     base = {"window": W}
-    if bad:
-        return [_estimate(nm, MEASURE_VERSION, None, None, 0, dict(base, measure=nm),
-                          [], bad) for nm in MEASURE_NAMES]
-    if W < 2 or len(x) < W:
-        return [_estimate(nm, MEASURE_VERSION, None, None, len(x),
-                          dict(base, measure=nm), x, "insufficient-sample")
+    if W < 2 or len(raw) < W:
+        return [_estimate(nm, MEASURE_VERSION, None, None, len(raw),
+                          dict(base, measure=nm), [], "insufficient-sample")
                 for nm in MEASURE_NAMES]
-    w = x[-W:]
+    w, bad = _clean(raw[-W:])          # only the measured slice is cleaned
+    if bad:
+        return [_estimate(nm, MEASURE_VERSION, None, None, W,
+                          dict(base, measure=nm), [], "non-finite-input")
+                for nm in MEASURE_NAMES]
     m = sum(w) / W
     var = sum((v - m) ** 2 for v in w) / (W - 1)
     sd = math.sqrt(var)
@@ -209,41 +220,51 @@ def regime(reference_returns, window, as_of_index) -> Estimate:
       * With fewer than ``window`` observations up to ``as_of_index``, or
         fewer than MIN_CALIB preceding window volatilities, the label is
         None with a reason.
+      * ONLY the data actually read is cleaned: the window that ends at
+        ``as_of_index`` and the calibration windows before it.  A non-finite
+        value after ``as_of_index`` (or further back than the calibration
+        range) cannot change the label.
     """
     name = "regime"
-    x, bad = _clean(reference_returns)
+    raw = list(reference_returns or ())
     W = int(window)
     idx = int(as_of_index)
     in_params = {"window": W, "as_of_index": idx, "mapping": REGIME_MAPPING}
-    n = len(x) if x is not None else 0
-    if bad:
-        return _estimate(name, MEASURE_VERSION, None, None, 0, in_params, [], bad)
+    n = len(raw)
     if idx < 0 or idx >= n:
-        return _estimate(name, MEASURE_VERSION, None, None, n, in_params, x,
+        return _estimate(name, MEASURE_VERSION, None, None, n, in_params, [],
                          "insufficient-sample")
     if W < 2 or idx + 1 < W:
-        return _estimate(name, MEASURE_VERSION, None, None, n, in_params, x,
+        return _estimate(name, MEASURE_VERSION, None, None, n, in_params, [],
                          "insufficient-sample")
-    win = x[idx - W + 1:idx + 1]
+    # the data actually read: the window that ends at idx plus the W
+    # calibration windows before it
+    start = max(0, idx - 2 * W + 1)
+    seg, bad = _clean(raw[start:idx + 1])
+    if bad:
+        return _estimate(name, MEASURE_VERSION, None, None, n, in_params, [],
+                         "non-finite-input")
+    L = len(seg)
+    win = seg[L - W:]
     trend = 1 if sum(win) > 0.0 else -1
-    pre1 = [0.0] * (n + 1)
-    pre2 = [0.0] * (n + 1)
-    for i, v in enumerate(x):
+    pre1 = [0.0] * (L + 1)
+    pre2 = [0.0] * (L + 1)
+    for i, v in enumerate(seg):
         pre1[i + 1] = pre1[i] + v
         pre2[i + 1] = pre2[i] + v * v
-    vol_now = _rolling_sd(x, idx, W, pre1, pre2)
+    vol_now = _rolling_sd(seg, L - 1, W, pre1, pre2)
     if vol_now is None:
-        return _estimate(name, MEASURE_VERSION, None, None, W, in_params, x,
+        return _estimate(name, MEASURE_VERSION, None, None, W, in_params, seg,
                          "insufficient-sample")
     calib = []
-    for end in range(idx - 1, idx - W - 1, -1):
-        v = _rolling_sd(x, end, W, pre1, pre2)
+    for end in range(L - 2, L - 2 - W - 1, -1):
+        v = _rolling_sd(seg, end, W, pre1, pre2)
         if v is not None:
             calib.append(v)
         if len(calib) >= W:
             break
     if len(calib) < MIN_CALIB:
-        return _estimate(name, MEASURE_VERSION, None, None, W, in_params, x,
+        return _estimate(name, MEASURE_VERSION, None, None, W, in_params, seg,
                          "insufficient-sample")
     calib.sort()
     q_lo = calib[min(len(calib) - 1, int(len(calib) / 3.0))]
@@ -260,7 +281,7 @@ def regime(reference_returns, window, as_of_index) -> Estimate:
                    "window_vol": vol_now, "tercile": tname,
                    "q_lo": q_lo, "q_hi": q_hi, "n_calib": len(calib),
                    "label": REGIME_MAPPING[str(code)]})
-    return _estimate(name, MEASURE_VERSION, float(code), None, W, params, win, None)
+    return _estimate(name, MEASURE_VERSION, float(code), None, W, params, seg, None)
 
 
 def dependence(returns_a, returns_b, window) -> Estimate:
@@ -271,6 +292,8 @@ def dependence(returns_a, returns_b, window) -> Estimate:
     function takes no timestamps, so the caller is responsible for passing
     two series that cover the SAME clock time; unequal lengths are aligned at
     the end, which assumes the shorter series ends at the same instant.
+    Only those aligned tails are read and cleaned, so a non-finite value
+    anywhere else in either series cannot change the correlation.
 
     MINIMUM OVERLAP: at least MIN_OVERLAP (5) aligned observations are
     needed; below that the value is None with the reason
@@ -286,28 +309,28 @@ def dependence(returns_a, returns_b, window) -> Estimate:
         "degenerate-zero-variance" instead of a correlation of 0.
     """
     name = "dependence"
-    a, bad_a = _clean(returns_a)
-    b, bad_b = _clean(returns_b)
+    ra = list(returns_a or ())
+    rb = list(returns_b or ())
     W = int(window)
     in_params = {"window": W, "min_overlap": MIN_OVERLAP,
                  "alignment": "right-aligned tails"}
-    if bad_a or bad_b:
-        return _estimate(name, MEASURE_VERSION, None, None, 0, in_params, [],
-                         "non-finite-input")
-    n = min(len(a), len(b), W)
+    n = min(len(ra), len(rb), W)
     if n < MIN_OVERLAP:
         return _estimate(name, MEASURE_VERSION, None, None, n, in_params, [],
                          "insufficient-sample")
-    xa = a[-n:]
-    xb = b[-n:]
+    xa, bad_a = _clean(ra[-n:])          # only the aligned tails are cleaned
+    xb, bad_b = _clean(rb[-n:])
+    if bad_a or bad_b:
+        return _estimate(name, MEASURE_VERSION, None, None, n, in_params, [],
+                         "non-finite-input")
     ma = sum(xa) / n
     mb = sum(xb) / n
     num = sum((u - ma) * (v - mb) for u, v in zip(xa, xb))
     da = math.sqrt(sum((u - ma) ** 2 for u in xa))
     db = math.sqrt(sum((v - mb) ** 2 for v in xb))
     if da <= 0.0 or db <= 0.0:
-        return _estimate(name, MEASURE_VERSION, None, None, n, in_params, xa,
-                         "degenerate-zero-variance")
+        return _estimate(name, MEASURE_VERSION, None, None, n, in_params,
+                         list(zip(xa, xb)), "degenerate-zero-variance")
     r = num / (da * db)
     r = max(-1.0, min(1.0, r))
     unc = (1.0 - r * r) / math.sqrt(n - 1)
@@ -329,7 +352,11 @@ def breadth(per_coin_returns, window) -> Estimate:
 
     ASSUMPTIONS
       * The window is trailing: only the last ``window`` observations of each
-        coin are used, so the measure is point-in-time.
+        coin are used, so the measure is point-in-time.  A non-finite value
+        outside a coin's window cannot change the measure; a non-finite
+        value INSIDE a coin's window fails the whole measure (the coin is
+        counted in ``params["n_coins_corrupt"]``) - a corrupted window is
+        never scored as "not positive".
       * The uncertainty is the binomial standard error sqrt(p(1-p)/n),
         which assumes INDEPENDENT coins.  Crypto coins are strongly
         correlated, so the real uncertainty is larger; the number is a lower
@@ -345,13 +372,18 @@ def breadth(per_coin_returns, window) -> Estimate:
     else:
         items = [(str(i), v) for i, v in enumerate(per_coin_returns or ())]
     used = skipped = pos = neg = zero = 0
+    corrupt = 0
     sums = []
     for coin, rets in items:
-        x, bad = _clean(rets)
-        if bad or x is None or len(x) < W:
+        raw = list(rets or ())
+        if len(raw) < W:
             skipped += 1
             continue
-        s = sum(x[-W:])
+        x, bad = _clean(raw[-W:])       # only the coin's window is cleaned
+        if bad:
+            corrupt += 1
+            continue
+        s = sum(x)
         used += 1
         sums.append((str(coin), s))
         if s > 0.0:
@@ -360,13 +392,22 @@ def breadth(per_coin_returns, window) -> Estimate:
             neg += 1
         else:
             zero += 1
+    if corrupt:
+        params = dict(in_params)
+        params.update({"n_coins_total": len(items), "n_coins_used": used,
+                       "n_coins_skipped": skipped, "n_coins_corrupt": corrupt})
+        return _estimate(name, MEASURE_VERSION, None, None, used, params, [],
+                         "non-finite-input")
     if used == 0:
-        return _estimate(name, MEASURE_VERSION, None, None, 0, in_params, [],
+        params = dict(in_params)
+        params.update({"n_coins_total": len(items), "n_coins_used": 0,
+                       "n_coins_skipped": skipped, "n_coins_corrupt": 0})
+        return _estimate(name, MEASURE_VERSION, None, None, 0, params, [],
                          "insufficient-sample")
     p = pos / used
     unc = math.sqrt(max(p * (1.0 - p), 0.0) / used)
     params = dict(in_params)
     params.update({"n_coins_total": len(items), "n_coins_used": used,
-                   "n_coins_skipped": skipped, "positives": pos,
-                   "negatives": neg, "zeros": zero})
+                   "n_coins_skipped": skipped, "n_coins_corrupt": corrupt,
+                   "positives": pos, "negatives": neg, "zeros": zero})
     return _estimate(name, MEASURE_VERSION, p, unc, used, params, sums, None)

@@ -1,26 +1,38 @@
-"""Rolling Hurst / MF-DFA estimators and versioned market measures.
+"""Rolling Hurst estimators, the shared measure record and the market measures.
 
 DESCRIPTIVE ONLY.  Every function here measures; none of them scores,
 selects, ranks or signals.  A measure never becomes a decision.
 
+MODULE LAYOUT (the public surface is ``proto.quant.estimators.<name>`` for
+everything below, whatever the file it is implemented in):
+  * this module   the ``Estimate`` record, the version constants, the
+                  shared numerics and the Hurst family
+                  (``hurst_rs``, ``hurst_generalized``);
+  * ``mfdfa.py``  the MF-DFA family (``mfdfa``, ``mfdfa_spectrum``);
+  * ``measures.py`` the market measures (``volatility_measures``,
+                  ``regime``, ``dependence``, ``breadth``).
+The other two are re-exported here with a lazy import (PEP 562), so the
+documented surface is unchanged and no import cycle exists.
+
 INPUT CONVENTION (read this before using the estimators)
 ----------------------------------------------------------
 ``hurst_rs``, ``hurst_generalized`` and ``mfdfa`` take a LEVEL series (a price
-path).  The contract names the argument ``returns`` for compatibility, but the
+path) - the argument is named ``levels`` for exactly that reason.  The
 mathematics is the classic one: the cumulative deviation series of a LEVEL
 series is formed and its scaling is measured.  Consequences:
 
   * white-noise levels        -> H = 0.5   (a mean-reverting / noisy path)
   * a random-walk level path  -> H = 1.0   (a persistent path)
-  * the DFA exponent of the same series is alpha = H + 0.5 for a path with
-    stationary increments (1.5 for a random walk), and 0.5 for white noise.
+  * the DFA structure exponent of the same series is alpha = H + 0.5 for a
+    path with stationary increments (1.5 for a random walk), and 0.5 for
+    white noise.  ``hurst_rs`` and ``hurst_generalized`` report H; ``mfdfa``
+    reports the DFA structure exponent (``dfa_tau``) and says so in its
+    ``value_def``.
 
 To measure the persistence of a PRICE path from bar returns, pass the
 cumulated returns (:func:`level_from_returns`), not the returns themselves.
 The distribution / tail / regime / dependence / breadth measures take
-INCREMENTS (returns) - that is their domain.  They are implemented in
-``proto/quant/measures.py`` and re-exported here, so the documented public
-surface stays ``proto.quant.estimators.<name>``.
+INCREMENTS (returns) - that is their domain.
 
 Every estimator
 ---------------
@@ -53,6 +65,7 @@ VAR_LEVEL = 0.05          # 5% tail for the historical VaR / CVaR
 TAIL_LEVEL = 0.05         # 5% tail for the tail ratio
 MIN_OVERLAP = 5           # minimum aligned observations for a correlation
 MIN_CALIB = 4             # minimum trailing volatility observations for terciles
+MIN_BLOCKS = 16           # minimum non-overlapping blocks per scale (aggregated variance)
 BOOTSTRAP_B = 100         # resamples for the seeded uncertainty cross-check
 
 REGIME_MAPPING = {
@@ -209,82 +222,6 @@ def level_from_returns(returns):
     return out
 
 
-def _profile(x):
-    """Cumulative deviation series y(t) = sum_{s<=t} (x(s) - mean(x))."""
-    n = len(x)
-    m = sum(x) / n
-    out = []
-    acc = 0.0
-    for v in x:
-        acc += v - m
-        out.append(acc)
-    return out
-
-
-def _detrended(y, s):
-    """The |Y| fluctuation values of the linearly detrended profile at scale s."""
-    n = len(y)
-    out = []
-    for k in range(0, n - s + 1, s):
-        seg = y[k:k + s]
-        ns = len(seg)
-        mx = (ns - 1) / 2.0
-        my = sum(seg) / ns
-        sxx = sum((i - mx) ** 2 for i in range(ns))
-        b = 0.0 if sxx <= 0.0 else sum((i - mx) * (v - my) for i, v in enumerate(seg)) / sxx
-        a = my - b * mx
-        for i, v in enumerate(seg):
-            out.append(abs(v - (a + b * i)))
-    return out
-
-
-def _tau_curve(y, scales, orders):
-    """tau(q) for each moment order q.
-
-    For every scale s the profile is cut into segments of s bars, each segment
-    is detrended by its own linear fit, and
-    ``F_q(s) = (mean |Y|^q)^(1/q)`` is formed.  ``tau(q)`` is the ordinary
-    least squares slope of ``log F_q(s)`` on ``log s`` over the scales - the
-    generalized structure function exponent.
-    """
-    per_scale = {}
-    for s in scales:
-        vals = _detrended(y, s)
-        if len(vals) >= 2:
-            per_scale[s] = vals
-    taus = {}
-    points = {}
-    for q in orders:
-        pts = []
-        for s, vals in per_scale.items():
-            acc = 0.0
-            for v in vals:
-                acc += v ** q
-            f = (acc / len(vals)) ** (1.0 / q)
-            if f > 0.0 and math.isfinite(f):
-                pts.append((math.log(s), math.log(f)))
-        slope, _, se = _ols([p[0] for p in pts], [p[1] for p in pts])
-        taus[q] = {"tau": slope, "se": se, "n_scales": len(pts)}
-        points[q] = pts
-    return taus, per_scale, points
-
-
-def _interp(xs, ys, x0):
-    """Linear interpolation of the curve (xs, ys) at x0 (None if out of range)."""
-    if not xs:
-        return None
-    for i in range(len(xs) - 1):
-        x1, x2 = xs[i], xs[i + 1]
-        if x1 <= x0 <= x2:
-            if x2 == x1:
-                return ys[i]
-            w = (x0 - x1) / (x2 - x1)
-            return ys[i] + w * (ys[i + 1] - ys[i])
-    if x0 <= xs[0]:
-        return ys[0]
-    return ys[-1]
-
-
 # --------------------------------------------------------------------- Hurst
 
 def _rs_curve(x, min_scale, max_scale):
@@ -330,13 +267,13 @@ def _rs_curve(x, min_scale, max_scale):
     return curve, chunks
 
 
-def hurst_rs(returns, min_scale=8, max_scale=None, seed=7) -> Estimate:
+def hurst_rs(levels, min_scale=8, max_scale=None, seed=7) -> Estimate:
     """Rescaled-range (Mandelbrot-Wallis) Hurst exponent of a LEVEL series.
 
     CONSTRUCTION
       For every scale q the series is cut into non-overlapping chunks of q
-      bars.  Inside each chunk the cumulative deviation series is formed with
-      the chunk's own mean, R = max - min of that series, S = the sample
+      bars.  Inside each chunk the cumulative deviation series is formed
+      with the chunk's own mean, R = max - min of that series, S = the sample
       standard deviation of the chunk, and the Anis-Lloyd finite-sample
       correction (n-q)/(n-1.5) is applied.  The mean R/S over the chunks of a
       scale is regressed on log(q); the slope is H.
@@ -362,7 +299,7 @@ def hurst_rs(returns, min_scale=8, max_scale=None, seed=7) -> Estimate:
         band; it does not change the value.
     """
     name = "hurst_rs"
-    x, bad = _clean(returns)
+    x, bad = _clean(levels)
     in_params = {"min_scale": int(min_scale), "max_scale": max_scale,
                  "seed": int(seed), "anis_lloyd": True,
                  "estimator": "R/S, chunk-local cumulative deviation"}
@@ -424,39 +361,49 @@ def _bootstrap_slope(chunks, seed, b=BOOTSTRAP_B):
     return math.sqrt(var)
 
 
-def hurst_generalized(returns, min_scale=8, max_scale=None, seed=7) -> Estimate:
-    """Generalized (aggregated-variance) Hurst exponent at q = 2.
+def hurst_generalized(levels, min_scale=8, max_scale=None, seed=7) -> Estimate:
+    """Aggregated-variance (generalized) HURST exponent at q = 2.
 
     CONSTRUCTION
-      The cumulative deviation profile y(t) = sum(x - mean(x)) of the LEVEL
-      series is cut into segments of s bars; every segment is detrended by
-      its own linear fit; the aggregated variance
-      ``F_2(s) = sqrt(mean |Y(s,t)|^2)`` is the RMS fluctuation of the
-      detrended profile.  The ordinary least squares slope of log F_2(s) on
-      log s over the scale range is the exponent tau(2) - the q = 2 member
-      of the generalized structure function (the aggregated-variance
-      estimator).
+      The classical aggregated-variance estimator.  For every block size q the
+      series is cut into NON-OVERLAPPING blocks of q points and the block
+      SUMS ``A_i = sum of the q points of block i`` are formed.  The variance
+      ``V(q)`` of those block sums across the blocks is regressed on log q;
+      for a self-similar process ``V(q) ~ q^(2H)``, so
+
+          H = slope( log V(q) vs log q ) / 2
 
     ASSUMPTIONS
-      * The input is a LEVEL series (module docstring).  For a path with
-        stationary increments (a random walk) tau(2) = H + 0.5 (1.5); for
-        white-noise levels tau(2) = 0.5.
-      * A deterministic trend in the series inflates the exponent; the
-        linear detrend removes a linear trend per segment only.
-      * The scale range is [min_scale, max_scale] (default max_scale =
-        n // 4), a geometric ladder; the estimate needs n >> max_scale.
-      * The uncertainty is the standard error of the log-log slope: it covers
-        the scatter of the fluctuation points only, NOT the finite-size bias,
-        the scale-range sensitivity, or the model risk of assuming a
-        self-similar process.
+      * The input is a LEVEL series (module docstring).  White-noise levels
+        give H ~ 0.5, a random-walk path gives H ~ 1.0.  The value is a
+        HURST EXPONENT in [0, 1] - it is NOT the DFA structure exponent
+        tau (see :func:`mfdfa`, which is H + 0.5 for a path with stationary
+        increments); the two must never be mixed up.
+      * The blocks must be non-overlapping: the block sums of overlapping
+        blocks are strongly correlated and the variance estimate is far too
+        noisy.  The scale range is therefore capped so that every scale
+        keeps at least MIN_BLOCKS (16) blocks - above that the variance of
+        the block sums is dominated by its own sampling error.
+      * The estimator measures how the variance of the AGGREGATE (block sum)
+        scales.  A deterministic trend inflates H; strong mean reversion
+        deflates it; the estimator assumes a self-similar process over the
+        scale range.
+      * The uncertainty is the standard error of the log-log slope divided
+        by two (the same scaling as the value).  It covers the scatter of
+        the V(q) points around the fitted line ONLY.  It does NOT cover the
+        block-sampling error of V(q) itself (which dominates for a noisy
+        series: the observed seed-to-seed spread on white noise is about
+        +-0.1), the finite-size bias, the scale-range sensitivity or the
+        model risk.
       * The seed is used only for the reported bootstrap cross-check
         (``params["bootstrap_slope_se"]``).
     """
     name = "hurst_generalized"
-    x, bad = _clean(returns)
+    x, bad = _clean(levels)
     in_params = {"min_scale": int(min_scale), "max_scale": max_scale,
                  "seed": int(seed), "q": 2.0,
-                 "estimator": "aggregated variance of the detrended profile"}
+                 "estimator": "aggregated variance of the q-block sums",
+                 "value_def": "H = slope(log Var(q-block sums) vs log q) / 2"}
     n = len(x) if x is not None else 0
     if bad:
         return _estimate(name, HURST_VERSION, None, None, 0, in_params, [], bad)
@@ -464,7 +411,7 @@ def hurst_generalized(returns, min_scale=8, max_scale=None, seed=7) -> Estimate:
         return _estimate(name, HURST_VERSION, None, None, n, in_params, x,
                          "insufficient-sample")
     max_s = int(max_scale) if max_scale is not None else n // 4
-    max_s = min(max_s, n)
+    max_s = min(max_s, n, max(n // MIN_BLOCKS, int(min_scale)))
     if max_s < int(min_scale):
         return _estimate(name, HURST_VERSION, None, None, n, in_params, x,
                          "insufficient-sample")
@@ -473,203 +420,99 @@ def hurst_generalized(returns, min_scale=8, max_scale=None, seed=7) -> Estimate:
     while q <= max_s:
         scales.append(q)
         q *= 2
-    y = _profile(x)
-    taus, per_scale, points = _tau_curve(y, scales, [2.0])
-    info = taus[2.0]
-    if info["tau"] is None:
+    if len(scales) < 3:
+        return _estimate(name, HURST_VERSION, None, None, n, in_params, x,
+                         "insufficient-sample")
+    prefix = [0.0] * (n + 1)
+    for i, v in enumerate(x):
+        prefix[i + 1] = prefix[i] + v
+    blocks = {}
+    pts = []
+    for q in scales:
+        sums = [prefix[i + q] - prefix[i] for i in range(0, n - q + 1, q)]
+        if len(sums) < 2:
+            continue
+        mu = sum(sums) / len(sums)
+        var = sum((s - mu) ** 2 for s in sums) / (len(sums) - 1)
+        if var <= 0.0:
+            continue
+        blocks[q] = sums
+        pts.append((math.log(q), math.log(var)))
+    if len(pts) < 3:
         return _estimate(name, HURST_VERSION, None, None, n, in_params, x,
                          "degenerate-zero-variance")
-    boot = _bootstrap_tau(points[2.0], int(seed))
+    slope, _, se = _ols([p[0] for p in pts], [p[1] for p in pts])
+    if slope is None:
+        return _estimate(name, HURST_VERSION, None, None, n, in_params, x,
+                         "degenerate-zero-variance")
+    boot = _bootstrap_agg(blocks, int(seed))
     params = dict(in_params)
-    params.update({"n_scales": info["n_scales"], "max_scale_used": scales[-1],
-                   "bootstrap_slope_se": boot})
-    return _estimate(name, HURST_VERSION, info["tau"], info["se"], n, params, x, None)
+    params.update({"n_scales": len(pts), "max_scale_used": scales[-1],
+                   "min_blocks": MIN_BLOCKS, "bootstrap_slope_se": boot})
+    return _estimate(name, HURST_VERSION, slope / 2.0,
+                     None if se is None else se / 2.0, n, params, x, None)
 
 
-def _bootstrap_tau(points, seed, b=BOOTSTRAP_B):
-    """Seeded bootstrap of tau(q): resamples the (log s, log F_q(s)) points of
-    the scale ladder and refits the slope.  The points of one scale ladder are
-    NOT independent (they share the same series), so this is an optimistic
-    band; it is reported as a cross-check, not as the uncertainty."""
-    if len(points) < 3:
+def _bootstrap_agg(blocks, seed, b=BOOTSTRAP_B):
+    """Seeded bootstrap of the aggregated-variance exponent: resamples the
+    (non-overlapping) block sums of every scale and refits the slope.
+    Returns the standard deviation of the resampled H values."""
+    if len(blocks) < 3:
         return None
     rng = _Rng(seed)
-    k = len(points)
-    slopes = []
+    scales = sorted(blocks)
+    vals = []
     for _ in range(b):
         lx, ly = [], []
-        for _ in range(k):
-            p = points[rng.randrange(k)]
-            lx.append(p[0])
-            ly.append(p[1])
+        for q in scales:
+            sums = blocks[q]
+            k = len(sums)
+            acc = 0.0
+            for _ in range(k):
+                acc += sums[rng.randrange(k)]
+            mu = acc / k
+            var = sum((v - mu) ** 2 for v in sums) / (k - 1)
+            if var > 0.0:
+                lx.append(math.log(q))
+                ly.append(math.log(var))
         sl, _, _ = _ols(lx, ly)
         if sl is not None:
-            slopes.append(sl)
-    if len(slopes) < 2:
-        return None
-    mu = sum(slopes) / len(slopes)
-    return math.sqrt(sum((s - mu) ** 2 for s in slopes) / (len(slopes) - 1))
-
-
-# -------------------------------------------------------------------- MF-DFA
-
-def _orders(q_range, n_q):
-    lo, hi = float(q_range[0]), float(q_range[1])
-    if n_q < 2:
-        n_q = 2
-    if hi <= lo:
-        hi = lo + 1.0
-    return [lo + (hi - lo) * i / (n_q - 1) for i in range(n_q)]
-
-
-def mfdfa(returns, q_min=8, q_max=64, q_range=(0.5, 1.5), seed=7, n_q=5) -> Estimate:
-    """Multifractal detrended fluctuation analysis: the DFA exponent alpha.
-
-    CONSTRUCTION
-      The cumulative deviation profile of the LEVEL series is cut into
-      segments of s bars (s from q_min to q_max), each segment is detrended
-      by its own linear fit, and the generalized structure function
-      ``F_q(s) = (mean |Y(s,t)|^q)^(1/q)`` is formed for every moment order
-      q in q_range.  ``tau(q)`` is the log-log slope of F_q(s) on s.
-      ``alpha = tau(1)`` - the DFA exponent at the first moment (for a
-      monofractal series tau is linear in q, so alpha = tau(q) for every q).
-
-    ASSUMPTIONS
-      * The input is a LEVEL series (module docstring).  White-noise levels
-        give alpha = 0.5; a random-walk path gives alpha = 1.5 (the standard
-        DFA relation alpha = H + 0.5 for a path with stationary increments).
-      * The measure assumes a self-similar (scale-free) process over the
-        scale range [q_min, q_max]; outside it the fit is not meaningful.
-      * The finite-size caveat is the dominant one: with n of this size the
-        scale range must stay well below n, and the exponent has a bias of
-        a few hundredths at the smallest scales.
-      * The uncertainty is the standard error of the log-log slope of the
-        q = 1 curve: it covers the scatter of the fluctuation points only,
-        NOT the finite-size bias, the scale-range sensitivity, or the
-        multifractal model risk.
-      * The seed only drives the reported bootstrap cross-check
-        (``params["bootstrap_slope_se"]``).
-    """
-    name = "mfdfa_alpha"
-    x, bad = _clean(returns)
-    in_params = {"q_min": int(q_min), "q_max": int(q_max),
-                 "q_range": tuple(float(v) for v in q_range), "n_q": int(n_q),
-                 "seed": int(seed), "alpha_def": "tau(1)"}
-    n = len(x) if x is not None else 0
-    if bad:
-        return _estimate(name, MFDFA_VERSION, None, None, 0, in_params, [], bad)
-    lo, hi = int(q_min), int(q_max)
-    if n < 2 * lo or hi < lo:
-        return _estimate(name, MFDFA_VERSION, None, None, n, in_params, x,
-                         "insufficient-sample")
-    hi = min(hi, n // 2)
-    if hi < lo:
-        return _estimate(name, MFDFA_VERSION, None, None, n, in_params, x,
-                         "insufficient-sample")
-    orders = _orders(q_range, n_q)
-    y = _profile(x)
-    taus, per_scale, points = _tau_curve(y, range(lo, hi + 1), orders)
-    qs = sorted(taus)
-    vals = [(q, taus[q]["tau"]) for q in qs if taus[q]["tau"] is not None]
+            vals.append(sl / 2.0)
     if len(vals) < 2:
-        return _estimate(name, MFDFA_VERSION, None, None, n, in_params, x,
-                         "degenerate-zero-variance")
-    alpha = _interp([v[0] for v in vals], [v[1] for v in vals], 1.0)
-    if alpha is None:
-        return _estimate(name, MFDFA_VERSION, None, None, n, in_params, x,
-                         "degenerate-zero-variance")
-    near = min(qs, key=lambda q: abs(q - 1.0))
-    se = taus[near]["se"]
-    boot = _bootstrap_tau(points[near], int(seed))
-    params = dict(in_params)
-    params.update({"tau": {str(round(q, 4)): round(t, 6) for q, t in vals},
-                   "n_scales": taus[qs[0]]["n_scales"],
-                   "bootstrap_slope_se": boot})
-    return _estimate(name, MFDFA_VERSION, alpha, se, n, params, x, None)
-
-
-def mfdfa_spectrum(returns, q_min=8, q_max=64, q_range=(0.5, 1.5), seed=7,
-                   n_q=5) -> dict:
-    """The multifractal spectrum of a LEVEL series.
-
-    Returns ``{"alpha", "spectrum", "width", "n", "reason"}``:
-      alpha     tau(1), the DFA exponent (same definition as :func:`mfdfa`)
-      spectrum  [(h, D)] over the moment orders of q_range, where
-                h(q) = dtau/dq (a centred difference on the q grid) and
-                D(h) = q*h - tau + 1 is the Legendre transform.  The DFA
-                profile carries one extra integration, so the absolute level
-                of the transform is a normalization artefact: D is reported
-                with its PEAK at 1 (the dimension of a single-scale process)
-                and only the shape and the width carry information.
-      width     h_max - h_min, the horizontal spread of the spectrum: the
-                multifractality of the series (0 for an ideal monofractal)
-      n         the number of observations used
-      reason    None, or why the spectrum is not computable
-
-    The seed is accepted for signature symmetry only: the spectrum involves
-    no sampling step and is fully deterministic.
-
-    ASSUMPTIONS: as for :func:`mfdfa`, plus the local slopes h(q) are
-    finite-difference estimates on the q grid, so the resolution of the
-    spectrum is limited by n_q - a coarse grid smooths the spectrum and can
-    understate the width.
-    """
-    x, bad = _clean(returns)
-    n = len(x) if x is not None else 0
-    if bad:
-        return {"alpha": None, "spectrum": [], "width": None, "n": 0, "reason": bad}
-    lo, hi = int(q_min), int(q_max)
-    if n < 2 * lo or hi < lo:
-        return {"alpha": None, "spectrum": [], "width": None, "n": n,
-                "reason": "insufficient-sample"}
-    hi = min(hi, n // 2)
-    if hi < lo:
-        return {"alpha": None, "spectrum": [], "width": None, "n": n,
-                "reason": "insufficient-sample"}
-    orders = _orders(q_range, n_q)
-    y = _profile(x)
-    taus, _, _ = _tau_curve(y, range(lo, hi + 1), orders)
-    qs = [q for q in sorted(taus) if taus[q]["tau"] is not None]
-    if len(qs) < 2:
-        return {"alpha": None, "spectrum": [], "width": None, "n": n,
-                "reason": "degenerate-zero-variance"}
-    tvals = [taus[q]["tau"] for q in qs]
-    alpha = _interp(qs, tvals, 1.0)
-    spec = []
-    for i, q in enumerate(qs):
-        if i == 0:
-            h = (tvals[1] - tvals[0]) / (qs[1] - qs[0])
-        elif i == len(qs) - 1:
-            h = (tvals[-1] - tvals[-2]) / (qs[-1] - qs[-2])
-        else:
-            h = (tvals[i + 1] - tvals[i - 1]) / (qs[i + 1] - qs[i - 1])
-        spec.append((h, q * h - tvals[i] + 1.0))
-    # the DFA profile carries one extra integration, so the absolute level of
-    # the Legendre transform is a normalization artefact: report the spectrum
-    # with its peak at D = 1 (the dimension of a single-scale process).
-    d_max = max(d for _, d in spec)
-    spec = [(h, d - d_max + 1.0) for h, d in spec]
-    hs = [h for h, _ in spec]
-    return {"alpha": alpha, "spectrum": spec, "width": max(hs) - min(hs),
-            "n": n, "reason": None}
+        return None
+    mu = sum(vals) / len(vals)
+    return math.sqrt(sum((v - mu) ** 2 for v in vals) / (len(vals) - 1))
 
 
 # --------------------------------------------------------- public re-exports
-# The market measures live in proto/quant/measures.py (this module stays
-# focused on the Hurst / MF-DFA family).  They are re-exported here so the
-# documented public surface is unchanged: proto.quant.estimators.<name>.
-# The import is lazy (PEP 562) to keep the two modules free of an import
-# cycle; it happens on the first attribute access, not at import time.
+# The market measures live in proto/quant/measures.py and the MF-DFA family
+# in proto/quant/mfdfa.py (this module stays focused on the Hurst family and
+# the shared core).  They are re-exported here so the documented public
+# surface is unchanged: proto.quant.estimators.<name>.  The import is lazy
+# (PEP 562) to keep the modules free of an import cycle; it happens on the
+# first attribute access, not at import time.
 
 _MEASURE_EXPORTS = ("breadth", "dependence", "regime", "volatility_measures")
+_MFDFA_EXPORTS = ("mfdfa", "mfdfa_spectrum", "SPECTRUM_CONVENTION")
+
+__all__ = [
+    "HURST_VERSION", "MFDFA_VERSION", "MEASURE_VERSION", "Estimate",
+    "hurst_rs", "hurst_generalized", "mfdfa", "mfdfa_spectrum",
+    "level_from_returns", "SPECTRUM_CONVENTION",
+    "volatility_measures", "regime", "dependence", "breadth",
+]
 
 
 def __getattr__(name):
     if name in _MEASURE_EXPORTS:
         from . import measures
         return getattr(measures, name)
+    if name in _MFDFA_EXPORTS:
+        from . import mfdfa
+        return getattr(mfdfa, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__():
-    return sorted(set(list(globals()) + list(_MEASURE_EXPORTS)))
+    return sorted(set(list(globals()) + list(_MEASURE_EXPORTS)
+                      + list(_MFDFA_EXPORTS)))

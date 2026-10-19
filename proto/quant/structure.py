@@ -26,7 +26,8 @@ Input
 -----
 Bars are dicts with the keys used by ``proto/quant/bars.py``
 (``ts, o, h, l, c, vol, amt``; ``ts`` is the bar's OPEN timestamp) or tuples
-``(ts, o, h, l, c, ...)``.  Both forms are accepted everywhere here.
+``(ts, o, h, l, c[, vol[, amt]])`` - a 5-tuple is accepted, the volume and the
+amount then default to 0.0.  Both forms are accepted everywhere here.
 
 Standard library only.
 """
@@ -88,34 +89,50 @@ def _c(bar):
 
 
 def _vol(bar):
-    return float(bar.get("vol", 0.0)) if _is_dict(bar) else float(bar[5])
+    if _is_dict(bar):
+        return float(bar.get("vol", 0.0))
+    return float(bar[5]) if len(bar) > 5 else 0.0
 
 
 def _amt(bar):
-    return float(bar.get("amt", 0.0)) if _is_dict(bar) else float(bar[6])
+    if _is_dict(bar):
+        return float(bar.get("amt", 0.0))
+    return float(bar[6]) if len(bar) > 6 else 0.0
 
 
 # -------------------------------------------------------------------- pivots
 
-def confirmed_pivots(bars, left: int = 2, right: int = 2) -> list[Pivot]:
+def confirmed_pivots(bars, left: int = 2, right: int = 2, *,
+                     frame_bars: int = 1) -> list[Pivot]:
     """Local, point-in-time swing points of a bar series.
 
+    ``frame_bars`` is the number of BASE bars (5 m) that one analysed bar
+    spans: 1 for the base series, 12 for an hourly frame, 48 for a 4 h
+    frame.  It matters because a pivot of a FRAME is only knowable when the
+    last confirming FRAME bar closes:
+
+        confirmed_ts = ts + (right + 1) * frame_bars * BAR_S
+
+    (for the base series that is the close of bar ``index+right``).
+
     ASSUMPTIONS / limits
-      * ``left``/``right`` are in bars; the last ``right`` bars of the series
-        can never be a pivot because they are not confirmed yet.
+      * ``left``/``right`` are in analysed bars; the last ``right`` bars of
+        the series can never be a pivot because they are not confirmed yet.
       * A pivot high at ``i`` needs ``h[i] >= h[i-1 .. i-left]`` and
         ``h[i] > h[i+1 .. i+right]``; a pivot low is the mirror image
         (``<=`` on the left, ``<`` on the right).  Equality on the right is
         excluded, so a flat top is resolved by its LAST bar.
       * Uniqueness is local to the window (see the module docstring).
       * ``leg_bars`` and ``size`` are measured against the previous opposite
-        pivot; with no such pivot they are ``0`` and ``0.0`` (never None).
+        pivot that is STRICTLY EARLIER; a bar that is both a high and a low
+        pivot does not count as its own predecessor.  With no such pivot they
+        are ``0`` and ``0.0`` (never None).
       * The function is pure: it does not know about wall-clock time.  Use
         :func:`pivots_as_of` (or :func:`multi_timeframe`) to ask what was
         knowable at a given instant.
     """
     n = len(bars)
-    if n == 0 or left < 0 or right < 0:
+    if n == 0 or left < 0 or right < 0 or frame_bars < 1:
         return []
     ts = [_ts(b) for b in bars]
     hs = [_h(b) for b in bars]
@@ -139,6 +156,8 @@ def confirmed_pivots(bars, left: int = 2, right: int = 2) -> list[Pivot]:
     last = {"high": None, "low": None}
     for i, kind, price in raw:
         opp = last["low"] if kind == "high" else last["high"]
+        if opp is not None and opp.index >= i:
+            opp = None                  # the same bar is not a PREVIOUS pivot
         if opp is None:
             leg, size = 0, 0.0
         else:
@@ -146,7 +165,8 @@ def confirmed_pivots(bars, left: int = 2, right: int = 2) -> list[Pivot]:
             size = 0.0
             if price > 0.0 and opp.price > 0.0:
                 size = abs(math.log(price / opp.price))
-        pv = Pivot(index=i, ts=ts[i], confirmed_ts=ts[i] + (right + 1) * BAR_S,
+        pv = Pivot(index=i, ts=ts[i],
+                   confirmed_ts=ts[i] + (right + 1) * frame_bars * BAR_S,
                    price=price, kind=kind, leg_bars=leg, size=size)
         out.append(pv)
         last[kind] = pv
@@ -267,7 +287,8 @@ def multi_timeframe(bars, frames=(3, 12, 48), left=2, right=2, as_of_ts=None) ->
     are reported.  Nothing from the future can leak in.
 
     The pivots of a frame are indexed and timestamped in the FRAME series
-    (not in the original bar series).
+    (not in the original bar series), and their ``confirmed_ts`` is the close
+    of the last confirming FRAME bar (``ts + (right+1)*frame_bars*BAR_S``).
     """
     closed = bars
     if as_of_ts is not None:
@@ -275,7 +296,7 @@ def multi_timeframe(bars, frames=(3, 12, 48), left=2, right=2, as_of_ts=None) ->
     out = {}
     for fb in frames:
         fbars = resample(closed, fb, as_of_ts=as_of_ts)
-        pivots = confirmed_pivots(fbars, left=left, right=right)
+        pivots = confirmed_pivots(fbars, left=left, right=right, frame_bars=fb)
         if as_of_ts is not None:
             pivots = pivots_as_of(pivots, as_of_ts)
         out[fb] = {"pivots": pivots, "structure": structure_summary(pivots)}

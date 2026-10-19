@@ -17,17 +17,23 @@ write for a key wins and the history of a measurement cannot be rewritten.
 Each row keeps the ``inputs_hash`` of the estimator that produced it, so a
 parameter change or a measure-version bump is visible in the data.
 
-Standard library only (json, os, sqlite3, time).
+Standard library only (hashlib, json, os, sqlite3, time).
 """
+import hashlib
 import json
 import os
 import sqlite3
 import time
 from dataclasses import dataclass, replace
 
+from .structure import PIVOT_VERSION
+
 FEATURE_STORE_VERSION = "features-v1"
 
 REASONS = ("missing", "stale", "insufficient")
+
+__all__ = ["FEATURE_STORE_VERSION", "REASONS", "FeatureRecord", "FeatureStore",
+           "from_estimate", "from_pivots"]
 
 
 @dataclass(frozen=True)
@@ -60,17 +66,16 @@ class FeatureRecord:
 def from_estimate(coin, name, bar_ts, available_ts, estimate) -> FeatureRecord:
     """Build a :class:`FeatureRecord` from an ``estimators.Estimate``.
 
-    The estimate's reason is carried over ("insufficient-sample" becomes
-    "insufficient"); a missing reason with a missing value becomes
-    "missing".  The estimator's parameters, sample size and uncertainty go
-    into ``meta`` so the record is self-describing.
+    The stored ``reason`` is always one of :data:`REASONS`
+    ("missing" | "stale" | "insufficient"); the estimator's own reason
+    (e.g. "degenerate-zero-variance") is kept in ``meta["estimator_reason"]``
+    so the diagnosis survives without breaking the documented enum.  The
+    estimator's parameters, sample size and uncertainty go into ``meta`` so
+    the record is self-describing.
     """
-    reason = estimate.reason
     if estimate.value is None:
-        if reason is None:
-            reason = "missing"
-        elif "insufficient" in reason:
-            reason = "insufficient"
+        reason = "insufficient" if "insufficient" in (estimate.reason or "") \
+            else "missing"
     else:
         reason = None
     meta = dict(estimate.params or {})
@@ -78,10 +83,37 @@ def from_estimate(coin, name, bar_ts, available_ts, estimate) -> FeatureRecord:
     if estimate.uncertainty is not None:
         meta["uncertainty"] = estimate.uncertainty
     meta["estimator_version"] = estimate.version
+    if estimate.reason:
+        meta["estimator_reason"] = estimate.reason
     return FeatureRecord(coin=coin, name=name, version=estimate.version,
                          bar_ts=int(bar_ts), available_ts=int(available_ts),
                          value=estimate.value, reason=reason,
                          inputs_hash=estimate.inputs_hash, meta=meta)
+
+
+def from_pivots(coin, name, pivots, available_ts, meta=None) -> list[FeatureRecord]:
+    """One :class:`FeatureRecord` per confirmed pivot.
+
+    The records carry the PIVOT_VERSION, so a stored pivot is always
+    attributable to the rule that produced it.  ``bar_ts`` is the pivot's own
+    timestamp and ``available_ts`` the instant the pivot became knowable
+    (``Pivot.confirmed_ts``); the caller passes the as-of instant it wants to
+    record the pivot under.
+    """
+    out = []
+    for p in pivots or ():
+        m = dict(meta or {})
+        m.update({"kind": p.kind, "leg_bars": p.leg_bars, "size": p.size,
+                  "pivot_index": p.index, "pivot_version": PIVOT_VERSION,
+                  "pivot_confirmed_ts": p.confirmed_ts})
+        h = hashlib.sha256()
+        h.update(f"{coin}|{name}|{PIVOT_VERSION}|{p.index}|{p.ts}|".encode())
+        h.update(repr(float(p.price)).encode())
+        out.append(FeatureRecord(coin=coin, name=name, version=PIVOT_VERSION,
+                                  bar_ts=int(p.ts), available_ts=int(available_ts),
+                                  value=float(p.price), reason=None,
+                                  inputs_hash=h.hexdigest()[:16], meta=m))
+    return out
 
 
 class FeatureStore:
@@ -91,7 +123,14 @@ class FeatureStore:
     reason, inputs_hash, meta, recorded_ts)`` with
     ``UNIQUE(coin, name, version, bar_ts)``: the key is the feature identity
     plus the bar it describes.
+
+    The connection is opened the way the rest of the house does it (see
+    ``proto/quant/qstore.py``): a 5 s busy timeout, ``check_same_thread``
+    disabled and WAL journaling, so the store can be used from the service's
+    worker threads.
     """
+
+    version = FEATURE_STORE_VERSION
 
     def __init__(self, path):
         self.path = path
@@ -99,7 +138,8 @@ class FeatureStore:
             parent = os.path.dirname(os.path.abspath(path))
             if parent:
                 os.makedirs(parent, exist_ok=True)
-        self._conn = sqlite3.connect(path)
+        self._conn = sqlite3.connect(path, timeout=5, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS feature ("
             "coin TEXT NOT NULL, name TEXT NOT NULL, version TEXT NOT NULL, "
@@ -110,13 +150,33 @@ class FeatureStore:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS feature_asof ON feature "
             "(coin, name, version, available_ts)")
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS store_meta (key TEXT PRIMARY KEY, "
+            "value TEXT NOT NULL)")
+        self._conn.execute(
+            "INSERT OR REPLACE INTO store_meta (key, value) VALUES (?,?)",
+            ("schema_version", FEATURE_STORE_VERSION))
         self._conn.commit()
 
     # ---------------------------------------------------------------- write
     def put(self, record) -> bool:
         """Insert a record; never overwrites.  Returns True when the row was
         inserted, False when an identical key already existed (the first
-        write wins)."""
+        write wins).
+
+        A record that claims to be knowable BEFORE the bar it describes
+        (``available_ts < bar_ts``) is refused with a ValueError: it would
+        let a value be joined to a moment it could not have existed.  A
+        reason outside :data:`REASONS` is refused for the same reason (the
+        stored vocabulary is a contract).
+        """
+        if int(record.available_ts) < int(record.bar_ts):
+            raise ValueError(
+                f"available_ts {record.available_ts} is before bar_ts "
+                f"{record.bar_ts}: a value cannot be knowable before its bar")
+        if record.reason is not None and record.reason not in REASONS:
+            raise ValueError(
+                f"reason {record.reason!r} is not one of {REASONS}")
         cur = self._conn.execute(
             "INSERT OR IGNORE INTO feature "
             "(coin, name, version, bar_ts, available_ts, value, reason, "
@@ -134,8 +194,14 @@ class FeatureStore:
         coin, name, version, bar_ts, available_ts, value, reason, ih, meta = row
         try:
             parsed = json.loads(meta) if meta else {}
-        except (TypeError, ValueError):
-            parsed = {}
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"corrupt meta blob for {coin}/{name}/{version} at bar "
+                f"{bar_ts}: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                f"corrupt meta blob for {coin}/{name}/{version} at bar "
+                f"{bar_ts}: not a JSON object")
         return FeatureRecord(coin=coin, name=name, version=version,
                              bar_ts=int(bar_ts), available_ts=int(available_ts),
                              value=value, reason=reason, inputs_hash=ih,

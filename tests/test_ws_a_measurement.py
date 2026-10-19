@@ -5,6 +5,7 @@ exits 1 when anything fails.  Offline, standard library only, no writes
 outside a tempfile fixture.
 """
 import dataclasses
+import inspect
 import math
 import os
 import random
@@ -33,12 +34,12 @@ T0 = 1_700_006_400            # aligned to 1 h, and therefore to 15 m and 5 m
 
 # ----------------------------------------------------------------- fixtures
 
-def bars_from_hl(highs, lows, t0=T0):
+def bars_from_hl(highs, lows, t0=T0, step=BAR_S):
     """Bars with controlled highs/lows (c = mid, flat vol/amt)."""
     out = []
     for i, (h, l) in enumerate(zip(highs, lows)):
         c = 0.5 * (h + l)
-        out.append({"ts": t0 + i * BAR_S, "o": c, "h": h, "l": l, "c": c,
+        out.append({"ts": t0 + i * step, "o": c, "h": h, "l": l, "c": c,
                     "vol": 10.0, "amt": 1000.0})
     return out
 
@@ -190,19 +191,63 @@ tbars = make_bars(120, seed=5)
 cut_ts = tbars[60]["ts"] + BAR_S
 mtf_a = ST.multi_timeframe(tbars, frames=(3, 12), as_of_ts=cut_ts)
 alt = list(tbars)
-for b in alt[61:]:
-    b = dict(b)
 for i, b in enumerate(alt):
     if i > 60:
         alt[i] = dict(b, c=b["c"] * 1.5, h=b["h"] * 1.5, l=b["l"] * 1.5)
 mtf_b = ST.multi_timeframe(alt, frames=(3, 12), as_of_ts=cut_ts)
+
+
+def _pivot_key(pivots):
+    return [(p.index, p.ts, p.confirmed_ts, p.price, p.kind, p.leg_bars, p.size)
+            for p in pivots]
+
+
 same = (mtf_a[3]["structure"] == mtf_b[3]["structure"]
         and mtf_a[12]["structure"] == mtf_b[12]["structure"]
-        and [(p.index, p.price, p.confirmed_ts) for p in mtf_a[12]["pivots"]]
-        == [(p.index, p.price, p.confirmed_ts) for p in mtf_b[12]["pivots"]])
-check("no lookahead: perturbing the future leaves the as-of structure identical", same)
+        and _pivot_key(mtf_a[3]["pivots"]) == _pivot_key(mtf_b[3]["pivots"])
+        and _pivot_key(mtf_a[12]["pivots"]) == _pivot_key(mtf_b[12]["pivots"]))
+check("no lookahead: perturbing the future leaves the as-of structure AND pivots identical",
+      same)
 check("as-of frames only use closed bars",
       all(p.confirmed_ts <= cut_ts for p in mtf_a[12]["pivots"]))
+check("as-of frames only use closed bars (3-bar frame)",
+      all(p.confirmed_ts <= cut_ts for p in mtf_a[3]["pivots"]))
+
+# a pivot of a FRAME is confirmed when its last confirming frame bar closes
+fh = [5.0] * 20
+fh[10] = 9.0
+fl = [1.0] * 20
+framebars = bars_from_hl(fh, fl, step=12 * BAR_S)      # an hourly frame series
+fpv = ST.confirmed_pivots(framebars, left=2, right=2, frame_bars=12)
+check("a frame pivot is confirmed when the last confirming FRAME bar closes",
+      len(fpv) == 1
+      and fpv[0].confirmed_ts == framebars[fpv[0].index + 2]["ts"] + 12 * BAR_S,
+      str([(p.index, p.confirmed_ts) for p in fpv]))
+check("a frame pivot is not knowable before its frame closes",
+      ST.pivots_as_of(fpv, framebars[fpv[0].index + 2]["ts"] + 12 * BAR_S - 1) == [])
+check("the base (5 m) frame keeps the documented confirmation timing",
+      ST.confirmed_pivots(bars, left=2, right=2)[0].confirmed_ts
+      == bars[ST.confirmed_pivots(bars, left=2, right=2)[0].index]["ts"] + 3 * BAR_S)
+
+# a bar that is both a high and a low pivot
+both = ST.confirmed_pivots(bars_from_hl([5.0, 9.0, 5.0], [1.0, 1.0, 2.0]),
+                           left=1, right=1)
+kinds = sorted((p.index, p.kind) for p in both)
+check("a bar can be a high and a low pivot at once", kinds == [(1, "high"), (1, "low")],
+      str(kinds))
+lowp = [p for p in both if p.kind == "low"][0]
+check("the previous opposite pivot is strictly earlier (the same bar is skipped)",
+      lowp.leg_bars == 0 and lowp.size == 0.0, f"{lowp.leg_bars} {lowp.size}")
+
+# a 5-tuple bar is accepted (volume and amount default to 0.0)
+tuples5 = [(b["ts"], b["o"], b["h"], b["l"], b["c"]) for b in make_bars(24, seed=9)]
+try:
+    fr5 = ST.resample(tuples5, 12)
+    ok5 = len(fr5) == 2 and fr5[0]["vol"] == 0.0 and fr5[0]["amt"] == 0.0
+except Exception as exc:                                     # noqa: BLE001
+    ok5 = False
+    print(f"    (resample on 5-tuples raised {exc!r})")
+check("a 5-tuple bar is accepted and defaults the volume and the amount", ok5)
 
 # ============================================================== estimators
 print("\n=== estimators: public surface ===")
@@ -218,6 +263,15 @@ check("Estimate is a frozen dataclass",
 check("the measure versions are exposed",
       (ES.HURST_VERSION, ES.MFDFA_VERSION, ES.MEASURE_VERSION)
       == ("hurst-v1", "mfdfa-v1", "measures-v1"))
+check("the Hurst / MF-DFA estimators take a `levels` argument",
+      all(list(inspect.signature(fn).parameters)[0] == "levels"
+          for fn in (ES.hurst_rs, ES.hurst_generalized, ES.mfdfa,
+                     ES.mfdfa_spectrum)))
+ns = {}
+exec("from proto.quant.estimators import *", ns)
+check("`import *` exposes the market measures too",
+      all(k in ns for k in ("volatility_measures", "regime", "dependence",
+                            "breadth", "hurst_rs", "mfdfa", "Estimate")))
 
 print("\n=== estimators: Hurst ===")
 N = 4096
@@ -238,11 +292,20 @@ check("the Hurst estimate carries a version and an inputs hash",
       h_wn.version == ES.HURST_VERSION and len(h_wn.inputs_hash) == 16)
 
 hg = ES.hurst_generalized(rw)
+hg_wn = ES.hurst_generalized(wn)
 print(f"  hurst_generalized random walk  = {hg.value:.4f} (1-sigma {hg.uncertainty})")
+print(f"  hurst_generalized white noise  = {hg_wn.value:.4f} (1-sigma {hg_wn.uncertainty})")
 check("hurst_generalized is estimable on a long series",
       hg.value is not None and hg.reason is None, str(hg))
-check("hurst_generalized on a random walk is above 1.0 (a trending path)",
-      hg.value > 1.0, str(hg.value))
+check("hurst_generalized is a HURST exponent: a random walk is near 1.0",
+      hg.value is not None and abs(hg.value - 1.0) <= 0.15, str(hg.value))
+check("hurst_generalized is a HURST exponent: white noise is near 0.5",
+      hg_wn.value is not None and abs(hg_wn.value - 0.5) <= 0.15, str(hg_wn.value))
+check("hurst_generalized differs from the DFA structure exponent",
+      abs(hg.value - ES.mfdfa(rw).value) > 0.2,
+      f"{hg.value} vs {ES.mfdfa(rw).value}")
+check("hurst_generalized stays inside the Hurst range [0, 1]",
+      0.0 <= hg.value <= 1.0 and 0.0 <= hg_wn.value <= 1.0)
 
 print("\n=== estimators: MF-DFA ===")
 mono = white_noise_series(N)
@@ -250,7 +313,7 @@ bi = bimultifractal_series(N)
 a_mono = ES.mfdfa(mono)
 sp_mono = ES.mfdfa_spectrum(mono)
 sp_bi = ES.mfdfa_spectrum(bi)
-print(f"  mfdfa alpha (monofractal white noise) = {a_mono.value:.4f} "
+print(f"  mfdfa dfa_tau (monofractal white noise) = {a_mono.value:.4f} "
       f"(1-sigma {a_mono.uncertainty:.4f}, n={a_mono.n})")
 print(f"  spectrum width  monofractal = {sp_mono['width']:.4f}   "
       f"bimultifractal = {sp_bi['width']:.4f}")
@@ -258,6 +321,8 @@ print(f"  spectrum (monofractal) = {[(round(h, 4), round(d, 4)) for h, d in sp_m
 print(f"  spectrum (bimultifractal) = {[(round(h, 4), round(d, 4)) for h, d in sp_bi['spectrum']]}")
 check("MF-DFA alpha is within 0.15 of 0.5 on a synthetic monofractal",
       a_mono.value is not None and abs(a_mono.value - 0.5) <= 0.15, str(a_mono.value))
+check("the DFA statistic is reported under a name that is not a Hurst exponent",
+      a_mono.name == "dfa_tau", a_mono.name)
 check("the spectrum width on a bimultifractal is materially larger than on a monofractal",
       sp_bi["width"] > sp_mono["width"] + 0.05 and sp_bi["width"] > 5 * sp_mono["width"],
       f"{sp_mono['width']} vs {sp_bi['width']}")
@@ -266,6 +331,21 @@ check("the spectrum is a list of (h, D) pairs",
       and all(len(p) == 2 for p in sp_bi["spectrum"]))
 check("the spectrum reports its sample size and a reason slot",
       sp_bi["n"] == N and sp_bi["reason"] is None)
+check("the spectrum states its convention (h and D are not Hurst/dimension)",
+      isinstance(sp_bi.get("convention"), dict)
+      and "h" in sp_bi["convention"] and "D" in sp_bi["convention"]
+      and "NOT" in sp_bi["convention"]["h"], str(sp_bi.get("convention")))
+check("the spectrum exposes the moment-order grid it used",
+      isinstance(sp_bi.get("q_grid"), list) and len(sp_bi["q_grid"]) == 5)
+bad_q = ES.mfdfa_spectrum(mono, q_range=(-1.0, 1.0))
+check("an invalid q range is refused with a reason",
+      bad_q["alpha"] is None and bad_q["reason"], str(bad_q))
+check("an invalid q range never raises",
+      ES.mfdfa(mono, q_range=(-1.0, 1.0)).value is None
+      and ES.mfdfa(mono, q_range=(-1.0, 1.0)).reason is not None)
+outside = ES.mfdfa(mono, q_range=(0.2, 0.8))
+check("an alpha outside the fitted q range is not extrapolated",
+      outside.value is None and outside.reason, str(outside))
 
 print("\n=== estimators: degenerate inputs ===")
 for label, series in (("a constant series", [1.0] * 50),
@@ -329,6 +409,64 @@ b1 = ES.breadth({"A": base[:50], "B": base[50:100]}, 50)
 b2 = ES.breadth({"A": past[100:150], "B": past[150:200]}, 50)
 check("the breadth measure ignores everything before its window",
       b1.value == b2.value and b1.inputs_hash == b2.inputs_hash)
+
+print("\n=== estimators: only the measured slice is cleaned ===")
+NAN = float("nan")
+INF = float("inf")
+clean = [0.010, -0.020, 0.005, 0.000, -0.030, 0.020, 0.012, -0.008,
+         0.003, -0.004, 0.007, -0.001, 0.011, 0.002, -0.006, 0.009,
+         0.004, -0.003, 0.013, -0.009]
+
+# a non-finite value OUTSIDE the measured slice must not change anything
+v1 = ES.volatility_measures(clean, 10)
+v2 = ES.volatility_measures([NAN] + clean, 10)
+v3 = ES.volatility_measures(clean + [INF], 10)
+check("a non-finite value before the measured window does not change the estimate",
+      v2[0].value == v1[0].value and v2[0].inputs_hash == v1[0].inputs_hash,
+      f"{v2[0].value} vs {v1[0].value}")
+check("a non-finite value inside the measured window yields None + a reason",
+      all(m.value is None and m.reason for m in v3), str(v3[0]))
+v4 = ES.volatility_measures(clean[:19] + [NAN], 10)
+check("a non-finite value inside the measured window yields None + a reason",
+      all(m.value is None and m.reason for m in v4), str(v4[0]))
+
+long_clean = [0.001 * ((i % 7) - 3) for i in range(200)]
+r1 = ES.regime(long_clean, 20, 199)
+r2 = ES.regime(long_clean + [NAN], 20, 199)
+old_nan = list(long_clean)
+old_nan[0] = NAN
+r3 = ES.regime(old_nan, 20, 199)
+check("the regime ignores a non-finite value after as_of_index",
+      r1.value == r2.value and r1.inputs_hash == r2.inputs_hash,
+      f"{r1.value} vs {r2.value}")
+check("the regime ignores a non-finite value outside the window it reads",
+      r1.value == r3.value and r1.inputs_hash == r3.inputs_hash,
+      f"{r1.value} vs {r3.value}")
+inside_nan = list(long_clean)
+inside_nan[195] = NAN
+r4 = ES.regime(inside_nan, 20, 199)
+check("a non-finite value inside the regime window yields None + a reason",
+      r4.value is None and r4.reason, str(r4))
+
+a1 = [0.01, -0.02, 0.03, 0.005, -0.01, 0.02, -0.005, 0.01, 0.004, -0.006]
+a2 = [0.02, -0.01, 0.01, 0.03, -0.02, 0.01, 0.005, -0.01, 0.02, 0.003]
+d1 = ES.dependence(a1, a2, 5)
+d2 = ES.dependence(a1[:5] + [NAN] + a1[5:], a2, 5)
+check("the dependence measure ignores a non-finite value outside its tails",
+      d1.value == d2.value and d1.inputs_hash == d2.inputs_hash,
+      f"{d1.value} vs {d2.value}")
+d3 = ES.dependence(a1[:4] + [NAN], a2, 5)
+check("a non-finite value inside the aligned tails yields None + a reason",
+      d3.value is None and d3.reason, str(d3))
+
+b_1 = ES.breadth({"A": a1}, 5)
+b_2 = ES.breadth({"A": a1[:5] + [NAN] + a1[5:]}, 5)
+check("the breadth measure ignores a non-finite value outside a coin's window",
+      b_1.value == b_2.value and b_1.inputs_hash == b_2.inputs_hash,
+      f"{b_1.value} vs {b_2.value}")
+b_3 = ES.breadth({"A": a1[:5] + [NAN]}, 5)
+check("a non-finite value inside a coin's window yields None + a reason",
+      b_3.value is None and b_3.reason, str(b_3))
 
 print("\n=== estimators: volatility / tail measures ===")
 rets = [0.010, -0.020, 0.005, 0.000, -0.030, 0.020, 0.012, -0.008,
@@ -453,6 +591,90 @@ store2.put(FS.FeatureRecord(coin="ETH", name="hurst_rs", version=ES.HURST_VERSIO
 r = store2.as_of("ETH", "hurst_rs", ES.HURST_VERSION, 1000)
 check("a record with no value keeps its reason",
       r is not None and r.value is None and r.reason == "insufficient", str(r))
+
+print("\n=== feature store: validation, threads, versions ===")
+check("the store reports its schema version",
+      store.version == FS.FEATURE_STORE_VERSION, str(store.version))
+try:
+    store2.put(FS.FeatureRecord(coin="BTC", name="bad", version="v1", bar_ts=2000,
+                                 available_ts=1000, value=1.0, reason=None,
+                                 inputs_hash="0" * 16, meta={}))
+    ok = False
+except ValueError:
+    ok = True
+check("put refuses a record that claims to be knowable before its bar", ok)
+check("the refused record was not stored",
+      store2.as_of("BTC", "bad", "v1", 5000) is None)
+try:
+    store2.put(FS.FeatureRecord(coin="BTC", name="bad2", version="v1", bar_ts=2000,
+                                 available_ts=2000, value=None,
+                                 reason="not-a-documented-reason",
+                                 inputs_hash="0" * 16, meta={}))
+    ok = False
+except ValueError:
+    ok = True
+check("put refuses a reason outside the documented enum", ok)
+
+est = ES.hurst_rs(rw)
+rec_est = FS.from_estimate("BTC", "hurst_rs", 3000, 3000, est)
+check("from_estimate maps a good estimate to no reason",
+      rec_est.value is not None and rec_est.reason is None
+      and rec_est.version == ES.HURST_VERSION
+      and rec_est.inputs_hash == est.inputs_hash, str(rec_est))
+bad_est = ES.hurst_rs([1.0] * 50)
+rec_bad = FS.from_estimate("BTC", "hurst_bad", 3000, 3000, bad_est)
+check("from_estimate maps a failed estimate to a documented reason",
+      rec_bad.value is None and rec_bad.reason in FS.REASONS,
+      f"{rec_bad.reason} {FS.REASONS}")
+check("from_estimate keeps the estimator's own reason in the meta",
+      "estimator_reason" in rec_bad.meta, str(rec_bad.meta))
+
+piv = ST.confirmed_pivots(bars_from_hl([5.0] * 8 + [9.0] + [5.0] * 8, [1.0] * 17),
+                           left=2, right=2)
+piv_recs = FS.from_pivots("BTC", "pivot_high", piv, 3000)
+check("from_pivots stores the pivots under the pivot version",
+      piv_recs and all(r.version == ST.PIVOT_VERSION for r in piv_recs)
+      and piv_recs[0].value == 9.0, str(piv_recs[:1]))
+
+# the store must be usable from a worker thread (the service is threaded)
+import threading
+
+worker_out = {}
+
+
+def _worker():
+    try:
+        s = FS.FeatureStore(db)
+        s.put(FS.FeatureRecord(coin="T1", name="hurst_rs", version=ES.HURST_VERSION,
+                                bar_ts=1000, available_ts=1000, value=0.25,
+                                reason=None, inputs_hash="a" * 16, meta={}))
+        worker_out["value"] = s.as_of("T1", "hurst_rs", ES.HURST_VERSION, 1000).value
+        s.close()
+    except Exception as exc:                                 # noqa: BLE001
+        worker_out["error"] = repr(exc)
+
+
+th = threading.Thread(target=_worker)
+th.start()
+th.join()
+check("the store works from a worker thread",
+      worker_out.get("value") == 0.25, str(worker_out))
+
+# a corrupted meta blob must be surfaced, not swallowed
+corrupt_db = os.path.join(tempfile.mkdtemp(), "corrupt.db")
+cstore = FS.FeatureStore(corrupt_db)
+cstore.put(FS.FeatureRecord(coin="C", name="x", version="v1", bar_ts=1,
+                             available_ts=1, value=1.0, reason=None,
+                             inputs_hash="0" * 16, meta={}))
+cstore._conn.execute("UPDATE feature SET meta='{not json' WHERE coin='C'")
+cstore._conn.commit()
+try:
+    cstore.as_of("C", "x", "v1", 1)
+    ok = False
+except ValueError:
+    ok = True
+check("a corrupted meta blob is surfaced instead of being swallowed", ok)
+cstore.close()
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)
