@@ -255,19 +255,32 @@ def test_readyz_and_first_sweep():
         stop_service(box)
 
         # -- a FAILED first sweep must never claim "complete" --------------
+        # The port binds BEFORE the loop thread starts, so the state has to
+        # be read only AFTER the failing collect was really attempted -
+        # otherwise the assertion would only ever prove "pending".
+        attempted = threading.Event()
+
         def _boom_collect(*a, **k):
+            attempted.set()
             raise RuntimeError("collect down")
 
         dmod.colmod.collect_full_universe = _boom_collect
         db2 = os.path.join(tmp, "failed.db")
         box2 = start_service(tmp, db2)
         port2 = box2.get("port")
+        got = wait_for(lambda: attempted.is_set())
+        check("the failing first sweep was really attempted", bool(got))
         st, body = get(port2, "/scanner-health")
-        fs = (body.get("data") or {}).get("first_sweep") or {}
+        data = body.get("data") or {}
+        fs = data.get("first_sweep") or {}
         check("a failed first sweep is never 'complete'",
-              fs.get("state") in ("pending", "in_progress"), str(fs))
+              fs.get("state") != "complete", str(fs))
         check("a failed first sweep has no completed_ts",
               fs.get("completed_ts") is None, str(fs))
+        stages = data.get("stages") or {}
+        check("the failed collect is recorded as failed",
+              (stages.get("collect") or {}).get("outcome") == "failed",
+              str(stages.get("collect")))
         st, body = get(port2, "/readyz")
         check("/readyz still answers 200 while the first sweep fails",
               st == 200, f"got {st}")
@@ -487,12 +500,83 @@ def test_bar_index():
         check("the fallback loses no bar",
               len(real_read(tmp, "AAA")) == 51,
               str(len(real_read(tmp, "AAA"))))
+
+        # -- a fallback that finds NO new bar still refreshes the index --
+        # Otherwise (size, mtime_ns) stays stale and the fast path stays
+        # disabled for that coin forever.
+        col.append_bars(tmp, "BBB", bars)
+        path2 = os.path.join(tmp, "BBB.csv.gz")
+        st = os.stat(path2)
+        os.utime(path2, ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))
+        calls.clear()
+        n5 = col.append_bars(tmp, "BBB", bars)
+        check("the fallback read the archive", calls == ["BBB"], str(calls))
+        check("the fallback with no new bar writes nothing", n5 == 0, str(n5))
+        calls.clear()
+        n6 = col.append_bars(tmp, "BBB", bars)
+        check("the fallback refreshed the index (the fast path is back)",
+              calls == [] and n6 == 0, f"calls={calls} n={n6}")
+
+        # -- concurrent appends never break the index write --------------
+        import concurrent.futures as _cf
+        errors = []
+
+        def _append(i):
+            try:
+                col.append_bars(tmp, f"C{i:02d}", bars)
+            except Exception as e:            # noqa: BLE001
+                errors.append(repr(e))
+
+        with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(_append, range(8)))
+        check("concurrent appends never break the index write", not errors,
+              str(errors[:3]))
+        check("the index still holds every coin",
+              all(col.get_index(tmp).get(f"C{i:02d}") is not None
+                  for i in range(8)))
     finally:
         col.read_bars = real_read
         shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ------------------------------------------------------- the bounded rebuild --
+def test_watermark_rollback_is_detected():
+    print("=== the persisted watermark is read back (rollback detection) ===")
+    from proto.quant import engine as E
+    from proto.quant import qstore
+    tmp = tempfile.mkdtemp(prefix="wsf-watermark-")
+    try:
+        bars_dir = os.path.join(tmp, "bars")
+        os.makedirs(bars_dir)
+        rows = _series(200, 11)
+        _write_series(os.path.join(bars_dir, "AAA.csv.gz"), rows)
+        newest = rows[-1][0]
+        store = qstore.QuantStore(os.path.join(tmp, "q.db"))
+        try:
+            # A watermark AHEAD of the archive: the file changed underneath
+            # (rotated / truncated).  The rebuild must detect it and refuse
+            # the shortcut.
+            store.set_watermark("AAA", newest + 10 * 300)
+            w = E.Watcher(bars_dir, store)
+            cs = w._rebuild("AAA", "start")
+            check("an archive behind the watermark is detected",
+                  w.counters.get("watermark_rollback") == 1, str(w.counters))
+            check("the rollback refuses the rebuild shortcut",
+                  cs.sig is None, str(cs.sig))
+            # A watermark BEHIND the archive: the normal resume case.
+            store.set_watermark("AAA", newest - 10 * 300)
+            w2 = E.Watcher(bars_dir, store)
+            cs2 = w2._rebuild("AAA", "start")
+            check("a normal resume is recorded",
+                  w2.counters.get("resumed") == 1, str(w2.counters))
+            check("a normal resume keeps the rebuild shortcut",
+                  cs2.sig is not None, str(cs2.sig))
+        finally:
+            store.close()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _series(n, seed, base_ts=1_700_000_100, sigma=0.002, amount=2e4):
     rng = random.Random(seed)
     px = 100.0
@@ -615,6 +699,66 @@ def test_bounded_rebuild_is_identical():
 
 
 # ------------------------------------------------------------ the stop flag --
+def test_interrupted_first_iteration_is_not_complete():
+    print("=== an interrupted first iteration never claims a completed sweep ===")
+    from proto import daemon as dmod
+    from proto.daemon_timing import TimingLog
+    tmp = tempfile.mkdtemp(prefix="wsf-interrupt-")
+    real_app = dmod.App
+    real_collect = dmod.colmod.collect_full_universe
+    real_fund = dmod.fmod.collect_funding
+    real_settle = dmod.smod.maybe_collect
+    real_prices = dmod.pmod.maybe_collect
+    try:
+        db = os.path.join(tmp, "signals.db")
+        stop = threading.Event()
+
+        class _StoppingCounts(dict):
+            def __init__(self):
+                super().__init__()
+                self.errors = {}
+                self.stopped = True
+
+        def _stop_collect(*a, **k):
+            # the operator's SIGTERM arrives in the middle of the cycle
+            stop.set()
+            return _StoppingCounts()
+
+        dmod.fmod.collect_funding = lambda *a, **k: {}
+        dmod.smod.maybe_collect = lambda *a, **k: {}
+        dmod.pmod.maybe_collect = lambda *a, **k: {}
+        dmod.App = _fake_app({})
+        dmod.colmod.collect_full_universe = _stop_collect
+        timing = TimingLog(os.path.join(tmp, ".timing.json"), db=db)
+        args = SimpleNamespace(
+            stake=0.10, coins=150, interval=300, db=db, log_threshold=24.0,
+            use_v3=False, collect_every=0, resolve_every=HUGE,
+            measure_every=HUGE, iterations=1, no_scan=False,
+            quant_shadow=False, quant_db=os.path.join(tmp, "q.db"),
+            quant_bars=os.path.join(tmp, "bars"), quant_equity=1000.0,
+            settlements_dir=None, prices_dir=None)
+        dmod.run_daemon_loop(args, stop_event=stop, timing=timing)
+        fs = timing.first_sweep_state()
+        check("an interrupted first iteration is never 'complete'",
+              fs.get("state") != "complete", str(fs))
+        check("an interrupted first iteration has no completed_ts",
+              fs.get("completed_ts") is None, str(fs))
+        stages = (timing.last() or {}).get("stages") or {}
+        check("the interrupted collect is recorded as not-ok",
+              (stages.get("collect") or {}).get("outcome") not in
+              (None, "ok"), str(stages.get("collect")))
+        check("the stages after the interruption are skipped",
+              (stages.get("measure") or {}).get("outcome") == "skipped",
+              str(stages.get("measure")))
+    finally:
+        dmod.App = real_app
+        dmod.colmod.collect_full_universe = real_collect
+        dmod.fmod.collect_funding = real_fund
+        dmod.smod.maybe_collect = real_settle
+        dmod.pmod.maybe_collect = real_prices
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_stop_flag_interrupts_the_iteration():
     print("=== a stop flag ends the iteration promptly ===")
     from proto import daemon as dmod
@@ -807,6 +951,8 @@ def main():
                test_failed_stage_is_not_marked_as_run,
                test_bar_index,
                test_bounded_rebuild_is_identical,
+               test_watermark_rollback_is_detected,
+               test_interrupted_first_iteration_is_not_complete,
                test_stop_flag_interrupts_the_iteration,
                test_one_sweep_record_per_iteration,
                test_stage_durations_in_scanner_health):

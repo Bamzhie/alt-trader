@@ -571,6 +571,13 @@ def main():
             # wide enough for the reachability checks to observe it.
             db_crash = os.path.join(tmp2, "crash.db")
             lock_crash = os.path.join(tmp2, "locks_crash", "scanner.lock")
+            # The readiness probe reads the DB, so the DB has to EXIST for
+            # the /readyz contract to be observable: create it up-front
+            # (an empty SQLite file is readable).  Without it the probe
+            # would answer 503 for a reason that has nothing to do with
+            # the scanner being down.
+            conn = sqlite3.connect(db_crash)
+            conn.close()
             svc.reset_events()
             loop_calls["n"] = 0  # per-scenario counter
             fail_mode["mode"] = "one"  # fail exactly the first attempt
@@ -649,10 +656,10 @@ def main():
             check("/healthz stays 200 while scanner failed",
                   status == 200, f"status={status}")
             status, body = _get("/readyz")
-            check("/readyz is API readiness (not sweep readiness)",
-                  status in (200, 503)
-                  and (status == 200 or (body.get("error") or {}).get("code")
-                       == "UNAVAILABLE"),
+            check("/readyz is API readiness (not sweep readiness): 200 "
+                  "while the scanner is down",
+                  status == 200 and body.get("ok") is True
+                  and (body.get("data") or {}).get("ready") is True,
                   f"status={status} {str(body)[:160]}")
             status, body = _get("/scanner-health")
             fs = (body.get("data") or {}).get("first_sweep") or {}
@@ -900,6 +907,56 @@ def main():
         finally:
             server_u.shutdown()
             server_u.server_close()
+
+        # -- /readyz: the DB must be READABLE, and only that ---------------
+        # WS-F: /readyz is API-serving readiness.  A DB that cannot be read
+        # is the one thing that makes it answer 503 (the scanner state
+        # never does).
+        bad_db = os.path.join(tmp3, "not-a-database")
+        with open(bad_db, "w", encoding="utf-8") as f:
+            f.write("this is not a sqlite file\n")
+        server_b = svc.serve(0, "unwired-token", lambda: {},
+                             store_path=bad_db)
+        try:
+            port_b = server_b.server_address[1]
+            conn = http.client.HTTPConnection("127.0.0.1", port_b, timeout=5)
+            conn.request("GET", "/readyz",
+                         headers={"Authorization": "Bearer unwired-token"})
+            resp = conn.getresponse()
+            body = resp.read()
+            conn.close()
+            check("unreadable DB -> /readyz answers 503 UNAVAILABLE",
+                  resp.status == 503, f"status={resp.status}")
+            payload = json.loads(body.decode("utf-8"))
+            check("unreadable DB -> /readyz envelope is UNAVAILABLE",
+                  (payload.get("error") or {}).get("code") == "UNAVAILABLE",
+                  str(payload))
+        finally:
+            server_b.shutdown()
+            server_b.server_close()
+
+        # A readable DB answers 200, whatever the scanner state is.
+        good_db = os.path.join(tmp3, "readable.db")
+        conn = sqlite3.connect(good_db)
+        conn.close()
+        server_g = svc.serve(0, "unwired-token", lambda: {},
+                             store_path=good_db)
+        try:
+            port_g = server_g.server_address[1]
+            conn = http.client.HTTPConnection("127.0.0.1", port_g, timeout=5)
+            conn.request("GET", "/readyz",
+                         headers={"Authorization": "Bearer unwired-token"})
+            resp = conn.getresponse()
+            body = resp.read()
+            conn.close()
+            payload = json.loads(body.decode("utf-8"))
+            check("readable DB -> /readyz answers 200 with ready=true",
+                  resp.status == 200 and payload.get("ok") is True
+                  and (payload.get("data") or {}).get("ready") is True,
+                  f"status={resp.status} {str(payload)[:160]}")
+        finally:
+            server_g.shutdown()
+            server_g.server_close()
     finally:
         shutil.rmtree(tmp3, ignore_errors=True)
 
