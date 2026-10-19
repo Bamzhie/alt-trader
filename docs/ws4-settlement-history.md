@@ -67,6 +67,33 @@ so the next sweep retries immediately; if at least one coin succeeds, the
 throttle is marked and the failing coins retry on the next explicit
 backfill/collect-recent run.
 
+## Per-coin backfill audit
+
+`backfill()` returns each coin's walk result (pages, `truncated`, or an
+`error`) but that return value is not persisted, so the archive alone
+cannot say which coins the page cap stopped. `proto.quant.settlement_audit`
+rebuilds a machine-readable per-coin manifest from the archive and
+reconciles it **read-only** against the venue's own `totalCount`:
+
+```bash
+python3 -m proto.quant.settlement_audit \
+  --settlements-dir data/funding_settlements --bar-dir data/bars \
+  --funding-dir data/funding --out manifest.json --csv manifest.csv
+```
+
+Every bar-universe coin gets exactly one outcome:
+
+- `complete` — any shortfall vs the venue is within the live tail accrued
+  since the backfill (so there is no evidence the page cap stopped it);
+- `truncated` — the venue reports more rows than the live tail can explain
+  (in practice: the walk stopped on a 1000-row page boundary);
+- `missing_archive` — a bar-universe coin has no settlement file;
+- `failed_or_error` — the reconciliation probe failed for that coin.
+
+`--no-venue` runs fully offline; truncation then rests on the page-boundary
+signature alone and is marked unconfirmed. The audit never writes to the
+archive — only `--out` / `--csv`.
+
 ## Route contract
 
 `GET /settlements?coin=<COIN>&limit=<N>`, bearer-gated like `/funding`:

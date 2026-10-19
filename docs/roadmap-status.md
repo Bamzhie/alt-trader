@@ -4,8 +4,9 @@ Product goal: quantitative research and analysis for MEXC altcoin perpetual
 futures. Rules support quant analysis; heuristic scores are not evidence of
 edge. Read-only; no order execution. BTC is labeled market context only.
 
-Last updated: 2026-10-18 (research-data readiness corrected; WS5 dev/val
-harness run on the current ~97-day bar snapshot with venue settlement costs).
+Last updated: 2026-10-19 (per-coin settlement-backfill manifest reconciled
+against the venue; the WS5 evaluation report now records the selected
+strategy's identity; both re-verified on the current ~97-day bar snapshot).
 The live service (pid 715, 2026-10-16 15:41) predates all 2026-10-17
 commits and has not been restarted — deploy is pending owner approval.
 Verified against code/data/live probes/tests, not inherited summaries.
@@ -305,6 +306,20 @@ VERIFIED by direct archive read (2026-10-18):
   gaps); not fed into scoring, setups, costs, gates, or quant emission.
   Full spec in `docs/superpowers/specs/2026-10-17-funding-settlement-design.md`,
   operator reference in `docs/ws4-settlement-history.md`.
+- Audited (2026-10-19): `proto.quant.settlement_audit` rebuilds a
+  read-only per-coin manifest and reconciles it against the venue's own
+  `totalCount`. Outcomes over the 578-coin bar universe: **544 complete,
+  7 truncated, 27 missing_archive, 0 failed_or_error**. The 7 truncated
+  (FLOCK, LA, LAYER, MEGA, MYX, SIGN, XTZ) sit on an exact 1000-row page
+  boundary with a venue shortfall the elapsed live tail cannot explain
+  (6,432 rows the venue still serves; 6,299 beyond the tail); the 27
+  missing are absent from the venue's current ticker list — hence outside
+  the ticker-derived backfill universe — although the venue still serves
+  history for all of them (probe `totalCount` 72–7468). No delisting is
+  asserted. The original backfill's per-coin API errors were never
+  persisted and are unrecoverable; the reconciliation probe returned 0
+  errors. Predecessor: the aggregate audit (559 files / 1,366,260 rows /
+  0 dup / 0 malformed).
 
 ### 5. Quantitative research foundation — SHADOW PATH DELIVERED (engine + hook + status/SSE + Research view + e2e)
 - Deps: WS1 (PIT truth), WS4 (funding/cost inputs).
@@ -416,6 +431,13 @@ VERIFIED by direct archive read (2026-10-18):
   `tests/run_all.py` → ALL SUITES PASS (77 files). The venue-network suite
   `tests/test_app.py` is excluded from run_all and timed out in this
   environment (unverified here).
+  - Added (2026-10-19): the evaluation report now persists the SELECTION
+  IDENTITY (`selected`: rule id, geometry key, resolved `RuleParams` and
+  `Geometry`, geom index) plus `n_configs`, `spa` (multiplicity-corrected
+  max-t), `dev_config_means` and `top5_dev`, so `evaluation.json` names the
+  strategy it evaluated instead of reporting metrics for an unnamed config.
+  Regression: `tests/test_ws5_eval_harness.py` case 7 (insufficient-data
+  fallback) and case 20 (real selection).
 
 ### 6. Evidence communication in app — PARTIAL (Research view delivered; broader evidence display not started)
 - Deps: WS5 outputs to display; WS1/WS4 coverage labels.
@@ -474,17 +496,24 @@ VERIFIED by direct archive read (2026-10-18):
   code** with operator reference `docs/ws4-mark-index-history.md`; deploy
   pending.
 - WS5 beyond delivered work: the evaluation harness **HAS now been run** on
-  the current ~97.45-day bar snapshot with venue settlement costs
-  (`python3 -m proto.quant evaluate`, no `--holdout`, `EXIT=0`, git_rev
-  `e51ce1c`; output to a temp `--out` dir). Universe **dev** n=24,749
-  mean_r −0.0154 CI[−0.0417,+0.0142] and **val** n=6,495 mean_r −0.0166
-  CI[−0.0468,+0.0174] — both straddle zero, point estimates negative,
-  **no edge**. Funding-adjusted metrics are reported **separately**:
-  dev n=24,311 (excluded 5 missing-coin + 433 incomplete; coverage 0.982)
-  mean_r −0.0149 CI[−0.0411,+0.0153]; val n=6,374 (excluded 121 incomplete)
-  mean_r −0.0163 CI[−0.0473,+0.0184]. `missing_cost_coins=[1000BTT,RON,ZBCN]`,
-  no leakage, all holdout keys `null`. **The one-shot holdout remains
-  SEALED.** Still owned (not started, evidence-gated): a frozen-setup
+  the current ~97.5-day bar snapshot with venue settlement costs
+  (`python3 -m proto.quant evaluate`, no `--holdout`, `EXIT=0`). Canonical
+  run `git_rev da5f43c`; output to a temp `--out` dir, with the report and
+  preserved artifacts in `docs/implementation-reports/quant-roadmap-2026-10-18/`.
+  **The evaluated strategy:** rule `breakout_start[rvol>=4]/cont`, geometry
+  `T288_ks3_R2` (24 h, k_stop 3.0, r_tp 2.0), chosen by a
+  multiplicity-corrected max-t (`spa_max_t`) over **288** pre-declared
+  configs. The winning dev day-cluster t is **−1.06**, the corrected SPA
+  **p-value is 1.0**, and **0/288** configs had a positive dev mean.
+  Universe **dev** n=24,749 mean_r −0.0154 CI[−0.0417,+0.0142] and **val**
+  n=6,495 mean_r −0.0166 CI[−0.0468,+0.0174] (95% **day-cluster bootstrap**
+  intervals) — both straddle zero with negative point estimates: **the run
+  found no evidence of a positive edge**. Funding-adjusted metrics are
+  reported **separately**: dev n=24,311 (excluded 5 missing-coin + 433
+  incomplete; coverage 0.982) mean_r −0.0149 CI[−0.0411,+0.0153]; val
+  n=6,374 (excluded 121 incomplete) mean_r −0.0163 CI[−0.0473,+0.0184].
+  `missing_cost_coins=[1000BTT,RON,ZBCN]`, no leakage, all holdout keys
+  `null`. **The one-shot holdout remains SEALED.** Still owned (not started, evidence-gated): a frozen-setup
   decision to spend the holdout once; a calibration record; estimators
   (Hurst/MF-DFA), competing outcomes (stop/tp/time/invalidation/censor per
   proposal §3.4), calibrated probabilities (proposal §3–§5). No rule has
@@ -593,14 +622,17 @@ VERIFIED by direct archive read (2026-10-18):
 |  research.collect_events (WS5 case 23). Commits 168b960 + e51ce1c
 |  (review-round guards: non-finite spans, corrupt archive, whitespace list,
 |  doc consistency).
-|  (3) WS5 dev/val run on the full snapshot (no --holdout, EXIT=0):
-|  dev n=24,749 mean_r −0.0154 CI[−0.0417,+0.0142], val n=6,495 −0.0166
-|  CI[−0.0468,+0.0174] — straddle zero, no edge; funding-adjusted reported
-|  separately (dev 24,311 excl. 5+433; val 6,374 excl. 121); holdout keys
-|  null. Reproduced identically by an independent concurrent run at
-|  17e9a74. Holdout remains SEALED. Report:
-|  docs/implementation-reports/quant-roadmap-2026-10-18/
-|  progress-and-final-report.md.
+|  (3) WS5 dev/val run on the full snapshot (no --holdout, EXIT=0; canonical
+|  git_rev da5f43c): dev n=24,749 mean_r −0.0154 CI[−0.0417,+0.0142], val
+|  n=6,495 −0.0166 CI[−0.0468,+0.0174] (95% day-cluster bootstrap) —
+|  straddle zero: NO EVIDENCE of a positive edge. Selected rule
+|  breakout_start[rvol>=4]/cont × geom T288_ks3_R2, best of 288 configs,
+|  dev day-cluster t −1.06 / SPA p 1.0 / 0 of 288 positive on dev.
+|  Funding-adjusted reported separately (dev 24,311 excl. 5+433; val 6,374
+|  excl. 121); holdout keys null. Reproduced identically by an independent
+|  concurrent run at 17e9a74 and by a third snapshot on 2026-10-19. Holdout
+|  remains SEALED. Report + hashed artifacts:
+|  docs/implementation-reports/quant-roadmap-2026-10-18/.
 |  (4) WS3/WS4/WS6/WS7 gap audit (read-only probes): OI + book/spread
 |  history externally blocked; 1m served but adapter unimplemented and the
 |  sweep ~25× off schedule; /settlements + /prices + /quant-status still
