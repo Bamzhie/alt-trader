@@ -547,6 +547,48 @@ class TestSSE(unittest.TestCase):
         for e in svc.events:
             self.assertGreaterEqual(e["ts"], newest - window)
 
+    def test_quant_status_route(self):
+        status, body = get("/quant-status")
+        self.assertEqual(status, 200)
+        data = body["data"]
+        self.assertEqual(data["mode"], "shadow")
+        self.assertEqual(
+            set(data["event_counts"]), {"total", "emitted", "resolved"}
+        )
+        self.assertEqual(
+            data["event_counts"]["total"], data["event_counts"]["emitted"]
+        )
+        # Shadow counts never include an actionable row.
+        self.assertEqual(data["actionable_events"], 0)
+
+    def test_quant_research_route(self):
+        status, body = get("/quant-research")
+        self.assertEqual(status, 200)
+        data = body["data"]
+        self.assertEqual(data["version"], "research-surface-v1")
+        self.assertEqual(
+            set(data),
+            {"version", "status", "reasons", "generated_ts", "provenance",
+             "sample", "rules", "calibration", "coverage"},
+        )
+        # Uncertainty is interval endpoints only - no mean, no point reading.
+        blob = json.dumps(data)
+        self.assertNotIn("mean_r", blob)
+        self.assertNotIn("net_r", blob)
+        for rule in data["rules"]:
+            if rule["interval"] is not None:
+                self.assertEqual(set(rule["interval"]), {"lo", "hi"})
+        # A value that cannot be computed is an explicit null, never a zero.
+        self.assertEqual(data["calibration"]["buckets"], [])
+        self.assertFalse(data["calibration"]["available"])
+        self.assertTrue(data["calibration"]["reason"])
+
+    def test_quant_routes_require_auth(self):
+        for path in ("/quant-status", "/quant-research"):
+            status, body = get(path, token=None)
+            self.assertEqual(status, 401, path)
+            self.assertEqual(body["error"]["code"], "UNAUTH")
+
     def test_non_ascii_authorization_401_connection_alive(self):
         # Regression: hmac.compare_digest raises TypeError on non-ASCII input,
         # which escaped the handler and dropped the connection with no response.

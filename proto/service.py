@@ -839,6 +839,10 @@ def _make_handler(token, ready=None, store_path=None, data_dir=None,
                 self._handle_quant_status(gated, cfg_quant)
                 return
 
+            if self.command == "GET" and path == "/quant-research":
+                self._handle_quant_research(gated, cfg_quant)
+                return
+
             if self.command == "GET" and path == "/metrics":
                 self._handle_metrics(gated, qs, cfg_data)
                 return
@@ -1516,6 +1520,57 @@ def _make_handler(token, ready=None, store_path=None, data_dir=None,
                 "promotions": promotions,
                 "reason": "insufficient-evidence" if total == 0 else None,
             }), origin=origin)
+
+        def _handle_quant_research(self, origin, quant_db):
+            """Read-only research surface over the quant shadow store.
+
+            200 with the additive `research-surface-v1` object whenever the
+            store is readable; 503 UNAVAILABLE only when it is not.  The
+            route NEVER evaluates the holdout, never writes and never changes
+            a promotion decision: the only promotion artefact it reads is a
+            PASSED gate record, reported as a validation status, never as an
+            action.  Uncertainty is published as interval endpoints only.
+            """
+            try:
+                conn = sqlite3.connect(
+                    f"file:{os.path.abspath(quant_db)}?mode=ro", uri=True,
+                    timeout=5)
+                conn.row_factory = sqlite3.Row
+            except sqlite3.Error:
+                self._deny(503, "UNAVAILABLE",
+                           "quant database unavailable", origin=origin)
+                return
+            try:
+                try:
+                    tables = {r[0] for r in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'")}
+                except sqlite3.Error:
+                    self._deny(503, "UNAVAILABLE",
+                               "quant database unavailable", origin=origin)
+                    return
+                if "quant_event" not in tables:
+                    self._deny(503, "UNAVAILABLE",
+                               "quant database unavailable", origin=origin)
+                    return
+                try:
+                    from .quant import research_surface as _surface
+                    from .quant.config import DEFAULT as _quant_default
+                except Exception:
+                    self._deny(503, "UNAVAILABLE",
+                               "research surface unavailable", origin=origin)
+                    return
+                promo_dir = os.path.dirname(os.path.abspath(quant_db)) or "."
+                data = _surface.build(conn, cfg=_quant_default,
+                                      promo_dir=promo_dir)
+            except Exception:
+                # The surface must never answer with a figure it could not
+                # read: an unreadable store is UNAVAILABLE, not a guess.
+                self._deny(503, "UNAVAILABLE",
+                           "research surface unavailable", origin=origin)
+                return
+            finally:
+                conn.close()
+            self._send_json(200, envelope(True, data), origin=origin)
 
         def _handle_metrics(self, origin, qs, data_dir):
             coin = (qs.get("coin") or [None])[0]

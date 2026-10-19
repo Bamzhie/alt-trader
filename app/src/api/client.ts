@@ -13,6 +13,7 @@ import type {
   Envelope,
   ErrorCode,
   Metrics,
+  QuantResearch,
   QuantStatus,
   SetupsPage,
   SetupsQuery,
@@ -46,6 +47,8 @@ export interface ApiClient {
   readyz(): Promise<boolean>;
   snapshot(): Promise<Snapshot>;
   quantStatus(): Promise<QuantStatus>;
+  /** The read-only research surface (sample, intervals, provenance). */
+  research(): Promise<QuantResearch>;
   setups(query: SetupsQuery): Promise<SetupsPage>;
   setup(id: string): Promise<Setup>;
   bars(coin: string, tf: BarTimeframe): Promise<Bars>;
@@ -98,6 +101,31 @@ function buildQuery(query: SetupsQuery): string {
   if (query.cursor !== undefined) params.set("cursor", query.cursor);
   const qs = params.toString();
   return qs ? `?${qs}` : "";
+}
+
+/**
+ * Shape guard for the research surface. A body that is not a research
+ * surface is a contract violation — it is reported as such, never rendered
+ * as a partial surface.
+ */
+function isQuantResearch(value: unknown): value is QuantResearch {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Partial<QuantResearch>;
+  return (
+    typeof v.version === "string" &&
+    (v.status === "ok" || v.status === "insufficient") &&
+    Array.isArray(v.reasons) &&
+    typeof v.generated_ts === "number" &&
+    typeof v.provenance === "object" &&
+    v.provenance !== null &&
+    typeof v.sample === "object" &&
+    v.sample !== null &&
+    Array.isArray(v.rules) &&
+    typeof v.calibration === "object" &&
+    v.calibration !== null &&
+    typeof v.coverage === "object" &&
+    v.coverage !== null
+  );
 }
 
 export function createClient(opts: CreateClientOptions): ApiClient {
@@ -167,6 +195,14 @@ export function createClient(opts: CreateClientOptions): ApiClient {
 
     async quantStatus(): Promise<QuantStatus> {
       return (await get("/quant-status")) as QuantStatus;
+    },
+
+    async research(): Promise<QuantResearch> {
+      const data = await get("/quant-research");
+      if (!isQuantResearch(data)) {
+        throw new ApiError("NETWORK", "response was not a research surface");
+      }
+      return data;
     },
 
     async setups(query: SetupsQuery): Promise<SetupsPage> {
