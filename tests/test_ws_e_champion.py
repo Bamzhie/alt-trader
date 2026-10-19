@@ -105,9 +105,11 @@ def mk_event(coin, ts, side, gross, kind=0, param=5.0, qv24=QV24):
         off_arr[k] = 0
     # The exit offsets of the two geometries under test: the champion's slot
     # exits inside its 48-bar horizon, the candidate's inside its 144-bar
-    # horizon, so the holding windows (and their funding) differ.
-    off_arr[GI_CH * 2 + (0 if side > 0 else 1)] = 40
-    off_arr[GI_CA * 2 + (0 if side > 0 else 1)] = 100
+    # horizon, so the holding windows (and their funding) differ.  BOTH
+    # sides' slots carry the same offset, because the TRADE side is the
+    # opposite of the event side under a "fade" policy.
+    off_arr[GI_CH * 2] = off_arr[GI_CH * 2 + 1] = 40
+    off_arr[GI_CA * 2] = off_arr[GI_CA * 2 + 1] = 100
     return SimpleNamespace(coin=coin, ts=ts, day=ts / 86400.0, fam="B",
                            param=param, side=side, qv24=qv24, sigma=SIGMA,
                            rvol=5.0, z1h=0.1, z4h=0.2, btc7d=0.01,
@@ -122,12 +124,17 @@ def build_events(n_days=6, per_day=3, wide=False):
         for j in range(per_day):
             ts = T0 + d * 86400 + j * 3600
             coin = COINS[(d + j) % len(COINS)]
-            side = 1 if (d + j) % 2 == 0 else -1
+            # an ASYMMETRIC side mix on purpose: the funding cost follows the
+            # trade side, so a symmetric mix would cancel the funding out of
+            # the mean and hide whether funding is applied at all
+            side = 1 if (d + j) % 3 == 0 else -1
             gross = [0.0004 * ((k % 5) - 2) for k in range(2 * len(GRID))]
             # the champion and the candidate read DIFFERENT slots -> their
-            # outcomes differ, so the paired difference is not trivially zero
-            gross[GI_CH * 2 + (0 if side > 0 else 1)] = 0.005
-            gross[GI_CA * 2 + (0 if side > 0 else 1)] = 0.001
+            # outcomes differ, so the paired difference is not trivially
+            # zero.  BOTH sides' slots carry the value, because the TRADE
+            # side is the opposite of the event side under a "fade" policy.
+            gross[GI_CH * 2] = gross[GI_CH * 2 + 1] = 0.005
+            gross[GI_CA * 2] = gross[GI_CA * 2 + 1] = 0.001
             kind = (0, 1, 2)[(d + j) % 3]
             param = 3.0 if (wide and (d + j) % 4 == 0) else 5.0
             events.append(mk_event(coin, ts, side, gross, kind=kind, param=param))
@@ -223,9 +230,9 @@ check("the superseded version stays retrievable",
 check("the history keeps both versions",
       len(reg.list()) == 2, str(len(reg.list())))
 
-v2 = mk_version("cfg-0002", GEOM_CA)
+v2 = mk_version("cfg-0100", GEOM_CA)
 reg.add(v2)
-reg.set_champion("cfg-0002")
+reg.set_champion("cfg-0100")
 champ2 = reg.champion()
 check("the new champion is the candidate's new version",
       champ2 is not None and champ2.status == "champion"
@@ -245,7 +252,7 @@ reg.close()
 
 reg2 = Registry(reg_path)
 check("the registry survives a reopen",
-      reg2.champion() is not None and len(reg2.list()) == 4,
+      reg2.champion() is not None and len(reg2.list()) == 5,
       str(len(reg2.list())))
 reg2.close()
 
@@ -334,8 +341,8 @@ check("the metric is the friction-only one without a funding archive",
       res.get("metric") == "friction_net_r", str(res.get("metric")))
 
 # --- the same comparison with a funding archive: the metric becomes net R ---
-fund_dir = settlements_dir()
-res_f = compare(champ_v, cand_v, events, WINDOW, funding_dir=fund_dir)
+settle_dir = settlements_dir()
+res_f = compare(champ_v, cand_v, events, WINDOW, settlements_dir=settle_dir)
 check("with a funding archive the metric is net R",
       res_f.get("metric") == "net_r", str(res_f.get("metric")))
 check("the funded comparison is not refused", res_f.get("refused") is False,
@@ -347,8 +354,8 @@ check("funding moves the numbers (it is not ignored)",
       abs(res_f["champion"]["mean_r"] - res["champion"]["mean_r"]) > 1e-9,
       f"{res_f['champion']['mean_r']} vs {res['champion']['mean_r']}")
 check("the funded comparison has a cost model that names the funding archive",
-      res_f["cost_model"].get("funding_dir") == fund_dir,
-      str(res_f["cost_model"].get("funding_dir")))
+      res_f["cost_model"].get("settlements_dir") == settle_dir,
+      str(res_f["cost_model"].get("settlements_dir")))
 
 # --- the cost multipliers are applied to BOTH sides ---
 res_slip = compare(champ_v, cand_v, events, WINDOW, slip_mult=2.0)
@@ -506,9 +513,10 @@ chain2 = os.path.join(temp_dir("wse-chain2-"), "chain.jsonl")
 ev2 = os.path.join(ev_dir, "evidence2.txt")
 with open(ev2, "w") as fh:
     fh.write("stable evidence\n")
+ev2_hash = sha256_file(ev2)
 good = DL.append(chain2, kind="continue", subject="cfg-0003",
                  reasons=["evidence checked"],
-                 evidence=[{"path": ev2, "sha256": sha256_file(ev2)}],
+                 evidence=[{"path": ev2, "sha256": ev2_hash}],
                  decided_by="tester", ts=1_700_000_300)
 check("a valid evidence file is accepted", good["id"] == "DEC-0001",
       good["id"])
@@ -519,20 +527,11 @@ with open(ev2, "w") as fh:
 try:
     DL.append(chain2, kind="continue", subject="cfg-0004",
               reasons=["stale evidence"], evidence=[
-                  {"path": ev2, "sha256": sha256_file(ev2)}],
+                  {"path": ev2, "sha256": ev2_hash}],
               decided_by="tester", ts=1_700_000_400)
-    check("a changed evidence file is refused", False, "no error raised")
+    check("evidence that changed on disk is refused", False, "no error raised")
 except Exception:
-    check("a changed evidence file is refused", True)
-stale_hash = sha256_file(ev2)
-try:
-    DL.append(chain2, kind="continue", subject="cfg-0004",
-              reasons=["stale evidence"], evidence=[
-                  {"path": ev2, "sha256": stale_hash}],
-              decided_by="tester", ts=1_700_000_400)
-    check("a stale evidence hash is refused", False, "no error raised")
-except Exception:
-    check("a stale evidence hash is refused", True)
+    check("evidence that changed on disk is refused", True)
 try:
     DL.append(chain2, kind="continue", subject="cfg-0004",
               reasons=["missing evidence"], evidence=[
@@ -545,6 +544,14 @@ except Exception:
 check("the refusals did not write anything",
       len(open(chain2).read().splitlines()) == 1,
       str(len(open(chain2).read().splitlines())))
+fresh = DL.append(chain2, kind="continue", subject="cfg-0004",
+                  reasons=["the evidence is current again"],
+                  evidence=[{"path": ev2, "sha256": sha256_file(ev2)}],
+                  decided_by="tester", ts=1_700_000_500)
+check("citing the CURRENT content of the file is accepted",
+      fresh["id"] == "DEC-0002", fresh["id"])
+check("the chain with both entries validates clean",
+      DL.validate_chain(chain2) == [], str(DL.validate_chain(chain2)))
 
 section("8. decision chain: validate_chain finds every defect")
 
@@ -634,6 +641,62 @@ for base, dirs, files in os.walk(ROOT):
             stray.append(os.path.join(base, f))
 check("no registry database or chain file was created in the repository",
       not stray, str(stray))
+
+# ---------------------------------------------------------------------------
+# 10. the CLI
+# ---------------------------------------------------------------------------
+section("10. the CLI: champions list / compare")
+
+import contextlib
+import io
+
+cli_dir = temp_dir("wse-cli-")
+cli_db = os.path.join(cli_dir, "registry.db")
+cli_reg = Registry(cli_db)
+cli_reg.add(mk_version("cfg-0001", GEOM_CH))
+cli_reg.add(mk_version("cfg-0100", GEOM_CA))
+cli_reg.close()
+
+proc = subprocess.run([sys.executable, "-m", "proto.quant", "champions",
+                       "list", "--db", cli_db],
+                      cwd=ROOT, capture_output=True, text=True)
+check("the CLI lists the registry versions",
+      proc.returncode == 0 and "cfg-0001" in proc.stdout
+      and "cfg-0100" in proc.stdout, proc.stdout[-400:] + proc.stderr[-400:])
+check("the CLI has no promote subcommand",
+      "promote" not in subprocess.run(
+          [sys.executable, "-m", "proto.quant", "champions", "--help"],
+          cwd=ROOT, capture_output=True, text=True).stdout)
+
+# compare: the events are patched in (the bars archive is not in the repo)
+from proto.quant import __main__ as QMAIN
+from proto.quant import research as QR
+
+cli_events = build_events()
+for i, ev in enumerate(cli_events):
+    ev.day = 10.0 + i          # archive-relative days inside the dev window
+_orig_collect = QR.collect_events
+QR.collect_events = (lambda data_dir, cfg=DEFAULT, coins=None, progress=False:
+                     (cli_events, {"n_days": 40.0}))
+buf = io.StringIO()
+try:
+    with contextlib.redirect_stdout(buf):
+        rc = QMAIN.main(["champions", "compare", "--db", cli_db,
+                         "--champion", "cfg-0001",
+                         "--candidate", "cfg-0100", "--window", "dev"])
+finally:
+    QR.collect_events = _orig_collect
+out = buf.getvalue()
+check("the CLI compare returns 0", rc == 0, out[-400:])
+check("the CLI prints the comparison JSON",
+      '"same_events": true' in out and '"difference"' in out, out[-400:])
+cli_res = json.loads(out[out.index("{"):])
+check("the CLI comparison is not refused", cli_res.get("refused") is False,
+      str(cli_res.get("reason")))
+check("the CLI comparison used the dev window",
+      cli_res.get("window") == [DEFAULT.splits.bounds(40.0)["dev"][0],
+                                 DEFAULT.splits.bounds(40.0)["dev"][1]],
+      str(cli_res.get("window")))
 
 print()
 if FAILURES:

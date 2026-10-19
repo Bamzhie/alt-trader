@@ -6,6 +6,9 @@
   status     watcher / pause status
   pause / resume   manual global pause flag
   gates      evaluate promotion for the config research.json selected
+  champions  champion/candidate registry and the matched comparison
+             (list | compare -- it cannot promote and never writes a
+             decision)
 """
 import argparse
 import json
@@ -58,6 +61,26 @@ def main(argv=None):
     ev.add_argument("--coins", default=None,
                     help="comma list of traded coins (default: all); BTC is "
                          "always loaded as the market factor")
+
+    ch = sub.add_parser("champions",
+                         help="champion/candidate registry and comparison "
+                              "(read-only: it cannot promote)")
+    chsub = ch.add_subparsers(dest="chcmd", required=True)
+    chl = chsub.add_parser("list", help="print the registry versions")
+    chl.add_argument("--db", required=True, help="the registry database")
+    cc = chsub.add_parser("compare",
+                           help="compare a champion and a candidate on the "
+                                "same events with matched costs")
+    cc.add_argument("--db", required=True, help="the registry database")
+    cc.add_argument("--champion", required=True, help="the champion config id")
+    cc.add_argument("--candidate", required=True, help="the candidate config id")
+    cc.add_argument("--window", required=True, choices=("dev", "val"),
+                    help="the window both configurations are evaluated in")
+    cc.add_argument("--out", default=None, help="write the comparison JSON here")
+    cc.add_argument("--data", default="data/bars", help="the bars archive")
+    cc.add_argument("--coins", default=None, help="comma list of coins")
+    cc.add_argument("--funding-dir", default=None)
+    cc.add_argument("--settlements-dir", default=None)
 
     a = ap.parse_args(argv)
 
@@ -156,6 +179,54 @@ def main(argv=None):
             if len(report.missing_cost_coins) > 20:
                 print(f"  ... and {len(report.missing_cost_coins) - 20} more",
                       file=sys.stderr)
+        return 0
+    if a.cmd == "champions":
+        # Read-only by construction: there is no "promote" subcommand here
+        # and this branch never writes a decision or a promotion record.
+        from dataclasses import asdict
+        from . import champion as CH
+        if not os.path.exists(a.db):
+            print(f"no registry at {a.db}", file=sys.stderr)
+            return 1
+        reg = CH.Registry(a.db)
+        try:
+            if a.chcmd == "list":
+                for v in reg.list():
+                    print(json.dumps(asdict(v), sort_keys=True, default=str))
+                champ = reg.champion()
+                if champ is not None:
+                    print(f"champion: {champ.id} ({champ.rule_id})")
+                else:
+                    print("champion: (none)")
+                return 0
+            champion = reg.get(a.champion)
+            candidate = reg.get(a.candidate)
+            if champion is None:
+                print(f"unknown champion id: {a.champion}", file=sys.stderr)
+                return 1
+            if candidate is None:
+                print(f"unknown candidate id: {a.candidate}", file=sys.stderr)
+                return 1
+        finally:
+            reg.close()
+        from . import research as R
+        coins = a.coins.split(",") if a.coins else None
+        events, meta = R.collect_events(a.data, DEFAULT, coins)
+        bounds = DEFAULT.splits.bounds(meta["n_days"])
+        window = bounds[a.window]
+        res = CH.compare(
+            champion, candidate, events, window,
+            funding_dir=(a.funding_dir if a.funding_dir
+                         and os.path.isdir(a.funding_dir) else None),
+            settlements_dir=(a.settlements_dir if a.settlements_dir
+                             and os.path.isdir(a.settlements_dir) else None))
+        print(json.dumps(res, indent=2, default=str))
+        if a.out:
+            with open(a.out, "w") as fh:
+                json.dump(res, fh, indent=2, default=str)
+        if res.get("refused"):
+            print(f"REFUSED: {res.get('reason')}", file=sys.stderr)
+            return 1
         return 0
     return 1
 
