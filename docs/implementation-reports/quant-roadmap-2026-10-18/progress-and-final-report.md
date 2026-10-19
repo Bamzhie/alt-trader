@@ -564,8 +564,15 @@ holdout fields remain `null`.
   selected-strategy identity, preserved evidence files, and tightened
   no-edge / reproducibility wording (this report + `docs/roadmap-status.md`
   + `docs/ws4-settlement-history.md`).
-- Final doc update committed and pushed last; `origin/main` equals that tip
-  (verified with `git fetch`).
+- `83b9a22` fix(quant): correct pipeline and funding-attribution audit
+  defects — four pipeline fixes (run-boundary path, CUSUM reset, union
+  archive span, sparse-day guard), four funding fixes (window-local settle
+  grid, TIME-exit close, matched denominator, 289-bar leakage bound), two
+  regression test files, the dev-only diagnostics, and the corrected
+  funding-adjusted numbers.
+- A final docs-only commit records this hash, the corrected suite count
+  (81 files), and the evidence links; `origin/main` equals the resulting
+  tip (verified with `git fetch`).
 - No raw archive was rewritten; `data/` is gitignored and untouched by the
   research runs (output went to a temp `--out` dir).
 
