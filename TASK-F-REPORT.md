@@ -501,6 +501,6 @@ per-stage breakdown is additive.
 |---|---|
 | `749be83` | feat(daemon): instrument the loop, persist the cadence, split readiness (WS-F) |
 | `90c5704` | test(ws-f): startup & first-sweep regression suite (76 checks) |
-| `PENDING` | docs(ws-f): Workstream F report |
+| `ce0eef5` | docs(ws-f): Workstream F report |
 
 (branch `feature/ws-f-startup` in `/tmp/opencode/wt-f`; not pushed)
