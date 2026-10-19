@@ -308,18 +308,22 @@ VERIFIED by direct archive read (2026-10-18):
   operator reference in `docs/ws4-settlement-history.md`.
 - Audited (2026-10-19): `proto.quant.settlement_audit` rebuilds a
   read-only per-coin manifest and reconciles it against the venue's own
-  `totalCount`. Outcomes over the 578-coin bar universe: **544 complete,
-  7 truncated, 27 missing_archive, 0 failed_or_error**. The 7 truncated
-  (FLOCK, LA, LAYER, MEGA, MYX, SIGN, XTZ) sit on an exact 1000-row page
-  boundary with a venue shortfall the elapsed live tail cannot explain
-  (6,432 rows the venue still serves; 6,299 beyond the tail); the 27
-  missing are absent from the venue's current ticker list — hence outside
-  the ticker-derived backfill universe — although the venue still serves
-  history for all of them (probe `totalCount` 72–7468). No delisting is
-  asserted. The original backfill's per-coin API errors were never
-  persisted and are unrecoverable; the reconciliation probe returned 0
-  errors. Predecessor: the aggregate audit (559 files / 1,366,260 rows /
-  0 dup / 0 malformed).
+  `totalCount`. Outcomes over the 579-coin bar universe at capture
+  (`observed_at 1792396320`; grew from 578 when `PAPER` listed): **544
+  complete, 7 truncated, 28 missing_archive, 0 failed_or_error**. The 551
+  present archives hold 1,351,943 rows (0 malformed, 0 duplicate). The 7
+  truncated (FLOCK, LA, LAYER, MEGA, MYX, SIGN, XTZ) sit on an exact
+  1000-row page boundary with a venue shortfall the elapsed live tail
+  cannot explain (6,432 rows the venue still serves; 6,299 beyond the
+  tail). The 28 missing are recorded as venue state, not a cause: **27**
+  are absent from the venue's current ticker list — hence outside the
+  ticker-derived backfill universe — although the venue still serves
+  history for all of them (probe `totalCount` 72–7468); the **28th**
+  (`PAPER`) is already in the current tickers, so its archive holds only
+  the rows served since it listed. No delisting is asserted. The original
+  backfill's per-coin API errors were never persisted and are
+  unrecoverable; the reconciliation probe returned 0 errors. Predecessor:
+  the aggregate audit (559 files / 1,366,260 rows / 0 dup / 0 malformed).
 
 ### 5. Quantitative research foundation — SHADOW PATH DELIVERED (engine + hook + status/SSE + Research view + e2e)
 - Deps: WS1 (PIT truth), WS4 (funding/cost inputs).
