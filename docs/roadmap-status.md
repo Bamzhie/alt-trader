@@ -6,9 +6,11 @@ edge. Read-only; no order execution. BTC is labeled market context only.
 
 Last updated: 2026-10-19 (dev-only investigation of the all-negative WS5
 result: friction, not a signal defect; three independent audits; four
-pipeline and four funding-path fixes with corrected funding-adjusted
-numbers; per-coin settlement-backfill manifest reconciled against the
-venue; the WS5 evaluation report records the selected strategy's identity).
+pipeline and five funding-path fixes (including a transition-aware
+settlement schedule) with corrected funding-adjusted numbers; the
+gross-outcome SPA is exploratory; per-coin settlement-backfill manifest
+reconciled against the venue; the WS5 evaluation report records the
+selected strategy's identity).
 The live service (pid 715, 2026-10-16 15:41) predates all 2026-10-17
 commits and has not been restarted — deploy is pending owner approval.
 Verified against code/data/live probes/tests, not inherited summaries.
@@ -437,7 +439,8 @@ VERIFIED by direct archive read (2026-10-18):
   regressions are covered by `tests/test_quant_pipeline_regressions.py`
   (run-boundary path, union span, CUSUM reset, sparse-day guard) and
   `tests/test_quant_funding_regressions.py` (window-local settle grid,
-  matched funding denominator, TIME-exit close, 289-bar leakage bound);
+  matched funding denominator, TIME-exit close, 289-bar leakage bound, and
+  cycle transitions 8h→4h / 4h→8h including the observation fallback);
   full offline backend suite `tests/run_all.py` → ALL SUITES PASS (81
   files). The venue-network suite
   `tests/test_app.py` is excluded from run_all and timed out in this
@@ -457,23 +460,43 @@ VERIFIED by direct archive read (2026-10-18):
     t −0.09), while drag follows `cost/(k·σ·√T)` (median 0.1796R at
     T48_ks1, 0.0244R at T288_ks3; ratio 7.36 vs 7.35 predicted), so the
     negative net means are friction, not a sign/label/metric defect. A
-    gross-outcome SPA finds one real pre-cost short-horizon reversal
+    gross-outcome SPA finds a pre-cost short-horizon reversal
     (`residual_shock[cusum_h=5]/fade`, T48_ks1.5_R3): +0.052R/trade
     (t +3.71, p = 0.005), positive at 36/36 geometries and 5/5 sub-periods,
     but drag is 0.1198R, so net is −0.068R and negative at every geometry.
+    That gross SPA is **exploratory**: the outcome metric and the analysis
+    were chosen after reviewing the net results, so the multiplicity
+    correction (over the 288 configs) does not cover that choice.
     Coin and sub-period splits are in the report (§4). Independent read-only
     audits: signal/event SOUND; metrics/statistics SOUND; cost/split found
-    four funding-path defects (whole-archive settle grid, one-bar-early TIME
-    exit, unmatched funding denominator, 288-bar leakage bound), all fixed
-    TDD in `tests/test_quant_funding_regressions.py`. Corrected
-    funding-adjusted dev/val means are −0.01632 / −0.01727; funding is a
-    small cost (−0.0007R dev) on the matched set, not a credit. The
-    friction-only selection and no-edge conclusion are unchanged.
-    Recommendation: do not promote and do not spend the holdout; preregister
-    H1 (short-horizon reversal) only with a frozen ≤~15 bp round-trip
-    execution model, and reject H2 (long-horizon breakout) and H3 (funding
-    carry) as standalone edges. Evidence + hashes: report §11; diagnostics
-    in `docs/implementation-reports/quant-roadmap-2026-10-18/`.
+    five funding-path defects (whole-archive settle grid, single-grid
+    inference across cycle transitions, one-bar-early TIME exit, unmatched
+    funding denominator, 288-bar leakage bound), all fixed TDD in
+    `tests/test_quant_funding_regressions.py`. MEXC's per-row `collectCycle`
+    was verified against the archive (the gap to the next row equals the
+    current row's cycle in 1,365,207 of the 1,365,701 rows that have a
+    following row; the 494 exceptions are the venue-stated transition
+    bridges); the schedule is now a sequence of per-regime grids, so a
+    shortening transition (8h→4h) charges its intermediate settlements, a
+    lengthening transition (4h→8h) does not demand the settlement the
+    venue skipped, and an unestablishable schedule is reported incomplete
+    rather than silently omitting a settlement. 219 of 24,749 dev and 99 of
+    6,495 val holding windows cross a transition (1,602 of 197,724 across
+    all 8 rules) and **all 318 are attributed**.
+    Corrected funding-adjusted dev/val means are −0.01585 / −0.01745
+    (coverage 0.9995 / 0.9974); funding is a small cost (−0.0005R dev) on
+    the matched set, not a credit. The friction-only selection and no-edge
+    conclusion are unchanged.
+    Recommendation: do not promote and do not spend the holdout. H1
+    (short-horizon reversal) is a **candidate for preregistration, not a
+    confirmed edge**: its break-even needs round-trip friction ≤ ~0.052R
+    (≈15 bp) and no execution-cost evidence here shows that is reachable
+    (the 5 bp/side taker constant is an unconfirmed placeholder, slippage is
+    assumed rather than measured, and there are no fill/depth/latency
+    data) — an operator-confirmed fee tier and a measured execution-cost
+    model must come first. H2 (long-horizon breakout) and H3 (funding
+    carry) are rejected as standalone edges. Evidence + hashes: report §11;
+    diagnostics in `docs/implementation-reports/quant-roadmap-2026-10-18/`.
 
 ### 6. Evidence communication in app — PARTIAL (Research view delivered; broader evidence display not started)
 - Deps: WS5 outputs to display; WS1/WS4 coverage labels.

@@ -57,6 +57,16 @@ def write_settlements(directory, coin, rows):
             f.write(f"{ts},{rate},{cycle}\n")
 
 
+def write_funding(directory, coin, observations):
+    """observations: [(ts, rate)]"""
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, coin + ".csv.gz")
+    with gzip.open(path, "wt", newline="") as f:
+        f.write("ts,rate,cap\n")
+        for ts, rate in observations:
+            f.write(f"{ts},{rate},0.0018\n")
+
+
 T0 = 1_700_000_100
 T0 -= T0 % BAR_S
 # Epoch-aligned 8h anchor at/after T0.
@@ -195,6 +205,124 @@ viol = eh.check_no_leakage([border], splits)
 check("an event whose 289-bar window reaches val_start is flagged",
       any("reaches val_start" in v for v in viol),
       f"violations={viol}")
+
+
+print("\n=== 5. cycle transitions inside a holding window ===")
+
+# MEXC reports a per-row collectCycle: the interval in force FROM that
+# settlement onwards.  A coin's cycle does change (1h/2h/4h/8h all occur),
+# so a window can span a transition.  The venue's observed shapes are:
+#   * SHORTENING (8h -> 4h): the new grid starts one new cycle after the
+#     last old settlement, and the intermediate 4h settlements EXIST and
+#     must be charged.
+#   * LENGTHENING (4h -> 8h): the venue skips the intermediate 4h
+#     settlement; the old grid's next boundary has no row, and that is
+#     the venue's stated behaviour, not a missing row.
+E = 28800 * 100          # epoch-aligned 8h (and 4h) boundary
+H = 3600
+
+# --- 5a: 8h -> 4h inside the window: the 4h settlements must be charged.
+sett_a = os.path.join(tempfile.mkdtemp(prefix="fund-trans-a-"), "settlements")
+rows_a = [(E + k * 8 * H, 0.001, 8) for k in range(3)]        # E, E+8h, E+16h
+rows_a += [(E + 20 * H, 0.002, 4), (E + 24 * H, 0.002, 4)]    # 4h regime
+write_settlements(sett_a, "SHORT", sorted(rows_a))
+res_a = ca.funding_cost("SHORT", E + 8 * H, E + 28 * H,
+                        funding_dir=None, settlements_dir=sett_a, side=1)
+check("8h->4h transition: the window is complete (not a false gap)",
+      not res_a.incomplete and res_a.cost is not None, str(res_a))
+check("8h->4h transition: every settlement inside the window is charged",
+      res_a.observations == 3, str(res_a))
+check("8h->4h transition: the intermediate 4h settlement is not omitted",
+      res_a.cost is not None
+      and abs(res_a.cost - (0.001 + 0.002 + 0.002)) < 1e-12, str(res_a))
+
+# --- 5b: 4h -> 8h inside the window: the skipped 4h boundary is the
+# venue's stated behaviour and must NOT make the window incomplete.
+sett_b = os.path.join(tempfile.mkdtemp(prefix="fund-trans-b-"), "settlements")
+rows_b = [(E + k * 4 * H, 0.003, 4) for k in range(3)]        # E, E+4h, E+8h
+rows_b += [(E + 16 * H, 0.004, 8), (E + 24 * H, 0.004, 8)]    # 8h regime
+write_settlements(sett_b, "LONG", sorted(rows_b))
+res_b = ca.funding_cost("LONG", E, E + 24 * H,
+                        funding_dir=None, settlements_dir=sett_b, side=1)
+check("4h->8h transition: the window is complete",
+      not res_b.incomplete and res_b.cost is not None, str(res_b))
+check("4h->8h transition: both regimes are charged (3 events)",
+      res_b.observations == 3, str(res_b))
+check("4h->8h transition: the skipped 4h boundary is not demanded",
+      res_b.cost is not None
+      and abs(res_b.cost - (0.003 + 0.003 + 0.004)) < 1e-12, str(res_b))
+
+# --- 5c: a schedule that cannot be established -> incomplete, never a
+# silent omission.
+# 5c-1: a missing row INSIDE a regime: the grid still demands that
+# boundary, so the settlement path reports a gap (the observation fallback
+# may attribute it) and the window is never undercounted.
+sett_c = os.path.join(tempfile.mkdtemp(prefix="fund-trans-c-"), "settlements")
+write_settlements(sett_c, "HOLE", [(E, 0.001, 8), (E + 8 * H, 0.001, 8),
+                                    (E + 24 * H, 0.001, 8)])
+res_c = ca.funding_cost("HOLE", E, E + 24 * H,
+                        funding_dir=None, settlements_dir=sett_c, side=1)
+check("a missing settlement row inside a regime -> incomplete",
+      res_c.incomplete and res_c.cost is None, str(res_c))
+check("the cause is reported as a missing boundary, not a silent omission",
+      "settlement-boundaries-missing" in (res_c.reason or ""), str(res_c))
+
+# 5c-2: with covering observations the same gap falls back to the
+# observation mapping and the missing boundary IS charged.
+fund_c = os.path.join(tempfile.mkdtemp(prefix="fund-trans-c-"), "funding")
+write_funding(fund_c, "HOLE", [(E - 1 * H, 0.0001), (E + 7 * H, 0.0002),
+                               (E + 15 * H, 0.0003), (E + 23 * H, 0.0004)])
+res_c2 = ca.funding_cost("HOLE", E, E + 24 * H,
+                         funding_dir=fund_c, settlements_dir=sett_c, side=1)
+check("a gap inside a regime falls back to the observation mapping",
+      not res_c2.incomplete and res_c2.source == "observation", str(res_c2))
+check("the fallback charges the missing boundary too (2 events, 0.0005)",
+      res_c2.observations == 2
+      and res_c2.cost is not None
+      and abs(res_c2.cost - (0.0002 + 0.0003)) < 1e-12, str(res_c2))
+
+# 5c-3: a missing row AT a transition leaves the new grid's phase
+# unprovable -> the schedule cannot be established -> incomplete, even with
+# covering observations (a settlement is never silently omitted).
+sett_c3 = os.path.join(tempfile.mkdtemp(prefix="fund-trans-c3-"), "settlements")
+write_settlements(sett_c3, "MISSINGROW", [(E, 0.001, 8), (E + 8 * H, 0.001, 8),
+                                           (E + 16 * H, 0.001, 8),
+                                           (E + 28 * H, 0.001, 4)])
+res_c3 = ca.funding_cost("MISSINGROW", E, E + 28 * H,
+                         funding_dir=fund_c, settlements_dir=sett_c3, side=1)
+check("a missing row at the transition -> incomplete, not undercounted",
+      res_c3.incomplete and res_c3.cost is None, str(res_c3))
+check("the unverifiable transition is reported as such",
+      "settlement-schedule-unverifiable" in (res_c3.reason or ""), str(res_c3))
+
+# --- 5d: the observation fallback uses the SAME per-regime schedule.
+# The settlement archive stops before the window ends (so the settlement
+# path cannot cover the tail); the observation archive covers the window.
+sett_d = os.path.join(tempfile.mkdtemp(prefix="fund-trans-d-"), "settlements")
+fund_d = os.path.join(tempfile.mkdtemp(prefix="fund-trans-d-"), "funding")
+write_settlements(sett_d, "OBS", [(E - 8 * H, 0.001, 8), (E, 0.001, 8),
+                                   (E + 4 * H, 0.002, 4)])
+write_funding(fund_d, "OBS", [(E - 1 * H, 0.0001), (E + 1 * H, 0.0002),
+                              (E + 5 * H, 0.0003)])
+res_d = ca.funding_cost("OBS", E - 4 * H, E + 12 * H,
+                        funding_dir=fund_d, settlements_dir=sett_d, side=1)
+check("observation fallback covers the window the settlements cannot",
+      not res_d.incomplete and res_d.source == "observation", str(res_d))
+check("observation fallback charges the 4h boundary too (3 events)",
+      res_d.observations == 3, str(res_d))
+check("observation fallback uses each regime's own snapshot window",
+      res_d.cost is not None
+      and abs(res_d.cost - (0.0001 + 0.0002 + 0.0003)) < 1e-12, str(res_d))
+
+# The 4h boundary must use the 4h regime's snapshot window [E, E+4h):
+# with that snapshot missing the boundary is uncovered -> incomplete (it
+# must NOT be charged from the older 8h-regime snapshot).
+fund_d2 = os.path.join(tempfile.mkdtemp(prefix="fund-trans-d2-"), "funding")
+write_funding(fund_d2, "OBS", [(E - 1 * H, 0.0001), (E + 5 * H, 0.0003)])
+res_d2 = ca.funding_cost("OBS", E - 4 * H, E + 12 * H,
+                         funding_dir=fund_d2, settlements_dir=sett_d, side=1)
+check("a boundary with no snapshot in its OWN regime window -> incomplete",
+      res_d2.incomplete and res_d2.cost is None, str(res_d2))
 
 
 print()

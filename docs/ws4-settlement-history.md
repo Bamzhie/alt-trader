@@ -35,6 +35,31 @@ schema, commands, route contract, limitations, and the no-estimation rule.
   context). Coins whose cycle changes archive correctly because every
   row is self-describing.
 
+### Reading a coin whose funding cycle changes
+
+Verified against the archive (2026-10-19): `collectCycle` is the interval in
+force **from that settlement onwards** — the gap to the next row equals the
+current row's cycle in 1,365,207 of the 1,365,701 rows that have a
+following row; the 494 exceptions are exactly the venue-stated transition
+bridges. 1h/2h/4h/8h cycles all occur (175 of 559 archives hold more than
+one cycle value; 512 transitions in the archive), so a consumer must treat a
+holding window's schedule as a **sequence of constant-cycle regimes**:
+
+- a **shortening** transition (8h→4h) *adds* settlements — the new grid's
+  intermediate boundaries exist and must be charged;
+- a **lengthening** transition (4h→8h) *skips* the intermediate settlement
+  — the old grid's next boundary has no row, and that is the venue's
+  stated behaviour, not a missing row.
+
+`proto/quant/cost_attribution.py` therefore derives the per-regime
+schedule per window (`_settlement_regimes` → `_expected_boundaries`). When
+the schedule cannot be established — a row off its regime's grid, or a
+transition bridge longer than the new cycle (the row that starts the new
+regime is missing) — the window is reported **incomplete** and excluded from
+funding-adjusted metrics, never estimated and never silently undercounted.
+A row missing *inside* a regime is a gap the observation archive may still
+attribute.
+
 Contract (mirrors `proto/funding.py`): append-only, sorted on read,
 deduped by `settle_ts` (re-fetching records nothing; same-ts conflict
 keeps the first row and counts it), never rewritten. Malformed rows

@@ -1,0 +1,46 @@
+{
+ "dev": {
+  "crossing_windows": 219,
+  "attributed": 219,
+  "excluded": {},
+  "by_kind": {
+   "4h->1h": 108,
+   "1h->4h": 76,
+   "8h->1h": 23,
+   "1h->8h": 1,
+   "4h->2h": 1,
+   "2h->4h": 10
+  },
+  "attributed_by_kind": {
+   "4h->1h": 108,
+   "1h->4h": 76,
+   "8h->1h": 23,
+   "1h->8h": 1,
+   "4h->2h": 1,
+   "2h->4h": 10
+  }
+ },
+ "val": {
+  "crossing_windows": 99,
+  "attributed": 99,
+  "excluded": {},
+  "by_kind": {
+   "4h->1h": 39,
+   "1h->4h": 38,
+   "4h->2h": 3,
+   "2h->4h": 5,
+   "2h->1h": 1,
+   "8h->1h": 8,
+   "1h->8h": 5
+  },
+  "attributed_by_kind": {
+   "4h->1h": 39,
+   "1h->4h": 38,
+   "4h->2h": 3,
+   "2h->4h": 5,
+   "2h->1h": 1,
+   "8h->1h": 8,
+   "1h->8h": 5
+  }
+ }
+}

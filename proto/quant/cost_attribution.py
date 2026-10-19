@@ -33,6 +33,27 @@ Design rules (reused from WS4 archives, proposal §3.1/§4):
       grid apply. If a settlement archive exists but does not carry enough
       information to infer the grid, the window is INCOMPLETE — epoch
       alignment is never assumed in place of the venue grid.
+  * CYCLE TRANSITIONS: MEXC reports a per-row ``collectCycle`` — the
+    funding interval in force FROM that settlement onwards (verified
+    against the archive: the gap to the next row equals the current row's
+    cycle in 1,365,207 of the 1,365,701 rows that have a following row;
+    the 494 exceptions are exactly the venue-stated transition bridges).
+    A coin's cycle does change (1h/2h/4h/8h all occur), so the schedule of
+    a holding window is a SEQUENCE of constant-cycle REGIMES, not one grid:
+      - a LENGTHENING transition (4h -> 8h) skips the intermediate
+        settlement: the old grid's next boundary has no row, and that is
+        the venue's stated behaviour, not a missing row;
+      - a SHORTENING transition (8h -> 4h) ADDS settlements: the new
+        grid's intermediate boundaries must be charged, or funding is
+        silently undercounted.
+    Each regime therefore contributes its own grid, restricted to the rows
+    that regime actually covers, and the regimes are joined at the
+    venue-stated transition. When the schedule across a transition cannot
+    be established (a row off its regime's grid, or a transition bridge
+    longer than the new cycle, i.e. the row that starts the new regime is
+    missing) the window is INCOMPLETE — a settlement is never silently
+    omitted. A row missing INSIDE a regime is a gap the observation
+    fallback may still attribute.
   * INCOMPLETE, not estimated: if ANY funding event inside the holding
     window cannot be attributed (a venue settlement row is missing, no
     snapshot covers a boundary's cycle, or a settlement archive cannot
@@ -53,7 +74,7 @@ starts the service, and never changes emission modes.
 """
 import json
 import math
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -91,9 +112,14 @@ class FundingCostResult:
         boundary's cycle, or the venue grid cannot be inferred). The cost
         is excluded, not estimated.
     reason: str | None -- machine-readable cause of incompleteness:
-        "settlement-boundaries-missing", "observation-coverage-gap",
-        "venue-grid-unknown" (a settlement archive exists but cannot
-        yield the phase/cycle grid), or several joined by "+".
+        "settlement-boundaries-missing" (a venue settlement row is
+        missing for an expected boundary), "observation-coverage-gap"
+        (no snapshot covers a boundary's cycle), "venue-grid-unknown"
+        (a settlement archive exists but cannot yield the phase/cycle
+        grid), "settlement-schedule-unverifiable" (the venue's schedule
+        cannot be established: a missing or irregular settlement row
+        inside a cycle regime, or a transition whose bridge is longer
+        than the new cycle), or several joined by "+".
     """
     cost: Optional[float]
     observations: int
@@ -164,114 +190,175 @@ def _grid_boundaries(lo: int, hi: int, phase: int,
 
 _MAX_CYCLE_S = 8 * 3600      # longest documented venue funding cycle
 
+# Rows within this margin of the window are kept as context, so a cycle
+# transition just before or just after the window is still visible.
+_REGIME_MARGIN_S = 2 * _MAX_CYCLE_S
 
-def _settlement_grid(settle_rows: List[Tuple[int, float, Optional[float]]],
-                     open_ts: Optional[int] = None,
-                     close_ts: Optional[int] = None) -> Optional[Tuple[int, int]]:
-    """The venue's own settle grid ``(phase, cycle)`` for a holding window.
 
-    phase: ``settle_ts % cycle`` -- venue rows sit ON the grid, so any row
-        reveals the phase (which need not be epoch-aligned).
-    cycle: the venue-reported ``cycle_hours`` in force at the window.
+@dataclass(frozen=True)
+class _Regime:
+    """One constant-cycle stretch of venue settlements.
 
-    A coin's funding cycle and phase can change over its history (1h/4h/8h
-    transitions are observed in the archive).  Inferring the grid from the
-    WHOLE archive's modal cycle and the OLDEST row's phase therefore marks
-    perfectly covered windows as incomplete -- and can silently undercharge
-    when the old cycle is a divisor of the new one.  When ``open_ts`` and
-    ``close_ts`` are supplied, infer the grid from rows around the window:
-    the anchor is the first row inside the window (else the last row before
-    it, else the first row after it), and the anchor row's own reported
-    cycle is preferred, falling back to the local mode.
+    phase: boundary phase (``settle_ts % cycle``) of this regime.
+    cycle: settlement interval in seconds.
+    first_ts: first venue settlement row of the regime.
+    last_ts: last venue settlement row of the regime.
+    """
+    phase: int
+    cycle: int
+    first_ts: int
+    last_ts: int
 
-    ``open_ts=close_ts=None`` keeps the historical whole-archive behaviour
-    for callers that only have a grid to infer and no window.
 
-    Returns ``None`` when the archive does not carry enough information to
-    infer the grid. Callers must NOT substitute an epoch-aligned assumption
-    for that case: an uninferable venue grid makes the window incomplete.
+def _settlement_regimes(settle_rows: List[Tuple[int, float, Optional[float]]],
+                        open_ts: int, close_ts: int):
+    """Group the venue's settlement rows around a window into regimes.
+
+    ``settle_rows`` must be sorted by ``settle_ts`` (the archive reader
+    sorts on read).  Rows within ``_REGIME_MARGIN_S`` of the window are
+    the context; consecutive rows carrying the same ``cycle_hours`` form
+    one regime.
+
+    Establishability (the schedule must be provable, never assumed):
+      * every row of a regime must sit on that regime's grid, and the grid
+        must be a single phase/cycle (an off-grid row means the venue
+        schedule here is not a simple cycle);
+      * at a transition the bridge (last old row -> first new row) must be
+        no longer than the NEW cycle — a longer bridge means the row that
+        starts the new regime is missing, so the new grid's phase cannot
+        be trusted. A shorter bridge is the venue's stated behaviour (a
+        lengthening transition skips the intermediate settlement; a
+        shortening transition starts the new grid early).
+
+    A settlement row missing INSIDE a regime does not make the schedule
+    unknown: the grid still demands that boundary, so the settlement path
+    reports a gap and the observation fallback may attribute it. Only an
+    unprovable schedule (above) is reported as unverifiable.
+
+    Returns ``(regimes, reason)``.  ``regimes`` is None when the schedule
+    cannot be established; ``reason`` is then one of
+    "venue-grid-unknown" (no rows near the window, or a row without a
+    usable cycle) or "settlement-schedule-unverifiable".
     """
     if not settle_rows:
-        return None
-    rows = sorted(settle_rows)
-    if open_ts is None or close_ts is None:
-        local = rows
-        anchor = rows[0]
-    else:
-        lo = open_ts - _MAX_CYCLE_S
-        hi = close_ts + _MAX_CYCLE_S
-        local = [r for r in rows if lo <= r[0] <= hi]
-        if not local:
-            # No venue rows near the window: the grid in force is unknown.
-            return None
-        inwin = [r for r in local if open_ts <= r[0] <= close_ts]
-        if inwin:
-            anchor = inwin[0]
-        else:
-            before = [r for r in local if r[0] <= open_ts]
-            anchor = before[-1] if before else local[0]
+        return None, "venue-grid-unknown"
+    tss = [r[0] for r in settle_rows]
+    lo = bisect_left(tss, open_ts - _REGIME_MARGIN_S)
+    hi = bisect_right(tss, close_ts + _REGIME_MARGIN_S)
+    ctx = settle_rows[lo:hi]
+    if not ctx:
+        return None, "venue-grid-unknown"
 
-    cycles = [c for _, _, c in local if c and c > 0]
-    if not cycles:
-        return None
-    anchor_cycle = anchor[2]
-    if anchor_cycle and anchor_cycle > 0:
-        cycle = int(round(anchor_cycle)) * 3600
-    else:
-        cycle = int(round(max(set(cycles), key=cycles.count))) * 3600
-    if cycle <= 0:
-        return None
-    return anchor[0] % cycle, cycle
+    groups = []                       # [(cycle_seconds, [rows])]
+    for r in ctx:
+        c = r[2]
+        if not c or int(c) <= 0:
+            return None, "venue-grid-unknown"
+        cs = int(c) * 3600
+        if groups and groups[-1][0] == cs:
+            groups[-1][1].append(r)
+        else:
+            groups.append((cs, [r]))
+
+    for cs, rs in groups:
+        phase = rs[0][0] % cs
+        for r in rs:
+            if r[0] % cs != phase:
+                # a row off this regime's grid: the venue schedule here is
+                # not a single cycle, so it cannot be established
+                return None, "settlement-schedule-unverifiable"
+    for (_c1, rs1), (c2, rs2) in zip(groups, groups[1:]):
+        if rs2[0][0] - rs1[-1][0] > c2:
+            # the venue-stated cycle change cannot explain the bridge: the
+            # row that starts the new regime is missing, so the new grid's
+            # phase cannot be trusted
+            return None, "settlement-schedule-unverifiable"
+
+    regimes = [_Regime(phase=rs[0][0] % cs, cycle=cs,
+                       first_ts=rs[0][0], last_ts=rs[-1][0])
+               for cs, rs in groups]
+    return regimes, None
+
+
+def _expected_boundaries(regimes: List[_Regime], open_ts: int,
+                         close_ts: int) -> List[Tuple[int, int]]:
+    """Funding boundaries the venue must have settled inside the window.
+
+    Each regime contributes its OWN grid, restricted to the rows that
+    regime covers: a lengthening transition's skipped boundary is never
+    demanded, and a shortening transition's extra boundaries are always
+    demanded (so funding is never silently undercounted).  The first
+    regime's grid is additionally required BEFORE its first row and the
+    last regime's grid AFTER its last row: that is how an archive that
+    does not cover the whole window is detected instead of silently
+    undercounting its tail.
+
+    Returns a list of ``(ts, cycle)`` sorted by ts; ``cycle`` is the
+    interval of the regime that owns the boundary (the observation
+    fallback needs it to pick the snapshot window).
+    """
+    out = {}
+    last_idx = len(regimes) - 1
+    for i, reg in enumerate(regimes):
+        for b in _grid_boundaries(reg.first_ts - 1, reg.last_ts + 1,
+                                  reg.phase, reg.cycle):
+            out[b] = reg.cycle
+        if i == 0:
+            for b in _grid_boundaries(open_ts - 1, reg.first_ts,
+                                      reg.phase, reg.cycle):
+                out[b] = reg.cycle
+        if i == last_idx:
+            for b in _grid_boundaries(reg.last_ts, close_ts,
+                                      reg.phase, reg.cycle):
+                out[b] = reg.cycle
+    return [(b, out[b]) for b in sorted(out) if open_ts < b < close_ts]
 
 
 def _settlement_attribution(settle_rows, open_ts, close_ts, side,
-                            phase, cycle):
+                            bounds):
     """Cost from venue-reported settlements over ``(open_ts, close_ts)``.
 
-    The venue's own settle timestamps define both the funding events and
-    the grid (phase/cycle supplied by ``_settlement_grid``).  EVERY
-    expected boundary inside the window must have a venue-reported row
-    (within BOUNDARY_TOL_S); if any row is missing the window is a GAP --
-    the caller reports it as incomplete instead of silently undercounting.
+    ``bounds`` is the expected-boundary list from ``_expected_boundaries``
+    (one entry per funding event the venue must have settled inside the
+    window, across every cycle regime the window spans).  EVERY expected
+    boundary must have a venue-reported row (within BOUNDARY_TOL_S); if
+    any row is missing the window is a GAP -- the caller reports it as
+    incomplete instead of silently undercounting.
 
     Returns (cost, n_events, gap) with cost/n_events None on a gap.
     """
-    tss = [t for t, _, _ in settle_rows]
-    expected = _grid_boundaries(open_ts, close_ts, phase, cycle)
-    if not expected:
+    if not bounds:
         return 0.0, 0, False
+    tss = [t for t, _, _ in settle_rows]
     total = 0.0
-    j = 0
-    for b in expected:
-        # advance to the first row at/after b - tol
-        while j < len(tss) and tss[j] < b - BOUNDARY_TOL_S:
-            j += 1
-        if j >= len(tss) or abs(tss[j] - b) > BOUNDARY_TOL_S:
+    for b, _cycle in bounds:
+        j = bisect_left(tss, b - BOUNDARY_TOL_S)
+        if j >= len(tss) or tss[j] > b + BOUNDARY_TOL_S:
             return None, None, True     # venue settlement row missing
         total += settle_rows[j][1] * side
-    return total, len(expected), False
+    return total, len(bounds), False
 
 
-def _observation_attribution(obs_rows, open_ts, close_ts, side,
-                             cycle=SETTLE_SECONDS, phase=0):
+def _observation_attribution(obs_rows, open_ts, close_ts, side, bounds):
     """Cost from observation snapshots via the documented funding-event
     mapping (see module docstring): the boundary ``b`` takes the LAST
     snapshot in ``[b - cycle, b)``; each boundary is charged at most
     once; a boundary with no covering snapshot makes the window a gap.
 
-    ``phase``/``cycle`` are the venue grid: when the coin has a settlement
-    archive, the caller passes the grid inferred from it so snapshots map
-    to the SAME boundaries the venue settles on. Only when the coin has no
-    settlement archive at all does the epoch-aligned default apply.
+    ``bounds`` is the expected-boundary list from
+    ``_expected_boundaries``; the ``cycle`` attached to each boundary is
+    the interval of the regime that owns it, so a window that spans a
+    cycle transition maps each side of the transition to its own snapshot
+    window.  Only when the coin has no settlement archive at all does the
+    epoch-aligned default grid apply (see ``funding_cost``).
 
     Returns (cost, n_events, gap) with cost/n_events None on a gap.
     """
-    tss = [t for t, _ in obs_rows]
-    expected = _grid_boundaries(open_ts, close_ts, phase, cycle)
-    if not expected:
+    if not bounds:
         return 0.0, 0, False
+    tss = [t for t, _ in obs_rows]
     total = 0.0
-    for b in expected:
+    for b, cycle in bounds:
         # last snapshot in [b - cycle, b): first ts >= b-cycle, then the
         # one before the first ts >= b.
         lo = bisect_left(tss, b - cycle)
@@ -279,7 +366,7 @@ def _observation_attribution(obs_rows, open_ts, close_ts, side,
         if hi <= lo:
             return None, None, True     # no snapshot covers this cycle
         total += obs_rows[hi - 1][1] * side
-    return total, len(expected), False
+    return total, len(bounds), False
 
 
 def funding_cost(
@@ -302,16 +389,17 @@ def funding_cost(
     Source discipline:
       * Venue-reported settlements first: when the coin's settlement
         archive covers every funding event in the window, the settled
-        rates are used as-is; its rows also define the venue's settle grid
-        (phase/cycle).
+        rates are used as-is; its rows also define the venue's settle
+        schedule (one constant-cycle regime per stretch of rows, so a
+        cycle transition inside the window is charged on both sides).
       * Otherwise the observation archive is consulted through the
         documented snapshot -> funding-event mapping (last snapshot of
         each boundary's cycle, each boundary charged once). The mapping
-        uses the venue grid inferred from the settlement archive; only a
+        uses the venue schedule inferred from the settlement archive; only a
         coin with NO settlement archive at all uses the epoch-aligned grid.
       * When neither source can attribute EVERY funding event in the
-        window (including a settlement archive whose grid cannot be
-        inferred), the result is ``incomplete=True, cost=None``: excluded
+        window (including a settlement archive whose schedule cannot be
+        established), the result is ``incomplete=True, cost=None``: excluded
         and counted by the harness, never estimated.
 
     ``close_bar_ts`` should be the event's ACTUAL exit timestamp (TP/SL
@@ -335,52 +423,50 @@ def funding_cost(
 
     reasons = []
 
-    # The venue's own grid (phase/cycle) from its settlement archive, when
-    # present. It is used for BOTH source disciplines: the settlement
-    # coverage check AND the observation fallback, so a gap-period fallback
-    # maps snapshots to the same boundaries the venue actually settles on
-    # (which may be off-epoch). None => the venue grid cannot be inferred.
-    grid = _settlement_grid(settles, open_bar_ts, close_bar_ts) if settles else None
-
-    # Venue-reported settlements first (settled facts, no mapping).
+    # The venue's own schedule for this window: a SEQUENCE of constant-cycle
+    # regimes inferred from the settlement archive rows around the window.
+    # It is used for BOTH source disciplines (the settlement coverage check
+    # AND the observation fallback), so a fallback maps snapshots to the
+    # same boundaries the venue actually settles on -- including across a
+    # cycle transition.  None => the schedule cannot be established.
+    regimes = None
     if settles:
-        if grid is None:
-            # Settlements exist but report no usable cycle: we cannot even
-            # check coverage. Never assume an epoch-aligned grid.
-            reasons.append("venue-grid-unknown")
-        else:
-            cost, n, gap = _settlement_attribution(
-                settles, open_bar_ts, close_bar_ts, side, *grid)
-            if not gap:
-                return FundingCostResult(
-                    cost=cost, observations=n, missing=False,
-                    source="settlement")
-            reasons.append("settlement-boundaries-missing")
+        regimes, reason = _settlement_regimes(settles, open_bar_ts,
+                                               close_bar_ts)
+        if regimes is None:
+            reasons.append(reason)
 
-    # Observation-only fallback: snapshot -> funding-event mapping.
-    if obs:
-        if settles:
-            # Use the venue grid inferred above; if it is unknown, do NOT
-            # fall back to epoch alignment -- that would map snapshots to
-            # boundaries the venue never settles on.
-            obs_grid = grid
-        else:
-            # No settlement archive for this coin: the documented
-            # epoch-aligned assumption is the only available grid.
-            obs_grid = (0, SETTLE_SECONDS)
-        if obs_grid is None:
-            if "venue-grid-unknown" not in reasons:
-                reasons.append("venue-grid-unknown")
-        else:
-            phase, cycle = obs_grid
+    if regimes is not None:
+        bounds = _expected_boundaries(regimes, open_bar_ts, close_bar_ts)
+        # Venue-reported settlements first (settled facts, no mapping).
+        cost, n, gap = _settlement_attribution(
+            settles, open_bar_ts, close_bar_ts, side, bounds)
+        if not gap:
+            return FundingCostResult(
+                cost=cost, observations=n, missing=False,
+                source="settlement")
+        reasons.append("settlement-boundaries-missing")
+        # Observation-only fallback against the SAME venue schedule.
+        if obs:
             cost, n, gap = _observation_attribution(
-                obs, open_bar_ts, close_bar_ts, side,
-                cycle=cycle, phase=phase)
+                obs, open_bar_ts, close_bar_ts, side, bounds)
             if not gap:
                 return FundingCostResult(
                     cost=cost, observations=n, missing=False,
                     source="observation")
             reasons.append("observation-coverage-gap")
+    elif obs and not settles:
+        # No settlement archive for this coin: the documented epoch-aligned
+        # assumption is the only available grid.
+        bounds = [(b, SETTLE_SECONDS) for b in _grid_boundaries(
+            open_bar_ts, close_bar_ts, 0, SETTLE_SECONDS)]
+        cost, n, gap = _observation_attribution(
+            obs, open_bar_ts, close_bar_ts, side, bounds)
+        if not gap:
+            return FundingCostResult(
+                cost=cost, observations=n, missing=False,
+                source="observation")
+        reasons.append("observation-coverage-gap")
 
     # Data exists for the coin but at least one funding event in the
     # window could not be attributed: incomplete, excluded not estimated.

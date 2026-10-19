@@ -1,10 +1,10 @@
 # ALT RADAR Quant Roadmap — Progress and Final Report
 
 **Date:** 2026-10-18 — **updated 2026-10-19** (dev-only investigation of the
-all-negative WS5 result; three independent audits; four pipeline and four
-funding-attribution fixes with regression tests and corrected
-funding-adjusted numbers; per-coin settlement manifest; selected-strategy
-identity; evidence files preserved)
+all-negative WS5 result; three independent audits; four pipeline and five
+funding-attribution fixes with regression tests, including a
+transition-aware settlement schedule; corrected funding-adjusted numbers;
+the gross-outcome SPA labelled exploratory; evidence files preserved)
 **Plan:** `docs/superpowers/plans/2026-10-18-quant-roadmap-completion.md` (local, gitignored)
 **Role:** implementation lead. Research-only / SHADOW; service untouched.
 
@@ -165,16 +165,21 @@ Span = (last − first)/86400 over **unique sorted** timestamps.
   post-fix dev/val recompute is identical; the union-span fix moves the
   holdout end by minutes only.
 - **Funding-attribution fixes from the 2026-10-19 cost/split audit** — TDD
-  with `tests/test_quant_funding_regressions.py` (RED→GREEN, 4 cases):
-  `cost_attribution._settlement_grid` now infers the cycle/phase from rows
-  around the holding window (preferring the anchor row's own reported
-  cycle), not the whole archive's mode/oldest row; `eval_harness.
-  _event_exit_ts` timestamps a TIME exit at the final bar's close
-  (`horizon+1` bars) while keeping TP/SL at the exit bar's open;
-  `funding_adjusted_config` returns the matched friction-only mean and
-  `funding_delta`; `check_no_leakage` uses the true 289-bar span. The
-  friction-only selection is unchanged; corrected funding-adjusted dev/val
-  means are −0.01632 / −0.01727 (funding is a small cost, not a credit).
+  with `tests/test_quant_funding_regressions.py` (RED→GREEN, 5 groups):
+  `cost_attribution` now infers the venue's schedule per holding window as
+  a **sequence of constant-cycle regimes** (`_settlement_regimes` +
+  `_expected_boundaries`) instead of one grid, so a shortening transition
+  (8h→4h) charges its intermediate settlements, a lengthening transition
+  (4h→8h) does not demand the settlement the venue skipped, and a schedule
+  that cannot be established (a row off its regime's grid, or a transition
+  bridge longer than the new cycle) is reported **incomplete** rather than
+  silently omitting a settlement; `eval_harness._event_exit_ts` timestamps
+  a TIME exit at the final bar's close (`horizon+1` bars) while keeping
+  TP/SL at the exit bar's open; `funding_adjusted_config` returns the
+  matched friction-only mean and `funding_delta`; `check_no_leakage` uses
+  the true 289-bar span. The friction-only selection is unchanged;
+  corrected funding-adjusted dev/val means are −0.01585 / −0.01745 with
+  coverage 0.9995 / 0.9974 (funding is a small cost, not a credit).
 
 ## 4. WS5 evaluation (holdout SEALED)
 
@@ -193,15 +198,16 @@ python3 -m proto.quant evaluate --data data/bars --funding-dir data/funding \
 |---|---:|---:|---:|---:|---|---:|
 | dev (friction-only) | 24,749 | 55 | 375 | −0.01542 | [−0.04171, +0.01424] | −1.062 |
 | val (friction-only) | 6,495 | 14 | 248 | −0.01661 | [−0.04676, +0.01742] | −1.013 |
-| dev (funding-adjusted, corrected) | 24,663 | 55 | 371 | −0.01632 | [−0.04234, +0.01295] | −1.122 |
-| val (funding-adjusted, corrected) | 6,440 | 14 | 246 | −0.01727 | [−0.04810, +0.01708] | −1.037 |
+| dev (funding-adjusted, corrected) | 24,736 | 55 | 371 | −0.01585 | [−0.04191, +0.01339] | −1.092 |
+| val (funding-adjusted, corrected) | 6,478 | 14 | 246 | −0.01745 | [−0.04736, +0.01666] | −1.064 |
 
-The funding-adjusted rows were **corrected on 2026-10-19** after the
-cost/split audit (window-local settlement grid; TIME exit at the final
-bar's close; matched denominators). The preserved `evaluation.json`
-predates that fix and records the old pre-fix values
-(dev 24,311, −0.01485; val 6,374, −0.01633); the corrected recompute is
-`funding-fixed.json` (§11). The friction-only rows are unchanged.
+The funding-adjusted rows were **corrected on 2026-10-19** in two rounds
+after the cost/split audit: the settlement grid is now inferred per holding
+window and per cycle regime (§4), and the funding effect is reported on the
+**matched** event set. The preserved `evaluation.json` predates both and
+records the pre-fix values (dev 24,311, −0.01485; val 6,374, −0.01633); the
+corrected recompute is `funding-transitions.json` (§11). The friction-only
+rows are unchanged.
 
 ### The strategy these numbers describe
 
@@ -227,11 +233,12 @@ evaluated. That gap is fixed in `4419f49`, and the canonical run's
   validation even enters.
 
 - **Denominators reconcile** exactly (friction-only = funding-adj + excluded):
-  dev 24,663 + 5 (missing coin) + 81 (incomplete) = **24,749**;
-  val 6,440 + 0 + 55 = **6,495**. Corrected funding coverage 0.9965 / 0.9915
-  (was 0.9823 / 0.9814 before the 2026-10-19 audit-B grid fix).
+  dev 24,736 + 5 (missing coin) + 8 (incomplete) = **24,749**;
+  val 6,478 + 0 + 17 = **6,495**. Corrected funding coverage 0.9995 / 0.9974
+  (was 0.9823 / 0.9814 before the 2026-10-19 audit-B grid fix, and
+  0.9965 / 0.9915 after its first correction round).
   `missing_cost_coins = [1000BTT, RON, ZBCN]`; `leakage_violations = []`;
-  incomplete-boundary 136 / 31,244 events (was 554 under the pre-fix grid);
+  incomplete-boundary 25 / 31,244 events (was 554 under the pre-fix grid);
   digests bars 450 / funding 447 / settlements 443.
 - **In this run every dev/val interval straddles zero and every point
   estimate is negative: it found no evidence of a positive edge.**
@@ -242,7 +249,7 @@ evaluated. That gap is fixed in `4419f49`, and the canonical run's
   robustness across coins or periods. A future snapshot or a different
   universe could differ. Friction-only and funding-adjusted are reported
   **separately** (never merged). On the **matched** event set, funding is a
-  small **cost** (−0.0007R dev, −0.0012R val); the earlier +0.0005R
+  small **cost** (−0.0005R dev, −0.0011R val); the earlier +0.0005R
   "credit" was a different-denominator artefact and is corrected below.
 - **The one-shot holdout stays SEALED:** `holdout`, `holdout_slip2x`,
   `holdout_funding_adjusted`, `holdout_slip2x_funding_adjusted` are all
@@ -351,10 +358,10 @@ The planner's 5 bp/side constant is **2.5×** the 2 bp/side MEXC futures
 taker rate. Even halving slippage does not lift the selected config above
 zero, because its gross edge is only +0.004R.
 
-**A pre-cost signal does exist — at short horizons.** Running the *same*
-day-cluster max-t/SPA procedure on **gross** outcomes (still 288 configs,
-still dev only) rejects the no-edge null: `best_t = +3.7149`, `p = 0.0050`
-(3 of 601 replicates). The best config is
+**EXPLORATORY (post-hoc, not preregistered): a pre-cost signal at short
+horizons.** Running the *same* day-cluster max-t/SPA procedure on **gross**
+outcomes (still 288 configs, still dev only) gives `best_t = +3.7149`,
+`p = 0.0050` (3 of 601 replicates), best config
 `residual_shock[cusum_h=5]/fade`, `T48_ks1.5_R3` (fade the residual shock;
 4-hour horizon):
 
@@ -364,17 +371,26 @@ still dev only) rejects the no-edge null: `best_t = +3.7149`, `p = 0.0050`
 | 95% day-cluster CI | [+0.02464, +0.07928] | — | [−0.10379, −0.03263] |
 | t | +3.71 | — | −3.81 |
 
+**This is an exploratory diagnostic, not a test result.** The multiplicity
+correction covers the 288 pre-declared configurations; it does **not** cover
+the fact that the outcome metric (gross instead of net) and this analysis
+were chosen *after* reviewing the net results. Neither the metric nor the
+analysis was preregistered, so `p = 0.0050` is hypothesis-generating only
+and must not be quoted as evidence of an edge.
+
 n = 9,951 events, 341 coins, 55 days; TP/SL/TIME = 0.02/0.25/0.73.
-It is not a single-cell fluke: gross is positive at **all 36 geometries**
-(+0.0062 … +0.0570), in **5 of 5** sub-periods (+0.0150 … +0.0885), at
-both CUSUM thresholds (h=8: +0.04715, t +1.92), and the *opposite* policy
-is negative (cont: −0.02836, t −1.57). Breadth is 208/341 coins positive;
-the top 10 coins contribute 34.5% of gross P&L and the top 5 days 44.7%.
-But net is negative at **all 36 geometries**, because the edge is only
-**0.435×** the modelled friction at the best cell (0.369× at
-`T48_ks3_R2`; 0.220× at `T288_ks3_R2`). Break-even at the best cell needs
-round-trip friction ≤ ~0.052R, i.e. roughly **15 bp** versus the modelled
-~34 bp for that coin mix — about 56% lower.
+Within this exploratory diagnostic the pattern is not a single-cell fluke:
+gross is positive at **all 36 geometries** (+0.0062 … +0.0570), in **5 of
+5** sub-periods (+0.0150 … +0.0885), at both CUSUM thresholds (h=8:
++0.04715, t +1.92), and the *opposite* policy is negative (cont: −0.02836,
+t −1.57). Breadth is 208/341 coins positive; the top 10 coins contribute
+34.5% of gross P&L and the top 5 days 44.7%. But net is negative at **all
+36 geometries**, because the edge is only **0.435×** the modelled friction
+at the best cell (0.369× at `T48_ks3_R2`; 0.220× at `T288_ks3_R2`).
+Break-even at the best cell requires round-trip friction ≤ ~0.052R, i.e.
+roughly **15 bp** versus the modelled ~34 bp for that coin mix — about 56%
+lower. That threshold is arithmetic, not a demonstrated reachability: no
+execution-cost evidence in this repository supports it (§H1).
 
 **By coin (selected config, dev, friction-only).** 24,749 events across
 375 coins. 140/375 coins have a positive gross mean and 123/375 a positive
@@ -399,26 +415,67 @@ Four of five sub-periods lose net; the one positive window is not
 replicated and does not survive the full-window test.
 
 **Funding-adjusted (separate, reporting only; corrected 2026-10-19).**
-After the audit-B fixes (window-local settlement grid; TIME exit at the
-final bar's close; matched denominators), the selected config's dev mean is
-**−0.01632** (95% CI [−0.04234, +0.01295], t −1.12) on
-**24,663 / 24,749** events (coverage 0.9965; 5 events on coins with no
-funding archive + 81 unattributable holding windows excluded, never
-zero-filled). Val is **−0.01727** ([−0.04810, +0.01708], t −1.04) on
-6,440 / 6,495. On the **matched** event set the friction-only mean is
-−0.01560 (dev) / −0.01609 (val), so funding is a small **cost** of
-**−0.00072R** (dev) and **−0.00118R** (val) — not the +0.00057R credit
+After the audit-B fixes (per-regime settlement schedule, TIME exit at the
+final bar's close, matched denominators), the selected config's dev mean is
+**−0.01585** (95% CI [−0.04191, +0.01339], t −1.09) on
+**24,736 / 24,749** events (coverage 0.9995; 5 events on coins with no
+funding archive + 8 unattributable holding windows excluded, never
+zero-filled). Val is **−0.01745** ([−0.04736, +0.01666], t −1.06) on
+6,478 / 6,495. On the **matched** event set the friction-only mean is
+−0.01533 (dev) / −0.01632 (val), so funding is a small **cost** of
+**−0.00051R** (dev) and **−0.00113R** (val) — not the +0.00057R credit
 obtained by comparing different denominators. At the selected geometry,
-corrected funding-adjusted dev means are −0.0264 (rvol≥4/fade), −0.0163
-(rvol≥4/cont), −0.0191 (h=5/fade), −0.0312 (h=5/cont); by sub-period:
-−0.0276, −0.0360, +0.0584, −0.0456, −0.0261. Same pattern as
+corrected funding-adjusted dev means are −0.0267 (rvol≥4/fade), −0.0159
+(rvol≥4/cont), −0.0194 (h=5/fade), −0.0308 (h=5/cont); by sub-period:
+−0.0270, −0.0361, +0.0581, −0.0443, −0.0257. Same pattern as
 friction-only. The preserved `evaluation.json` predates this fix and still
 records the old 24,311 / −0.01485 (dev) and 6,374 / −0.01633 (val); the
-corrected recompute is `funding-fixed.json` (§11). Note: `cost_hash` covers
-the archive paths and settle constants, **not the attribution code**, so it
-is unchanged by this fix; the corrected numbers are identified by the
-`funding-fixed.json` hash and the commit (`git_rev` is recorded in the
+corrected recompute is `funding-transitions.json` (§11). Note: `cost_hash`
+covers the archive paths and settle constants, **not the attribution code**,
+so it is unchanged by these fixes; the corrected numbers are identified by
+the evidence-file hashes and the commit (`git_rev` is recorded in the
 report).
+
+**Settlement-cycle transitions (2026-10-19, second correction round).**
+MEXC's per-row `collectCycle` is the funding interval in force **from**
+that settlement onwards — verified against the archive, not assumed: the gap
+to the next row equals the current row's cycle in **1,365,207 of the
+1,365,701** rows that have a following row, and the **494** exceptions are
+exactly the venue-stated transition bridges. The cycle does change (1h/2h/4h/8h
+all occur; 175 of 559 settlement archives hold more than one cycle value,
+512 transitions in the archive), so a holding window's schedule is a
+**sequence of constant-cycle regimes**, not one grid:
+
+- a **shortening** transition (8h→4h) *adds* settlements — the new grid's
+  intermediate boundaries must be charged;
+- a **lengthening** transition (4h→8h) *skips* the intermediate settlement
+  — the old grid's next boundary has no row, and that is the venue's
+  stated behaviour, not a missing row.
+
+The previous implementation inferred a single grid per window, which
+silently omitted the intermediate settlements of a shortening transition
+(a window that starts before an 8h→4h change was charged on the 8h grid)
+and falsely excluded windows containing a lengthening transition. The
+attribution now derives the per-regime schedule, and a schedule that
+cannot be established — a row off its regime's grid, or a transition bridge
+longer than the new cycle (i.e. the row that starts the new regime is
+missing) — yields **incomplete**, never a silent omission. A row missing
+*inside* a regime is a gap the observation fallback may still attribute.
+
+**How many real evaluation windows cross a transition?** For the selected
+config's dev window, **219 of 24,749** holding windows cross one
+(4h→1h 108, 1h→4h 76, 8h→1h 23, 2h→4h 10, 1h→8h 1, 4h→2h 1); val is
+**99 of 6,495** (4h→1h 39, 1h→4h 38, 8h→1h 8, 2h→4h 5, 1h→8h 5, 4h→2h 3,
+2h→1h 1). Across all 8 rules × dev+val it is **1,602 of 197,724** windows.
+The affected coins concentrate in a few names (RIF 38, SOPH 36, ONG 32,
+ACE 19, IOST 14, SKR 14 dev windows). **All 219 dev and all 99 val
+transition-crossing windows are attributed** — none is excluded, so the
+per-regime schedule resolves every transition that actually occurs in the
+evaluation windows. (23 of the archive's 512 transitions have a bridge
+longer than the new cycle and are treated as unverifiable; none of them
+falls in dev or val.) The corrected attribution raises dev funding coverage
+from 0.9965 to **0.9995** and val from 0.9915 to **0.9974**, and the
+funding effect stays a small cost on the matched set.
 
 **Independent audits.**
 
@@ -455,19 +512,22 @@ report).
   friction-only SOUND.** The friction cost is applied exactly once per
   path, the units are consistent, the splits do not leak (the corrected
   289-bar bound is still below every embargo), and the selection path uses
-  dev only. The defects were in funding attribution: `_settlement_grid`
-  inferred the cycle from the whole archive's mode and the phase from the
-  **oldest** row, so 14 coins whose cycle changed (1h/4h/8h) and 2 with a
-  poisoned oldest phase were wrongly marked incomplete — 387 of the 433
-  pre-fix dev exclusions — and 6 coins were silently undercharged; the TIME
-  exit was timestamped one bar early; and the funding-adjusted mean was
-  compared with a different-denominator friction-only mean. All four are
-  fixed with `tests/test_quant_funding_regressions.py` (4 cases, RED→GREEN).
-  The corrected dev funding-adjusted mean is **−0.01632** on 24,663 events
-  (was −0.01485 on 24,311), and funding is a **−0.00072R cost** on the
-  matched set. The friction-only headline is **unchanged**: all 288 dev
-  means remain negative, the selected config remains `T288_ks3_R2`, and
-  SPA p remains 1.0.
+  dev only. The defects were in funding attribution: the settlement grid
+  was inferred from the whole archive's mode and the **oldest** row, so 14
+  coins whose cycle changed and 2 with a poisoned oldest phase were
+  wrongly marked incomplete (387 of the 433 pre-fix dev exclusions) and 6
+  coins were silently undercharged; the single-grid inference **silently
+  omitted** the intermediate settlements of a shortening cycle transition
+  and falsely excluded windows containing a lengthening transition; the
+  TIME exit was timestamped one bar early; and the funding-adjusted mean
+  was compared with a different-denominator friction-only mean. All are
+  fixed with `tests/test_quant_funding_regressions.py` (5 groups,
+  RED→GREEN, including 8h→4h, 4h→8h and observation-fallback
+  transition cases). The corrected dev funding-adjusted mean is **−0.01585**
+  on 24,736 events (was −0.01485 on 24,311), and funding is a
+  **−0.00051R cost** on the matched set. The friction-only headline is
+  **unchanged**: all 288 dev means remain negative, the selected config
+  remains `T288_ks3_R2`, and SPA p remains 1.0.
 
 **What this means.** The negative dev means are **friction**, not a
 sign/label/metric defect: gross is centred on zero for the
@@ -476,32 +536,47 @@ matches `cost/(k·σ·√T)` to 0.1%. The pre-declared hypotheses therefore
 show **no promise at the modelled costs**: even the best pre-cost cell
 loses after friction, and the best-of-288 gross edge (+0.0743R) is
 overwhelmed by its geometry's drag (0.195R). One **pre-cost**
-short-horizon reversal signal is real enough to survive the multiplicity
-correction, but it is ~2.3× smaller than friction at the best geometry.
+short-horizon reversal signal is detectable in a **post-hoc, exploratory**
+analysis — the gross-outcome SPA corrects for the 288 configurations but
+not for choosing the gross metric and the analysis after seeing the net
+results — and it is ~2.3× smaller than friction at the best geometry.
 The study is also underpowered relative to the drag: the selected dev mean
 has SE ≈ 0.0145R, so ~0.04R is needed for 80% power, while the drag at
 that geometry is 0.019R; the run cannot resolve an edge of the size that
 would matter.
 
-**Preregistered hypotheses for a later run (not evaluated here).**
+**Candidate hypotheses for preregistration (not evaluated here).** These
+are *candidates to be preregistered*, not findings and not confirmed
+edges: each still needs a preregistration document (fixed rule, geometry,
+outcome metric, cost model and analysis) written **before** any new data
+is looked at.
 
-1. **H1 — short-horizon residual-shock reversal (fade).** `cusum_h=5`
-   (secondary h=8), `T48`, `k_stop` 1.5–3, `r_tp` 2–3. Pre-cost dev
-   +0.052R/trade (t +3.71; SPA p = 0.005), positive across 36/36 geometries
-   and 5/5 sub-periods, with the opposite policy negative. **The viability
-   gate must be frozen in advance:** round-trip friction ≤ ~0.05R at the
-   chosen geometry (≤ ~15 bp), which requires maker/limit execution or a
-   documented ≤2 bp/side fee — not the planner's 5 bp constant.
-   Preregister before touching new data.
-2. **H2 — long-horizon breakout continuation: reject.** Gross is ~0
+1. **H1 — candidate: short-horizon residual-shock reversal (fade).**
+   `cusum_h=5` (secondary h=8), `T48`, `k_stop` 1.5–3, `r_tp` 2–3.
+   Exploratory support only: pre-cost dev +0.052R/trade (t +3.71; gross
+   SPA p = 0.005, post-hoc), positive across 36/36 geometries and 5/5
+   sub-periods, with the opposite policy negative.
+   **The viability gate is arithmetic and is not demonstrated to be
+   reachable.** At the best cell the edge is 0.435× the modelled friction,
+   so break-even requires round-trip friction ≤ ~0.052R (≈15 bp on the
+   modelled cost scale). **We hold no execution-cost evidence that this is
+   achievable:** the 5 bp/side taker constant is the planner's placeholder
+   (the operator's MEXC tier was never provided), slippage is an
+   assumption rather than a measurement, and the repository contains no
+   fills, depth, latency or maker-rebate data for these coins. Before H1 is
+   preregistered, the operator must supply a confirmed fee tier and a
+   measured execution-cost model for the sampled coins; if the achievable
+   round-trip cost is not at or below the break-even threshold, H1 is dead
+   on arrival and must not be promoted.
+2. **H2 — reject: long-horizon breakout continuation.** Gross is ~0
    (dev +0.004R, val −0.0015R) and drag is 0.019R at `T288_ks3_R2`.
-3. **H3 — funding carry: reject as a standalone edge.** On the matched
-   event set funding is a small **cost** (−0.0007R dev, −0.0012R val), not
+3. **H3 — reject: funding carry as a standalone edge.** On the matched
+   event set funding is a small **cost** (−0.0005R dev, −0.0011R val), not
    a return source.
 4. **Do not spend the one-shot holdout on exploration.** It is ~19 days
    and is the only clean sample. It may be used once to confirm a fully
-   specified, preregistered H1 under a frozen cost model; otherwise it
-   stays sealed.
+   specified, preregistered H1 under a frozen, operator-confirmed cost
+   model; otherwise it stays sealed.
 
 No live behavior changed, no production archive was rewritten, and the
 holdout fields remain `null`.
@@ -542,7 +617,10 @@ holdout fields remain `null`.
 | selection-identity cross-check (`run_stage_dev_val` recompute from a cached event set) | matches the harness exactly: rule, geometry, params, `n_configs`, `spa`, `dev`, `val` |
 | post-fix `run_stage_dev_val` recompute | identical to canonical: 288 configs, `spa {best_t: −1.06197, p: 1.0}`, same selection/dev/val |
 | `python3 tests/test_quant_pipeline_regressions.py` | ALL PASS (4 regression groups: run-boundary path, union archive span, CUSUM restart, sparse-day guard) |
-| `python3 tests/test_quant_funding_regressions.py` | ALL PASS (4 regression groups: window-local settle grid, matched funding denominator, TIME-exit close, 289-bar leakage bound) |
+| `python3 tests/test_quant_funding_regressions.py` | ALL PASS (5 regression groups: window-local settle grid, matched funding denominator, TIME-exit close, 289-bar leakage bound, cycle transitions 8h→4h / 4h→8h / observation fallback) |
+| cycle-semantics audit over all 559 settlement archives (read-only) | 1,366,260 rows, 0 without a cycle; the gap to the next row equals the current row's `collectCycle` in 1,365,207 of the 1,365,701 rows that have a following row; the 494 exceptions are the transition bridges; 175 archives hold >1 cycle value; 512 venue-stated transitions; 23 have a bridge longer than the new cycle (unverifiable) |
+| cycle-transition audit over the real evaluation windows (read-only) | 219 of 24,749 dev and 99 of 6,495 val holding windows (selected config) cross a transition; 1,602 of 197,724 across all 8 rules × dev+val; **all 318 crossing windows are attributed** |
+| funding-adjusted recompute after the transition fix (dev-only) | dev −0.01585 on 24,736 events (coverage 0.9995), val −0.01745 on 6,478 (0.9974); funding −0.00051R / −0.00113R on the matched set; evidence §11 |
 | dev-only diagnostics (cached canonical event set) | 288 configs decomposed into gross/drag/net; rule, geometry, coin, sub-period and funding splits; cost sensitivity (§4) |
 | gross-outcome SPA (dev only) | `best_t = +3.7149`, `p = 0.0050`; net-outcome SPA `p = 1.0000` |
 | reversal-signal robustness (dev only) | gross-positive at 36/36 geometries, 5/5 sub-periods, both CUSUM thresholds; net negative at 36/36 |
@@ -593,12 +671,19 @@ holdout fields remain `null`.
   CI-clearing edge. These items are deliberately not forced.
 - **Dev-only follow-up (2026-10-19):** the negative result is friction, not
   a sign/label/metric defect (gross median +0.0012R; selected gross +0.0040
-  dev / −0.0015 val; drag 0.0194R). One pre-cost short-horizon reversal
-  survives multiplicity (gross SPA p = 0.005) but is smaller than friction
-  at every geometry. Nothing is promoted. A later run may preregister H1
-  (fade residual shock, `T48`, `k_stop` 1.5–3, `r_tp` 2–3) **only** with a
-  frozen ≤~15 bp round-trip execution model; do not spend the one-shot
-  holdout on exploration (§4).
+  dev / −0.0015 val; drag 0.0194R). One pre-cost short-horizon reversal is
+  detectable in a **post-hoc, exploratory** gross-outcome SPA (p = 0.005;
+  the metric and analysis were chosen after seeing the net results, so the
+  multiplicity correction does not cover that choice) and it is smaller
+  than friction at every geometry. Nothing is promoted. H1 (fade residual
+  shock, `T48`, `k_stop` 1.5–3, `r_tp` 2–3) is a **candidate for
+  preregistration, not a confirmed edge**: its break-even needs round-trip
+  friction ≤ ~0.052R (≈15 bp) and **no execution-cost evidence in this
+  repository shows that is reachable** (the 5 bp/side taker constant is an
+  unconfirmed placeholder, slippage is assumed rather than measured, and
+  there are no fill/depth/latency data). An operator-confirmed fee tier and
+  a measured execution-cost model must precede any preregistration; do not
+  spend the one-shot holdout on exploration (§4).
 
 ## 10. Deployment / live-verification checklist (restart PENDING owner approval)
 
@@ -628,7 +713,10 @@ claims above can be re-checked without trusting this prose.
 | `post-fix-recompute.json` | `d836b26f412055d37cafc3795e4b070bc1f2df720b5f44f9985cae8e7b153e08` | `run_stage_dev_val` after the four regression fixes — identical to the canonical dev/val result. |
 | `signal-characterization.log` | `d598c2f1430d79e1dfba1a30c65c7316efe4cb45c8ea5db56bcc5dd6ea3b3633` | Console output of the reversal-signal characterization (36 geometries, 5 sub-periods, coin breadth). |
 | `run.log` | `9a21f580260bfd1f9416ef95baece3c79370049db2fef51221bad41b446a9de3` | Console output of the main dev-only diagnostics, including the cost-sensitivity table. |
-| `funding-fixed.json` | `26a82fc801c1068acc5cf8e994f49813f065634062023aa0ac8eb23984f4719a` | Corrected funding-adjusted dev/val (matched denominators) after the audit-B grid/exit fixes; supersedes the funding blocks in `evaluation.json`. |
+| `funding-fixed.json` | `26a82fc801c1068acc5cf8e994f49813f065634062023aa0ac8eb23984f4719a` | First correction round (window-local grid, matched denominators) — **superseded** by `funding-transitions.json`. |
+| `funding-transitions.json` | `622cee87d50964db62ce660335fcd9b41b24146f9d5d120bf54fbba3c20e038e` | **Current** funding-adjusted dev/val (per-regime schedule, matched denominators) plus the cycle-transition audit counts (219 dev / 99 val / 1,602 of 197,724 windows); supersedes the funding blocks in `evaluation.json`. |
+| `cycle-semantics.json` | `3747560b794bcd81eca1229256d15d981b0cd697cbe4084508e7ee7f2274d706` | Read-only audit of all 559 settlement archives: MEXC `collectCycle` semantics (gap-to-next-row vs the current row's cycle), the 512 venue-stated transitions and their bridge shapes. |
+| `transition-attribution.json` | `666af808523084924f0d06552be7f07f0f780e10d11fcd3b2683b5f1b42aebb4` | Per-window outcome for the evaluation windows that cross a cycle transition: 219 dev / 99 val, all attributed (none excluded). |
 
 Both evaluation artifacts keep `holdout`, `holdout_slip2x` and the two
 `holdout*_funding_adjusted` blocks **null** — the one-shot holdout is SEALED.
