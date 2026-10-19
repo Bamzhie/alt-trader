@@ -202,12 +202,13 @@ python3 -m proto.quant evaluate --data data/bars --funding-dir data/funding \
 | val (funding-adjusted, corrected) | 6,478 | 14 | 246 | −0.01745 | [−0.04736, +0.01666] | −1.064 |
 
 The funding-adjusted rows were **corrected on 2026-10-19** in two rounds
-after the cost/split audit: the settlement grid is now inferred per holding
-window and per cycle regime (§4), and the funding effect is reported on the
-**matched** event set. The preserved `evaluation.json` predates both and
-records the pre-fix values (dev 24,311, −0.01485; val 6,374, −0.01633); the
-corrected recompute is `funding-transitions.json` (§11). The friction-only
-rows are unchanged.
+after the cost/split audit: the venue's settlement schedule is now derived
+per holding window as a sequence of cycle regimes (see *Settlement-cycle
+transitions* below), and the funding effect is reported on the **matched**
+event set. The preserved `evaluation.json` predates both and records the
+pre-fix values (dev 24,311, −0.01485; val 6,374, −0.01633); the corrected
+recompute is `funding-transitions.json` (§11). The friction-only rows are
+unchanged.
 
 ### The strategy these numbers describe
 
@@ -648,9 +649,15 @@ holdout fields remain `null`.
   grid, TIME-exit close, matched denominator, 289-bar leakage bound), two
   regression test files, the dev-only diagnostics, and the corrected
   funding-adjusted numbers.
-- A final docs-only commit records this hash, the corrected suite count
-  (81 files), and the evidence links; `origin/main` equals the resulting
-  tip (verified with `git fetch`).
+- `9c9bdcd` fix(quant): make funding attribution cycle-transition aware —
+  the venue's per-regime settlement schedule (8h→4h / 4h→8h), the
+  observation fallback on the same schedule, an unestablishable schedule
+  reported incomplete, the transition audit (219 dev / 99 val crossing
+  windows, all attributed), the recomputed funding-adjusted numbers, and
+  the exploratory labelling of the gross-outcome SPA with H1 downgraded to
+  a candidate for preregistration.
+- A final docs-only commit records this hash and the suite result;
+  `origin/main` equals the resulting tip (verified with `git fetch`).
 - No raw archive was rewritten; `data/` is gitignored and untouched by the
   research runs (output went to a temp `--out` dir).
 
