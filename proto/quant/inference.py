@@ -22,8 +22,13 @@ Three questions this module answers, and nothing else:
      ``baselines`` computes three references on the SAME event set, each
      with its own denominator: the unconditional base rate, the rule
      without any extra feature gate, and a matched placebo (events matched
-     on coin / time-of-day / liquidity but taken from a DIFFERENT date, so
-     the marginal distribution is preserved and the signal is not).
+     on coin / time-of-day / liquidity but taken from a DIFFERENT date).
+     The placebo breaks the TEMPORAL ALIGNMENT of the signal -- it pairs
+     an event with a matched event from another date -- while RETAINING
+     the rule's average edge, because the donors are themselves rule
+     events.  It therefore tests for DATE-SPECIFIC deviations, not for the
+     rule's edge from scratch; a rule whose edge is stable across dates is
+     NOT distinguished from the placebo by it.
 
 Stdlib only.  Measurement only: nothing here promotes a rule, nothing here
 enables ACTIONABLE output and nothing here touches the holdout.
@@ -41,7 +46,6 @@ INFERENCE_VERSION = "inference-v1"
 #: Time-of-day buckets used by the probability estimator and the placebo
 #: matching: six-hour buckets of UTC day time.
 TOD_BUCKET_S = 6 * 3600
-N_TOD_BUCKETS = 4
 
 #: Shrinkage constant of the bucketed rate estimator: a bucket with n_b
 #: observations and h_b hits is shrunk towards the global rate with weight
@@ -153,7 +157,13 @@ def chronological_probability(events, rule, geom, window, *, min_train=30,
                       "cause": cause})
 
     n = len(items)
-    train = []
+    # The first `min_train` events are the TRAINING PREFIX: they are never
+    # predicted, but they are what the FIRST prediction is fitted on.  The
+    # prefix is seeded here (not left empty) -- otherwise the first
+    # prediction would be fitted on nothing and the prefix would be
+    # silently discarded.
+    train = [(it["bucket"], it["y"]) for it in items[:min_train]
+             if it["y"] is not None]
     records = []
     start = min_train
     while start < n:
@@ -187,6 +197,12 @@ def chronological_probability(events, rule, geom, window, *, min_train=30,
 
     bins = []
     if n_outcomes:
+        # Equal-count bucketing, the same split rule as
+        # ``proto.quant.model.bucket_table`` -- but ``bucket_table`` could
+        # NOT be used as-is: it returns (mean_pred, mean_y, n) tuples and
+        # never exposes the realised LABELS, so it cannot report the
+        # per-bucket hit count (n_hit) or the predicted-probability range
+        # (lo/hi) that the calibration table needs.
         ordered = sorted(scored, key=lambda r: r["p"])
         k = min(CAL_BUCKETS, n_outcomes)
         for b in range(k):
@@ -219,8 +235,13 @@ def chronological_probability(events, rule, geom, window, *, min_train=30,
 
     return {
         "version": INFERENCE_VERSION,
-        "n_events": len(sel),
-        "n_usable": n,
+        # Denominator vocabulary is the same as in
+        # competing_outcomes.resolve_competing: n_selected is the
+        # rule-selected, TRADEABLE event set; n_rule_selected is the raw
+        # rule selection; n_untradeable is what the liquidity filter
+        # removed.
+        "n_rule_selected": len(sel),
+        "n_selected": n,
         "n_untradeable": n_untradeable,
         "n_predictions": n_predictions,
         "n_outcomes": n_outcomes,
@@ -310,7 +331,10 @@ def uncertainty(values, days=None, coins=None, *, B=2000, seed=1) -> dict:
     Both intervals are reported separately.  An interval is None (with a
     reason) when its cluster count is below three, and also when the
     bootstrap produced a degenerate zero-width interval -- a zero-width
-    interval is not evidence of certainty.
+    interval is not evidence of certainty.  The matching statistic is
+    suppressed with the interval: a ``t`` that is reported next to a
+    suppressed interval would read as evidence that the interval does not
+    carry.
     """
     n = len(values)
     reasons = []
@@ -335,10 +359,11 @@ def uncertainty(values, days=None, coins=None, *, B=2000, seed=1) -> dict:
         else:
             _m, lo, hi, _D = S.day_cluster_mean(list(values), list(days),
                                                  B=B, seed=seed)
-            out["t_day"] = S.day_cluster_t(list(values), list(days))
             if lo is not None and hi is not None and lo < hi:
                 out["ci_lo_day"], out["ci_hi_day"] = lo, hi
+                out["t_day"] = S.day_cluster_t(list(values), list(days))
             else:
+                # The interval is suppressed -> the statistic goes with it.
                 reasons.append("day-interval-degenerate")
 
     # ---- coin cluster ----
@@ -351,10 +376,11 @@ def uncertainty(values, days=None, coins=None, *, B=2000, seed=1) -> dict:
             reasons.append(f"coin-clusters<{MIN_CLUSTERS}")
         else:
             lo, hi = _coin_bootstrap(list(values), list(coins), B, seed)
-            out["t_coin"] = _coin_t(list(values), list(coins))
             if lo is not None and hi is not None and lo < hi:
                 out["ci_lo_coin"], out["ci_hi_coin"] = lo, hi
+                out["t_coin"] = _coin_t(list(values), list(coins))
             else:
+                # The interval is suppressed -> the statistic goes with it.
                 reasons.append("coin-interval-degenerate")
     return out
 
@@ -401,21 +427,52 @@ def baselines(events, rule, geom, window, *, cfg=DEFAULT, placebos=200,
     3. ``matched_placebo``         ``placebos`` synthetic event sets
                                    matched on (coin, time-of-day bucket,
                                    liquidity tier) but taken from a
-                                   DIFFERENT date, so the marginal
-                                   distribution is preserved and the
-                                   signal is not.
+                                   DIFFERENT date.
 
-    The placebo is a donor resample: the platform's event objects carry
-    pre-computed labels but no bar path, so a synthetic event time cannot
-    be re-labelled here.  Each placebo event therefore takes the label of
-    a MATCHED event from another date (same coin, same time-of-day bucket,
-    same liquidity tier).  The number of same-day fallbacks (no donor on
-    another date) is reported, and the placebo p-value is the fraction of
-    placebo rates at least as extreme as the observed rule rate.
+    **The same event set as the outcome layer.**  The event set is the
+    rule-selected, TRADEABLE events of the window -- exactly the set
+    ``competing_outcomes.resolve_competing`` calls ``n_selected`` (events
+    with no cost model are not trades and are excluded here too, and
+    counted in ``n_untradeable``).  The base rate's own denominator
+    (``n``) is the number of those events whose LABEL could be resolved;
+    the censored ones are counted, not silently dropped.
+
+    **What the placebo does and does not test.**  The placebo is a donor
+    resample: the platform's event objects carry pre-computed labels but
+    no bar path, so a synthetic event time cannot be re-labelled here.
+    Each placebo event therefore takes the label of a MATCHED event from
+    another date (same coin, same time-of-day bucket, same liquidity
+    tier).  The donor pool is itself made of rule events, so the placebo
+    RETAINS the rule's average edge: it breaks the temporal alignment of
+    the signal, and therefore detects DATE-SPECIFIC deviations -- it does
+    NOT test the rule's edge from scratch, and a rule whose edge is
+    stable across dates is not distinguished from the placebo by it.
+    The number of same-day fallbacks (no donor on another date) is
+    reported.
+
+    The placebo p-value is the fraction of placebo rates at least as
+    extreme as the observed rule rate, with the same ``(cnt + 1) / (B + 1)``
+    correction ``stats.spa_max_t`` uses, so it can never be exactly zero.
     """
     lo, hi = window
     sel = R._select(events, rule, lo, hi)
     all_win = [ev for ev in events if lo <= ev.day < hi]
+
+    # Same denominator rule as competing_outcomes.resolve_competing: an
+    # event with no cost model is not a trade, so it is not an event here
+    # either.  It is counted, never silently dropped.
+    def _tradeable(evs):
+        keep = []
+        n_drop = 0
+        for ev in evs:
+            if cfg.cost.round_trip(getattr(ev, "qv24", None)) is None:
+                n_drop += 1
+                continue
+            keep.append(ev)
+        return keep, n_drop
+
+    sel, n_untradeable_sel = _tradeable(sel)
+    all_win, n_untradeable_win = _tradeable(all_win)
 
     sel_causes = [_label_of(ev, rule, geom) for ev in sel]
     win_causes = [_label_of(ev, rule, geom) for ev in all_win]
@@ -425,15 +482,21 @@ def baselines(events, rule, geom, window, *, cfg=DEFAULT, placebos=200,
 
     out = {
         "version": INFERENCE_VERSION,
-        "n_events": len(all_win),
+        "n_window_events": len(all_win),
         "n_selected": len(sel),
+        "n_untradeable": n_untradeable_sel,
+        "n_untradeable_window": n_untradeable_win,
+        "n_labelled": rule_base["n"],
         "unconditional": dict(uncond, denominator=(
-            "all labelled events in the window (no rule, no feature gate)")),
+            "all labelled, tradeable events in the window (no rule, no "
+            "feature gate)")),
         "rule_without_features": dict(rule_base, denominator=(
-            "rule-selected labelled events in the window (no feature gate)")),
+            "rule-selected, tradeable, labelled events in the window (no "
+            "feature gate)")),
         "unconditional_on_rule_events": dict(sel_base, denominator=(
-            "rule-selected labelled events in the window (the rule's own "
-            "selection is the only conditioning in this workstream)")),
+            "rule-selected, tradeable, labelled events in the window (the "
+            "rule's own selection is the only conditioning in this "
+            "workstream)")),
     }
 
     # ---- matched placebo ----
@@ -448,6 +511,7 @@ def baselines(events, rule, geom, window, *, cfg=DEFAULT, placebos=200,
     rates = []
     same_day = 0
     donors_used = 0
+    donors_per_draw = []
     for _ in range(placebos):
         hits = 0
         resolved = 0
@@ -471,11 +535,16 @@ def baselines(events, rule, geom, window, *, cfg=DEFAULT, placebos=200,
                 hits += 1
         if resolved:
             rates.append(hits / resolved)
+            donors_per_draw.append(resolved)
     rates.sort()
     observed = rule_base["rate"]
+    n_extreme = None
     p_value = None
     if rates and observed is not None:
-        p_value = sum(1 for r in rates if r >= observed) / len(rates)
+        n_extreme = sum(1 for r in rates if r >= observed)
+        # (cnt + 1) / (B + 1), the same correction stats.spa_max_t uses:
+        # a bootstrap p-value is never exactly zero.
+        p_value = (n_extreme + 1) / (len(rates) + 1)
     out["matched_placebo"] = {
         "mean": _mean(rates),
         "sd": _sd(rates),
@@ -484,13 +553,21 @@ def baselines(events, rule, geom, window, *, cfg=DEFAULT, placebos=200,
         "min": rates[0] if rates else None,
         "max": rates[-1] if rates else None,
         "n_placebos": len(rates),
-        "n_per_placebo": len(sel),
+        # The true denominator of a placebo draw: the number of DONORS
+        # actually used, not the number of selected events (some events
+        # have no donor in their match cell).
+        "n_per_placebo": _mean(donors_per_draw),
+        "n_per_placebo_min": min(donors_per_draw) if donors_per_draw else None,
+        "n_per_placebo_max": max(donors_per_draw) if donors_per_draw else None,
         "observed": observed,
+        "n_extreme": n_extreme,
         "p_value": p_value,
         "n_same_day_fallback": same_day,
         "n_cross_date_donors": donors_used,
         "denominator": ("labelled placebo events matched on (coin, "
                         "time-of-day bucket, liquidity tier) and taken "
-                        "from a different date"),
+                        "from a different date; the donors keep the rule's "
+                        "average edge, so the placebo detects date-specific "
+                        "deviations, not the rule's edge itself"),
     }
     return out

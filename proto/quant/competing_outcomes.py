@@ -41,6 +41,11 @@ Design rules (inherited, never re-implemented here):
     event).  A friction-only number is never presented as net: the
     friction-only view is available under the explicit key
     ``"friction_net_r"``, and every distribution reports its denominator.
+  * **The static shares are not the only view.**  ``cause_incidence``
+    turns the same taxonomy into the time-to-event view (cumulative
+    incidence by cause, via ``stats.aalen_johansen``): a cause that
+    resolves early and one that resolves late have the same share but a
+    very different incidence curve.
   * **No promotion.**  This module measures; it never promotes a rule,
     never enables ACTIONABLE output and never touches the one-shot
     holdout.
@@ -549,13 +554,27 @@ def outcome_distribution(outcomes, *, key="net_r") -> dict:
 def expected_return(outcomes, key="net_r", days=None, *, B=1500, seed=1) -> dict:
     """Expected return of a set of outcomes with an explicit denominator.
 
-    With ``days`` (a list aligned with ``outcomes``) the interval is the
-    day-cluster bootstrap from ``stats.day_cluster_mean`` and the
-    statistic is ``stats.day_cluster_t``; the reported ``se`` is the
-    matching analytic cluster standard error (mean / t).  Without days (or
-    with fewer than three distinct days) the plain mean is used with the
-    row-level standard error and a normal-approximation interval, and
-    ``cluster`` says which was used.
+    The reported interval follows the SAME rule as the cluster intervals
+    in ``inference.uncertainty``: an interval whose cluster count is
+    below three is None with a reason -- it is never a thin or degenerate
+    interval presented as if it were a cluster interval.
+
+      * ``days`` supplied, aligned and with at least three distinct days:
+        the interval is the day-cluster bootstrap from
+        ``stats.day_cluster_mean``, the statistic is
+        ``stats.day_cluster_t`` and the reported ``se`` is the matching
+        analytic cluster standard error (mean / t).  ``cluster="day"``.
+      * ``days`` supplied, aligned, but fewer than three distinct days:
+        NO interval is reported (``ci_lo``/``ci_hi`` are None) and the
+        reason says why.  The se/t fall back to the row level
+        (``cluster="row"``) and the row-level interval is reported
+        separately as ``row_ci_lo``/``row_ci_hi``.
+      * no day labels (or labels that do not align with the evaluated
+        outcomes): the plain mean with the row-level standard error and
+        its normal-approximation interval; ``cluster="row"``.
+
+    ``row_ci_lo``/``row_ci_hi`` are always present, so the row-level view
+    is never lost when the cluster interval is suppressed.
     """
     values = []
     day_list = []
@@ -569,26 +588,99 @@ def expected_return(outcomes, key="net_r", days=None, *, B=1500, seed=1) -> dict
     if n == 0:
         return {"key": key, "mean": None, "n": 0, "n_missing": len(outcomes),
                 "se": None, "t": None, "ci_lo": None, "ci_hi": None,
-                "cluster": "none", "reason": "no-evaluable-outcomes"}
+                "row_ci_lo": None, "row_ci_hi": None, "cluster": "none",
+                "n_days": 0, "reason": "no-evaluable-outcomes"}
     mean = sum(values) / n
     plain_se = (_sd(values) / math.sqrt(n)) if n > 1 else 0.0
-    use_days = (days is not None and len(day_list) == n
-                and all(d is not None for d in day_list))
-    if use_days:
-        _m, lo, hi, n_days = S.day_cluster_mean(values, day_list, B=B, seed=seed)
-        t = S.day_cluster_t(values, day_list)
-        se = (mean / t) if (t and math.isfinite(t)) else plain_se
-        cluster = "day"
-        reason = (None if n_days >= 3 else
-                  f"only {n_days} distinct days: the day-cluster interval is "
-                  "thin and the analytic se falls back to the row-level one")
+    row_t = (mean / plain_se) if plain_se > 0 else 0.0
+    row_lo, row_hi = mean - 1.96 * plain_se, mean + 1.96 * plain_se
+
+    if days is None:
+        days_supplied = False
+        aligned = False
     else:
-        se = plain_se
-        t = (mean / se) if se > 0 else 0.0
-        lo, hi = mean - 1.96 * se, mean + 1.96 * se
+        days_supplied = True
+        aligned = (len(day_list) == n
+                   and all(d is not None for d in day_list))
+
+    if not days_supplied:
+        se, t, lo, hi = plain_se, row_t, row_lo, row_hi
         cluster = "row"
-        reason = "no day labels supplied"
+        reason = "no day labels supplied: row-level interval"
+    elif not aligned:
+        se, t, lo, hi = plain_se, row_t, row_lo, row_hi
+        cluster = "row"
+        reason = ("day labels do not align with the evaluated outcomes: "
+                  "row-level interval")
+    else:
+        n_days = len(set(day_list))
+        if n_days < 3:
+            # Too few clusters for a day-cluster interval: report none.
+            se, t, lo, hi = plain_se, row_t, None, None
+            cluster = "row"
+            reason = (f"day-cluster interval suppressed: only {n_days} "
+                      "distinct days (< 3); the se/t are row-level and the "
+                      "row-level interval is row_ci_lo..row_ci_hi")
+        else:
+            _m, lo, hi, _D = S.day_cluster_mean(values, day_list, B=B, seed=seed)
+            t = S.day_cluster_t(values, day_list)
+            se = (mean / t) if (t and math.isfinite(t)) else plain_se
+            cluster = "day"
+            reason = (None if t and math.isfinite(t) else
+                      "day-cluster t undefined: the se falls back to the "
+                      "row-level one")
     return {"key": key, "mean": mean, "n": n, "n_missing": len(outcomes) - n,
             "se": se, "t": t, "ci_lo": lo, "ci_hi": hi, "cluster": cluster,
-            "n_days": len(set(day_list)) if use_days else 0,
+            "row_ci_lo": row_lo, "row_ci_hi": row_hi,
+            "n_days": len(set(day_list)) if aligned else 0,
             "reason": reason}
+
+
+# ---------------------------------------------------------------------------
+# cumulative incidence (the time-to-event view of the same taxonomy)
+# ---------------------------------------------------------------------------
+#: Cause codes for ``stats.aalen_johansen`` (0 = right-censored).
+_CAUSE_CODE = {"TP": 1, "SL": 2, "TIME": 3, "INVALIDATED": 4}
+
+#: The causes that can OCCUR (i.e. the competing risks); CENSORED is the
+#: censoring state, not a competing risk.
+INCIDENCE_CAUSES = ("TP", "SL", "TIME", "INVALIDATED")
+
+
+def cause_incidence(outcomes, horizon_bars):
+    """Cumulative incidence by cause -- the time-to-event view.
+
+    The static cause shares say "how often did each cause happen".  The
+    cumulative incidence says "how likely is this cause to have happened
+    BY bar t", which is the right view for competing risks: a cause that
+    resolves early (a stop) and one that resolves late (a time exit) have
+    the same share but a very different incidence curve.
+
+    Built on ``stats.aalen_johansen`` (reused, not re-implemented):
+    TP=1, SL=2, TIME=3, INVALIDATED=4, and 0 = right-censored.  A
+    CENSORED outcome is censored at the horizon, and so is an
+    INVALIDATED outcome with no exit timestamp -- the event time is
+    unknown, and an unknown time is a censoring, not a guess.
+
+    The observed time is the exit bar offset: ``(exit_ts - ts) / BAR_S``
+    minus one bar for a barrier fill (the fill happens at the open of the
+    exit bar) and minus two for a TIME exit (the exit is the CLOSE of the
+    last bar).
+
+    Returns ``{cause: [(bar, F_cause(bar))]}``.
+    """
+    times, causes = [], []
+    for o in outcomes:
+        cause = getattr(o, "cause", None)
+        exit_ts = getattr(o, "exit_ts", None)
+        if cause == "CENSORED" or exit_ts is None:
+            times.append(horizon_bars)
+            causes.append(0)
+            continue
+        extra = 2 if cause == "TIME" else 1
+        off = int((exit_ts - o.ts) // BAR_S) - extra
+        times.append(min(max(off, 0), horizon_bars))
+        causes.append(_CAUSE_CODE.get(cause, 0))
+    inc = S.aalen_johansen(times, causes, len(INCIDENCE_CAUSES), horizon_bars)
+    return {name: inc[code]
+            for code, name in enumerate(INCIDENCE_CAUSES, start=1)}

@@ -305,10 +305,25 @@ check("a friction-only view exists and is never called net",
 er = CO.expected_return(outs, key="gross_log")
 check("expected return without days falls back to the plain mean",
       er["n"] == 4 and abs(er["mean"] - 0.005) < 1e-12
-      and er["cluster"] == "row" and er["ci_lo"] < er["mean"] < er["ci_hi"])
+      and er["cluster"] == "row" and er["ci_lo"] < er["mean"] < er["ci_hi"]
+      and "no day labels" in (er["reason"] or ""), str(er["reason"]))
 er_day = CO.expected_return(outs, key="gross_log", days=[0, 0, 1, 1])
-check("expected return with days uses the day cluster",
-      er_day["cluster"] == "day" and abs(er_day["mean"] - 0.005) < 1e-12)
+check("fewer than 3 day clusters gives NO interval and a reason",
+      er_day["ci_lo"] is None and er_day["ci_hi"] is None
+      and "suppressed" in (er_day["reason"] or "")
+      and "2 distinct days" in (er_day["reason"] or ""), str(er_day["reason"]))
+check("the cluster field is honest about the fallback that was used",
+      er_day["cluster"] == "row", str(er_day["cluster"]))
+check("the row-level interval is still available next to the suppressed one",
+      er_day["row_ci_lo"] < er_day["mean"] < er_day["row_ci_hi"])
+er_day3 = CO.expected_return(outs, key="gross_log", days=[0, 0, 1, 2])
+check("with 3 distinct days the day-cluster interval is reported",
+      er_day3["cluster"] == "day" and er_day3["ci_lo"] is not None
+      and er_day3["ci_hi"] is not None and er_day3["n_days"] == 3)
+er_none = CO.expected_return(outs, key="gross_log", days=[0, 0, None, 1])
+check("day labels that do not align say so (not 'no day labels supplied')",
+      "no day labels supplied" not in (er_none["reason"] or "")
+      and "do not align" in (er_none["reason"] or ""), str(er_none["reason"]))
 
 # --------------------------------------------------------------------------
 print("\n=== 7. chronological probability and calibration ===")
@@ -350,6 +365,23 @@ check("too few training events return empties with a reason",
       and cp_few["slope"] is None and cp_few.get("reason"),
       str(cp_few.get("reason")))
 
+# The first `min_train` events are the TRAINING PREFIX: they are never
+# predicted, but the first prediction is fitted on them.  Probe: 40 events
+# whose first 30 are all hits -> the first prediction must be near 1, not
+# the 0.5 of an empty training set.
+probe = [mk_event(ts=T0 + i * 6 * 3600, kind=0, gross=0.01, offset=2)
+         for i in range(40)]
+pr = INF.chronological_probability(probe, RULE, GEOM, WINDOW, min_train=30,
+                                    step=1)
+check("the first prediction is fitted on the training prefix",
+      pr["records"] and pr["records"][0]["p"] > 0.9,
+      f"first p = {pr['records'][0]['p'] if pr['records'] else None}")
+check("the training prefix is not discarded: n_train covers every event",
+      pr["n_train"] == 40, str(pr["n_train"]))
+check("the prefix itself is never predicted",
+      pr["n_predictions"] == 10 and pr["n_outcomes"] == 10,
+      str((pr["n_predictions"], pr["n_outcomes"])))
+
 # --------------------------------------------------------------------------
 print("\n=== 8. uncertainty: day cluster AND coin cluster ===")
 rng = random.Random(4)
@@ -383,6 +415,20 @@ unc3 = INF.uncertainty([1.0, 2.0, 3.0, 4.0], days=[0, 1, 2, 3],
                         coins=["A", "B", "C", "A"], B=200, seed=1)
 check("with only 3 coins the coin interval is still reported",
       unc3["ci_lo_coin"] is not None and unc3["clusters"]["coin"] == 3)
+unc_flat = INF.uncertainty([1.0] * 8, days=[0, 1, 2, 3, 4, 5, 6, 7],
+                            coins=["A", "B", "C", "A", "A", "B", "C", "A"],
+                            B=200, seed=1)
+check("a degenerate (zero-width) interval is suppressed with a reason",
+      unc_flat["ci_lo_day"] is None and unc_flat["ci_hi_day"] is None
+      and "day-interval-degenerate" in unc_flat["reasons"]
+      and "coin-interval-degenerate" in unc_flat["reasons"],
+      str(unc_flat["reasons"]))
+check("a suppressed interval takes its statistic with it",
+      unc_flat["t_day"] is None and unc_flat["t_coin"] is None, str(unc_flat))
+unc_few = INF.uncertainty([1.0, 2.0, 3.0], days=[0, 0, 1],
+                           coins=["A", "A", "A"], B=200, seed=1)
+check("too few clusters takes the statistic with it as well",
+      unc_few["t_day"] is None and unc_few["t_coin"] is None, str(unc_few))
 
 # --------------------------------------------------------------------------
 print("\n=== 9. baselines on the same event set ===")
@@ -413,6 +459,28 @@ check("the placebo reports the observed value and the extreme fraction",
       b1["matched_placebo"]["observed"] is not None
       and 0.0 <= b1["matched_placebo"]["p_value"] <= 1.0,
       str(b1["matched_placebo"]))
+check("the placebo p-value carries the (cnt+1)/(B+1) correction",
+      abs(b1["matched_placebo"]["p_value"]
+          - (b1["matched_placebo"]["n_extreme"] + 1)
+          / (b1["matched_placebo"]["n_placebos"] + 1)) < 1e-12
+      and b1["matched_placebo"]["p_value"] > 0.0,
+      str(b1["matched_placebo"]))
+check("the placebo denominator is the donors actually used",
+      0 < b1["matched_placebo"]["n_per_placebo"] <= len(b_events)
+      and b1["matched_placebo"]["n_per_placebo_min"] >= 1,
+      str(b1["matched_placebo"]["n_per_placebo"]))
+
+# The baselines and the outcome layer must use the SAME event set: an
+# event with no cost model is not a trade in either of them.
+mixed = list(b_events) + [mk_event(coin="AAA", ts=T0 + 90 * 4 * 3600,
+                                   kind=0, gross=0.01, offset=2, qv24=5e5)]
+b_mixed = INF.baselines(mixed, RULE, GEOM, WINDOW, placebos=20, seed=7)
+r_mixed = CO.resolve_competing(mixed, RULE, GEOM, WINDOW, DEFAULT)
+check("the baselines and the outcome layer use the same event set",
+      b_mixed["n_selected"] == r_mixed["n_selected"]
+      and b_mixed["n_untradeable"] == r_mixed["n_untradeable"]
+      == 1, str((b_mixed["n_selected"], r_mixed["n_selected"],
+                  b_mixed["n_untradeable"], r_mixed["n_untradeable"])))
 
 # --------------------------------------------------------------------------
 print("\n=== 10. family-level multiple testing ===")
@@ -526,6 +594,27 @@ check("a minimal event with a scalar label resolves as TP",
 check("an event without a stored exit offset falls back to the horizon",
       res_min["outcomes"][0].exit_ts == T0 + (48 + 1) * BAR_S,
       str(res_min["outcomes"][0].exit_ts))
+
+# --------------------------------------------------------------------------
+print("\n=== 12. cumulative incidence by cause (stats.aalen_johansen) ===")
+inc_outs = [
+    mk_outcome(cause="TP", ts=T0, gross=0.01),                    # exits at bar 1
+    mk_outcome(cause="SL", ts=T0, gross=-0.01),                   # exits at bar 1
+    mk_outcome(cause="TIME", ts=T0, gross=0.0),                   # exits at the horizon
+    CO.Outcome(event_id="c", coin="AAA", ts=T0, side=1, cause="CENSORED",
+               exit_ts=None, gross_log=None, friction=None, funding=None,
+               net_r=None, dd=None, reason="censored:end-of-sample"),
+]
+inc = CO.cause_incidence(inc_outs, horizon_bars=10)
+check("the incidence reports every competing cause",
+      set(inc) == set(CO.INCIDENCE_CAUSES), str(sorted(inc)))
+check("the incidence at the horizon is the hand calculation",
+      abs(inc["TP"][-1][1] - 0.25) < 1e-9
+      and abs(inc["SL"][-1][1] - 0.25) < 1e-9
+      and abs(inc["TIME"][-1][1] - 0.25) < 1e-9, str(inc))
+check("the censored unit stays at risk (it is censored, not failed)",
+      abs(sum(v[-1][1] for v in inc.values()) - 0.75) < 1e-9,
+      str({k: v[-1][1] for k, v in inc.items()}))
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)
