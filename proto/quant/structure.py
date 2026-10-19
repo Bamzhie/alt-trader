@@ -124,9 +124,10 @@ def confirmed_pivots(bars, left: int = 2, right: int = 2, *,
         excluded, so a flat top is resolved by its LAST bar.
       * Uniqueness is local to the window (see the module docstring).
       * ``leg_bars`` and ``size`` are measured against the previous opposite
-        pivot that is STRICTLY EARLIER; a bar that is both a high and a low
-        pivot does not count as its own predecessor.  With no such pivot they
-        are ``0`` and ``0.0`` (never None).
+        pivot that is STRICTLY EARLIER.  A bar that is both a high and a low
+        pivot does not count as its own predecessor, but the last strictly
+        earlier opposite pivot IS used.  With no such pivot the values are
+        ``0`` and ``0.0`` (never None).
       * The function is pure: it does not know about wall-clock time.  Use
         :func:`pivots_as_of` (or :func:`multi_timeframe`) to ask what was
         knowable at a given instant.
@@ -154,10 +155,14 @@ def confirmed_pivots(bars, left: int = 2, right: int = 2, *,
 
     out = []
     last = {"high": None, "low": None}
+    second = {"high": None, "low": None}
     for i, kind, price in raw:
-        opp = last["low"] if kind == "high" else last["high"]
+        opp_kind = "low" if kind == "high" else "high"
+        opp = last[opp_kind]
         if opp is not None and opp.index >= i:
-            opp = None                  # the same bar is not a PREVIOUS pivot
+            # the same bar is not a PREVIOUS pivot: fall back to the last
+            # STRICTLY EARLIER opposite pivot
+            opp = second[opp_kind]
         if opp is None:
             leg, size = 0, 0.0
         else:
@@ -169,6 +174,10 @@ def confirmed_pivots(bars, left: int = 2, right: int = 2, *,
                    confirmed_ts=ts[i] + (right + 1) * frame_bars * BAR_S,
                    price=price, kind=kind, leg_bars=leg, size=size)
         out.append(pv)
+        # the pivots of one kind come at strictly increasing indices (a bar
+        # yields at most one high and one low), so `second` always holds the
+        # previous, strictly earlier, pivot of that kind
+        second[kind] = last[kind]
         last[kind] = pv
     return out
 

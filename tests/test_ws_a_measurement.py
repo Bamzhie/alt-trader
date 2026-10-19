@@ -239,6 +239,21 @@ lowp = [p for p in both if p.kind == "low"][0]
 check("the previous opposite pivot is strictly earlier (the same bar is skipped)",
       lowp.leg_bars == 0 and lowp.size == 0.0, f"{lowp.leg_bars} {lowp.size}")
 
+# a bar that is both a high and a low pivot, WITH an earlier opposite pivot:
+# the leg must be measured against the last STRICTLY EARLIER one
+mix = ST.confirmed_pivots(bars_from_hl([10.0, 12.0, 14.0, 12.0, 13.0, 11.0],
+                                      [5.0, 3.0, 4.0, 5.0, 2.0, 3.0]),
+                          left=1, right=1)
+mix_low = [p for p in mix if p.index == 4 and p.kind == "low"]
+check("a bar that is both a high and a low pivot is found",
+      len(mix_low) == 1 and [p.index for p in mix if p.kind == "high"] == [2, 4],
+      str([(p.index, p.kind) for p in mix]))
+check("the leg uses the last STRICTLY EARLIER opposite pivot",
+      mix_low and mix_low[0].leg_bars == 2
+      and abs(mix_low[0].size - abs(math.log(2.0 / 14.0))) < 1e-9,
+      f"{mix_low[0].leg_bars if mix_low else None} "
+      f"{mix_low[0].size if mix_low else None}")
+
 # a 5-tuple bar is accepted (volume and amount default to 0.0)
 tuples5 = [(b["ts"], b["o"], b["h"], b["l"], b["c"]) for b in make_bars(24, seed=9)]
 try:
@@ -304,8 +319,16 @@ check("hurst_generalized is a HURST exponent: white noise is near 0.5",
 check("hurst_generalized differs from the DFA structure exponent",
       abs(hg.value - ES.mfdfa(rw).value) > 0.2,
       f"{hg.value} vs {ES.mfdfa(rw).value}")
-check("hurst_generalized stays inside the Hurst range [0, 1]",
+check("hurst_generalized stays inside the Hurst range on the synthetic series",
       0.0 <= hg.value <= 1.0 and 0.0 <= hg_wn.value <= 1.0)
+ramp = [float(i) for i in range(N)]
+h_ramp = ES.hurst_generalized(ramp)
+print(f"  hurst_generalized deterministic ramp = {h_ramp.value:.4f}")
+check("a deterministic ramp gives a Hurst exponent near 1.0",
+      h_ramp.value is not None and abs(h_ramp.value - 1.0) <= 0.15,
+      str(h_ramp.value))
+check("the Hurst exponent is NOT silently clamped into [0, 1]",
+      h_ramp.value is not None and h_ramp.value > 1.0, str(h_ramp.value))
 
 print("\n=== estimators: MF-DFA ===")
 mono = white_noise_series(N)
@@ -343,6 +366,17 @@ check("an invalid q range is refused with a reason",
 check("an invalid q range never raises",
       ES.mfdfa(mono, q_range=(-1.0, 1.0)).value is None
       and ES.mfdfa(mono, q_range=(-1.0, 1.0)).reason is not None)
+for broken in (None, "x", (1.0,), (2.0, 1.0)):
+    try:
+        est_broken = ES.mfdfa(mono, q_range=broken)
+        spec_broken = ES.mfdfa_spectrum(mono, q_range=broken)
+        ok = (est_broken.value is None and est_broken.reason
+              and spec_broken["alpha"] is None and spec_broken["reason"])
+    except Exception as exc:                                  # noqa: BLE001
+        ok = False
+        print(f"    (q_range={broken!r} raised {exc!r})")
+    check(f"a broken q_range ({broken!r}) returns None + a reason instead of raising",
+          ok)
 outside = ES.mfdfa(mono, q_range=(0.2, 0.8))
 check("an alpha outside the fitted q range is not extrapolated",
       outside.value is None and outside.reason, str(outside))
@@ -631,10 +665,34 @@ check("from_estimate keeps the estimator's own reason in the meta",
 
 piv = ST.confirmed_pivots(bars_from_hl([5.0] * 8 + [9.0] + [5.0] * 8, [1.0] * 17),
                            left=2, right=2)
-piv_recs = FS.from_pivots("BTC", "pivot_high", piv, 3000)
+piv_recs = FS.from_pivots("BTC", "pivot_high", piv)
 check("from_pivots stores the pivots under the pivot version",
       piv_recs and all(r.version == ST.PIVOT_VERSION for r in piv_recs)
       and piv_recs[0].value == 9.0, str(piv_recs[:1]))
+check("from_pivots defaults available_ts to the pivot's confirmed_ts",
+      piv_recs and all(r.available_ts == p.confirmed_ts
+                       for r, p in zip(piv_recs, piv)),
+      str([(r.available_ts, p.confirmed_ts) for r, p in zip(piv_recs, piv)]))
+try:
+    FS.from_pivots("BTC", "pivot_high", piv, available_ts=piv[0].ts)
+    ok = False
+except ValueError:
+    ok = True
+check("from_pivots refuses a pivot before it was knowable", ok)
+try:
+    FS.from_pivots("BTC", "pivot_high", piv,
+                    available_ts=piv[0].confirmed_ts - 1)
+    ok = False
+except ValueError:
+    ok = True
+check("from_pivots refuses an available_ts before the confirmation", ok)
+store2.put(piv_recs[0])
+check("a stored pivot is invisible before its confirmed_ts",
+      store2.as_of("BTC", "pivot_high", ST.PIVOT_VERSION,
+                   piv_recs[0].available_ts - 1) is None)
+check("a stored pivot is visible at its confirmed_ts",
+      store2.as_of("BTC", "pivot_high", ST.PIVOT_VERSION,
+                   piv_recs[0].available_ts) is not None)
 
 # the store must be usable from a worker thread (the service is threaded)
 import threading
@@ -644,12 +702,15 @@ worker_out = {}
 
 def _worker():
     try:
-        s = FS.FeatureStore(db)
-        s.put(FS.FeatureRecord(coin="T1", name="hurst_rs", version=ES.HURST_VERSION,
-                                bar_ts=1000, available_ts=1000, value=0.25,
-                                reason=None, inputs_hash="a" * 16, meta={}))
-        worker_out["value"] = s.as_of("T1", "hurst_rs", ES.HURST_VERSION, 1000).value
-        s.close()
+        # the SAME store object, used from another thread
+        worker_out["value"] = store.as_of("BTC", "hurst_rs", ES.HURST_VERSION,
+                                          1000).value
+        store.put(FS.FeatureRecord(coin="T1", name="hurst_rs",
+                                    version=ES.HURST_VERSION, bar_ts=1000,
+                                    available_ts=1000, value=0.25, reason=None,
+                                    inputs_hash="a" * 16, meta={}))
+        worker_out["written"] = store.as_of("T1", "hurst_rs",
+                                            ES.HURST_VERSION, 1000).value
     except Exception as exc:                                 # noqa: BLE001
         worker_out["error"] = repr(exc)
 
@@ -658,7 +719,8 @@ th = threading.Thread(target=_worker)
 th.start()
 th.join()
 check("the store works from a worker thread",
-      worker_out.get("value") == 0.25, str(worker_out))
+      worker_out.get("value") == 0.5 and worker_out.get("written") == 0.25,
+      str(worker_out))
 
 # a corrupted meta blob must be surfaced, not swallowed
 corrupt_db = os.path.join(tempfile.mkdtemp(), "corrupt.db")

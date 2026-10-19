@@ -46,9 +46,12 @@ class FeatureRecord:
     bar_ts        the bar (or timestamp) the feature DESCRIBES
     available_ts  when the value became knowable (>= bar_ts)
     value         the measured value, or None
-    reason        None when present, else "missing" | "stale" | "insufficient"
-                  (an estimator's own reason, e.g. "degenerate-zero-variance",
-                  may be passed through for diagnosis)
+    reason        None when present, else one of REASONS ("missing" |
+                  "stale" | "insufficient").  The vocabulary is a small,
+                  stable contract: a more specific estimator reason (e.g.
+                  "degenerate-zero-variance") is NOT stored in this field -
+                  it lives in ``meta["estimator_reason"]``, so the stored
+                  enum never grows and a consumer can rely on it.
     inputs_hash   the hash of the inputs that produced the value
     meta          the estimator parameters, window, uncertainty, ...
     """
@@ -69,7 +72,10 @@ def from_estimate(coin, name, bar_ts, available_ts, estimate) -> FeatureRecord:
     The stored ``reason`` is always one of :data:`REASONS`
     ("missing" | "stale" | "insufficient"); the estimator's own reason
     (e.g. "degenerate-zero-variance") is kept in ``meta["estimator_reason"]``
-    so the diagnosis survives without breaking the documented enum.  The
+    so the diagnosis survives without breaking the documented enum.  A
+    degenerate estimate and a feature that was never computed therefore both
+    store "missing" - the two are told apart by ``meta["estimator_reason"]``
+    (and by ``meta["n"]``), not by the stored reason.  The
     estimator's parameters, sample size and uncertainty go into ``meta`` so
     the record is self-describing.
     """
@@ -91,17 +97,27 @@ def from_estimate(coin, name, bar_ts, available_ts, estimate) -> FeatureRecord:
                          inputs_hash=estimate.inputs_hash, meta=meta)
 
 
-def from_pivots(coin, name, pivots, available_ts, meta=None) -> list[FeatureRecord]:
+def from_pivots(coin, name, pivots, available_ts=None, meta=None) -> list[FeatureRecord]:
     """One :class:`FeatureRecord` per confirmed pivot.
 
     The records carry the PIVOT_VERSION, so a stored pivot is always
     attributable to the rule that produced it.  ``bar_ts`` is the pivot's own
-    timestamp and ``available_ts`` the instant the pivot became knowable
-    (``Pivot.confirmed_ts``); the caller passes the as-of instant it wants to
-    record the pivot under.
+    timestamp and ``available_ts`` the instant the pivot became KNOWABLE.
+
+    ``available_ts`` DEFAULTS to the pivot's ``confirmed_ts``.  An
+    ``available_ts`` EARLIER than the confirmation is REFUSED (ValueError):
+    storing a pivot as knowable before it was knowable would let an as-of
+    join return a look-ahead, which is the one thing this store exists to
+    prevent.
     """
     out = []
     for p in pivots or ():
+        avail = int(p.confirmed_ts) if available_ts is None else int(available_ts)
+        if avail < int(p.confirmed_ts):
+            raise ValueError(
+                f"available_ts {avail} is before the pivot's confirmed_ts "
+                f"{p.confirmed_ts}: a pivot cannot be knowable before it is "
+                f"confirmed")
         m = dict(meta or {})
         m.update({"kind": p.kind, "leg_bars": p.leg_bars, "size": p.size,
                   "pivot_index": p.index, "pivot_version": PIVOT_VERSION,
@@ -110,7 +126,7 @@ def from_pivots(coin, name, pivots, available_ts, meta=None) -> list[FeatureReco
         h.update(f"{coin}|{name}|{PIVOT_VERSION}|{p.index}|{p.ts}|".encode())
         h.update(repr(float(p.price)).encode())
         out.append(FeatureRecord(coin=coin, name=name, version=PIVOT_VERSION,
-                                  bar_ts=int(p.ts), available_ts=int(available_ts),
+                                  bar_ts=int(p.ts), available_ts=avail,
                                   value=float(p.price), reason=None,
                                   inputs_hash=h.hexdigest()[:16], meta=m))
     return out

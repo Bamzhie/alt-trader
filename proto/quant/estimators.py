@@ -376,14 +376,22 @@ def hurst_generalized(levels, min_scale=8, max_scale=None, seed=7) -> Estimate:
     ASSUMPTIONS
       * The input is a LEVEL series (module docstring).  White-noise levels
         give H ~ 0.5, a random-walk path gives H ~ 1.0.  The value is a
-        HURST EXPONENT in [0, 1] - it is NOT the DFA structure exponent
-        tau (see :func:`mfdfa`, which is H + 0.5 for a path with stationary
-        increments); the two must never be mixed up.
+        HURST EXPONENT - it is NOT the DFA structure exponent tau (see
+        :func:`mfdfa`, which is H + 0.5 for a path with stationary
+        increments); the two must never be mixed up.  The value is NOT
+        clamped: a finite-sample estimate can fall slightly outside [0, 1]
+        (a deterministic ramp gives 1.008).
       * The blocks must be non-overlapping: the block sums of overlapping
         blocks are strongly correlated and the variance estimate is far too
         noisy.  The scale range is therefore capped so that every scale
         keeps at least MIN_BLOCKS (16) blocks - above that the variance of
         the block sums is dominated by its own sampling error.
+      * APPLICABILITY: the estimator needs at least MIN_BLOCKS blocks at
+        every scale, i.e. a series of roughly 256 points or more; below that
+        it returns None + "insufficient-sample".  This is an applicability
+        limit of the aggregated-variance estimator, NOT a defect: the R/S
+        estimator (``hurst_rs``) has no such limit and stays usable on
+        shorter series.
       * The estimator measures how the variance of the AGGREGATE (block sum)
         scales.  A deterministic trend inflates H; strong mean reversion
         deflates it; the estimator assumes a self-similar process over the

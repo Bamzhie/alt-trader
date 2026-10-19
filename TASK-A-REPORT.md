@@ -1005,3 +1005,218 @@ $ echo $?
 The fix commit's hash is the branch HEAD; it is printed in the handover
 message (writing it into this file would change the file and therefore the
 hash).
+
+---
+
+# FIX ROUND 2 (scoped re-review findings)
+
+**Status: DONE** — every finding addressed; nothing left unaddressed.
+
+- Branch: `feature/ws-a-measurement` (worktree `/tmp/opencode/wt-a`), not pushed.
+- The fix commit is the branch HEAD (see §10).
+- Sizes after the fixes: `structure.py` 312, `estimators.py` 526,
+  `mfdfa.py` 338, `measures.py` 413, `feature_store.py` 291 lines
+  (all under the ~700-line guidance); the test file is 742 lines /
+  146 checks.
+
+## 1. F15 (was PARTIAL) — the "previous opposite pivot" must be the last *strictly earlier* one
+
+**Defect.** The round-1 fix *discarded* the opposite pivot when it sat on the
+same bar instead of falling back to the last strictly earlier one.
+
+**Fix** (`structure.py:155-180`): the leg/size loop now keeps, per pivot kind,
+the last pivot (`last`) **and** the one before it (`second`).  When the
+opposite pivot is on the same bar (a bar that is both a high and a low
+pivot), the computation falls back to `second[opp_kind]` — the last
+STRICTLY EARLIER opposite pivot:
+
+```python
+opp_kind = "low" if kind == "high" else "high"
+opp = last[opp_kind]
+if opp is not None and opp.index >= i:
+    # the same bar is not a PREVIOUS pivot: fall back to the last
+    # STRICTLY EARLIER opposite pivot
+    opp = second[opp_kind]
+```
+
+(The pivots of one kind come at strictly increasing indices — a bar yields
+at most one high and one low — so `second` always holds the previous,
+strictly earlier, pivot of that kind.)
+
+**Verification of the reviewer's counter-example** (highs
+`[10,12,14,12,13,11]`, lows `[5,3,4,5,2,3]`, left/right = 1):
+
+```
+  pivot idx=1 kind=low  price= 3.0 leg_bars=0 size=0.0000 confirmed_ts=1700000900
+  pivot idx=2 kind=high price=14.0 leg_bars=1 size=1.5404 confirmed_ts=1700001200
+  pivot idx=4 kind=high price=13.0 leg_bars=3 size=1.4663 confirmed_ts=1700001800
+  pivot idx=4 kind=low  price= 2.0 leg_bars=2 size=1.9459 confirmed_ts=1700001800
+```
+
+The pivot at index 4 (both a high and a low) now gets `leg_bars=2` and
+`size=1.9459` against the last strictly earlier opposite pivot (index 2) —
+the reviewer's expected values.  The "no earlier opposite at all" case is
+still `leg_bars=0, size=0.0`.
+
+**Tests (new)**
+
+```
+  PASS  a bar that is both a high and a low pivot is found
+  PASS  the leg uses the last STRICTLY EARLIER opposite pivot
+```
+
+(the pre-existing check "the previous opposite pivot is strictly earlier
+(the same bar is skipped)" still covers the no-earlier-opposite case).
+
+## 2. N1 (new Important) — `from_pivots` could host a look-ahead
+
+**Defect.** `from_pivots` took a caller-supplied `available_ts` and never
+checked it against `Pivot.confirmed_ts`, so `from_pivots(pivots,
+available_ts=pivot.ts)` was accepted and the store then served that pivot
+**15 minutes before it was knowable**.
+
+**Fix** (`feature_store.py:100-131`):
+
+* `available_ts` now DEFAULTS to `p.confirmed_ts` — the instant the pivot
+  became knowable;
+* an `available_ts` EARLIER than the confirmation is REFUSED with a
+  `ValueError` naming both timestamps, so the store cannot host a
+  not-yet-knowable value;
+* the docstring no longer contradicts the code.
+
+```
+N1 refused -> available_ts 1700002400 is before the pivot's confirmed_ts 1700003300: a pivot cannot be knowable before it is confirmed
+N1 (confirmed-1) refused -> available_ts 1700003299 is before the pivot's confirmed_ts 1700003300: a pivot cannot be knowable before it is confirmed
+default available_ts == confirmed_ts: True
+as_of at confirmed-1 : None
+as_of at confirmed   : True
+```
+
+**Tests (new)**
+
+```
+  PASS  from_pivots defaults available_ts to the pivot's confirmed_ts
+  PASS  from_pivots refuses a pivot before it was knowable
+  PASS  from_pivots refuses an available_ts before the confirmation
+  PASS  a stored pivot is invisible before its confirmed_ts
+  PASS  a stored pivot is visible at its confirmed_ts
+```
+
+## 3. Minor findings
+
+| # | Fix | Test |
+|---|---|---|
+| **N2** | The `FeatureRecord` docstring now matches the code: the stored `reason` is always one of `REASONS`, and the estimator's own reason lives in `meta["estimator_reason"]` (`feature_store.py:49-58`). | (docstring; the behaviour is covered by the N6 checks below) |
+| **N3** | The worker-thread test now uses the **same** `FeatureStore` object from the worker thread (a read AND a write), so it fails against the pre-fix code (which raised `ProgrammingError: SQLite objects created in a thread can only be used in that same thread`). | `PASS  the store works from a worker thread` |
+| **N4** | The moment-order range is validated BEFORE the parameters are built and before the series is touched (`mfdfa.py:144-150` `_safe_q_range`, `mfdfa.py:207-217`, `mfdfa.py:290-296`).  A broken range (`None`, `"x"`, a 1-tuple, an inverted range) now returns `None` + `"invalid-q-range"` instead of raising `TypeError` / `ValueError`. | `PASS  a broken q_range (None) returns None + a reason instead of raising`, `... ('x') ...`, `... ((1.0,)) ...`, `... ((2.0, 1.0)) ...` |
+| **F3 caveat** | The docstring no longer claims H is "in [0, 1]": it says the value is a Hurst exponent (≈0.5 for noise, ≈1.0 for a random walk) and that it is **NOT clamped** — a finite-sample estimate can fall slightly outside (a deterministic ramp gives **1.0079**).  The code was left unclamped, and the report agrees. | `PASS  a deterministic ramp gives a Hurst exponent near 1.0`, `PASS  the Hurst exponent is NOT silently clamped into [0, 1]` |
+| **N6** | The stored enum stays small and stable: every failed estimate stores `"missing"` (or `"insufficient"`), and the distinction between a degenerate estimate and an absent feature lives **only** in `meta["estimator_reason"]` (and `meta["n"]`).  This is now stated in the `FeatureRecord` and `from_estimate` docstrings and in §7 below. | `PASS  from_estimate maps a failed estimate to a documented reason`, `PASS  from_estimate keeps the estimator's own reason in the meta` |
+| **N5** | The applicability limit is now in the `hurst_generalized` docstring ("APPLICABILITY", `estimators.py:389-393`) and in §6 below: the aggregated-variance estimator needs at least `MIN_BLOCKS = 16` non-overlapping blocks at every scale, i.e. roughly **n ≥ 256**; below that it returns `None` + `"insufficient-sample"`.  This is a property of the estimator (the R/S estimator has no such limit), not a defect — and it is a silent loss of applicability, so it is called out explicitly. | (docstring + report; the behaviour is `None` + "insufficient-sample" for n = 256) |
+
+## 4. Report accuracy corrections
+
+1. **The F5 citation was wrong.**  The round-1 report claimed the store
+   "matches `proto/quant/qstore.py:63-65` and `proto/store.py:383-384`".
+   Neither of those uses `timeout=5` or `check_same_thread=False`:
+   `qstore.py:63-64` is `sqlite3.connect(path)` (no timeout) and
+   `store.py:383` is `sqlite3.connect(path, timeout=30)`.  The `timeout=5`
+   convention comes from `proto/service.py` (e.g. `:312`, `:347`, `:487`)
+   and `proto/daemon.py:179`; the WAL pragma is the house pattern of
+   `qstore.py:65` and `store.py:384`.  The **code** is unchanged and
+   correct (`sqlite3.connect(path, timeout=5, check_same_thread=False)` +
+   `PRAGMA journal_mode=WAL`); only the citation was wrong and it is
+   corrected here.
+2. **The brief / plan text is stale on the estimator parameter.**  The plan
+   (`docs/superpowers/specs/2026-10-19-quant-research-and-startup-design.md`
+   §1.2) and the task brief still name the Hurst / MF-DFA parameter
+   `returns`; the shipped signature uses **`levels`** (an orchestrator
+   ruling, recorded in round 1 and below).  The code keeps `levels`.
+
+## 5. Orchestrator rulings (still in force)
+
+* The Pivot field name stays **`leg_bars`** (the plan's §1.2 says
+  `bars_of_leg`; the orchestrator is aligning the plan to the shipped name).
+* `hurst_rs` / `hurst_generalized` / `mfdfa` keep their function names; the
+  parameter is **`levels`**.
+
+## 6. Applicability limits (stated, not hidden)
+
+| estimator | minimum input | reason |
+|---|---|---|
+| `hurst_rs` | 2 * min_scale = 16 points | the R/S curve needs >= 3 scales |
+| `hurst_generalized` | ~256 points (16 non-overlapping blocks at every scale) | `MIN_BLOCKS`; below that `None` + "insufficient-sample" |
+| `mfdfa` / `mfdfa_spectrum` | 2 * q_min = 16 points, and the q range must contain 1.0 | otherwise `None` + a reason |
+
+## 7. The stored reason vocabulary (N6)
+
+`REASONS = ("missing", "stale", "insufficient")` is the stored contract and
+it is deliberately small.  A failed estimate is stored as:
+
+| estimator outcome | stored `reason` | the detail |
+|---|---|---|
+| a value | `None` | — |
+| "insufficient-sample" | `"insufficient"` | `meta["estimator_reason"]` |
+| "degenerate-zero-variance" / "non-finite-input" / … | `"missing"` | `meta["estimator_reason"]` |
+
+So a degenerate estimate and a feature that was never computed are
+indistinguishable **in the stored reason column**; they are told apart by
+`meta["estimator_reason"]` (and by `meta["n"]`).  The stored enum was not
+widened on purpose: it is a cross-module contract, and the diagnosis is
+already carried losslessly in the meta.
+
+## 8. Test commands and their real output
+
+```
+$ cd /tmp/opencode/wt-a && python3 tests/test_ws_a_measurement.py
+... (146 checks) ...
+ALL PASS
+$ echo $?
+0
+```
+
+```
+$ cd /tmp/opencode/wt-a && python3 tests/test_quant.py
+...
+ALL PASS
+$ echo $?
+0
+
+$ cd /tmp/opencode/wt-a && python3 tests/test_quant_engine.py
+...
+ALL PASS
+$ echo $?
+0
+```
+
+```
+$ cd /tmp/opencode/wt-a && python3 tests/run_all.py
+PASS  test_adapter.py  [ALL PASS]
+... (82 files) ...
+PASS  test_ws_a_measurement.py  [ALL PASS]
+
+ALL SUITES PASS (82 files)
+$ echo $?
+0
+```
+
+## 9. Numerical evidence (unchanged by round 2, re-verified)
+
+| series | `hurst_rs` H | `hurst_generalized` H | `mfdfa` dfa_tau | spectrum width |
+|---|---|---|---|---|
+| white noise (monofractal) | 0.5498 ± 0.0149 | 0.5559 ± 0.0113 | 0.5316 ± 0.0041 | 0.0011 |
+| random walk | 0.9549 ± 0.0152 | 0.9843 ± 0.0042 | 1.5306 ± 0.0093 | 0.0022 |
+| bimultifractal (blocks) | 0.8578 ± 0.0655 | 0.7452 ± 0.0843 | 1.7814 ± 0.0721 | 0.1459 |
+| deterministic ramp | — | **1.0079** (not clamped) | — | — |
+
+## 10. Commits
+
+| Hash | Message |
+|---|---|
+| `8a6f9ab` | feat(quant): add the market measurement & structure engine — round 0 |
+| `66a4a02` | docs(quant): task A report — round 0 |
+| `d4d7d77` | fix(quant): task A review findings (F1-F15) + report — round 1 |
+| _(HEAD)_ | fix(quant): task A round 2 (F15 leg fallback, N1 pivot look-ahead, N2/N3/N4/N5/N6) + report |
+
+The fix commit's hash is the branch HEAD; it is printed in the handover
+message (writing it into this file would change the file and therefore the
+hash).

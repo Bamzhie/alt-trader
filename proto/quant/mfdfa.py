@@ -141,6 +141,15 @@ def _orders(q_range, n_q):
     return [lo + (hi - lo) * i / (n_q - 1) for i in range(n_q)], None
 
 
+def _safe_q_range(q_range):
+    """A serialisable form of the q range (a broken range is kept as text so
+    the record of a refused call still describes what was asked for)."""
+    try:
+        return tuple(float(v) for v in q_range)
+    except (TypeError, ValueError):
+        return repr(q_range)
+
+
 SPECTRUM_CONVENTION = {
     "h": "h(q) = dtau/dq, the local slope of the DFA structure-function curve "
          "in the moment order.  It is NOT a Hurst exponent and NOT the local "
@@ -193,19 +202,21 @@ def mfdfa(levels, q_min=8, q_max=64, q_range=(0.5, 1.5), seed=7, n_q=5) -> Estim
         (``params["bootstrap_slope_se"]``).
     """
     name = "dfa_tau"
-    x, bad = _clean(levels)
+    # the parameters are validated BEFORE the series is touched, so a broken
+    # q_range is reported as a reason and never raises
+    orders, q_reason = _orders(q_range, n_q)
     in_params = {"q_min": int(q_min), "q_max": int(q_max),
-                 "q_range": tuple(float(v) for v in q_range), "n_q": int(n_q),
+                 "q_range": _safe_q_range(q_range), "n_q": int(n_q),
                  "seed": int(seed),
                  "value_def": "dfa_tau = tau(1), the DFA structure exponent "
                              "(NOT a Hurst exponent H)"}
+    x, bad = _clean(levels)
     n = len(x) if x is not None else 0
+    if orders is None:
+        return _estimate(name, MFDFA_VERSION, None, None, n, in_params, [],
+                         q_reason)
     if bad:
         return _estimate(name, MFDFA_VERSION, None, None, 0, in_params, [], bad)
-    orders, q_reason = _orders(q_range, n_q)
-    if orders is None:
-        return _estimate(name, MFDFA_VERSION, None, None, n, in_params, x,
-                         q_reason)
     lo, hi = int(q_min), int(q_max)
     if n < 2 * lo or hi < lo:
         return _estimate(name, MFDFA_VERSION, None, None, n, in_params, x,
@@ -274,12 +285,14 @@ def mfdfa_spectrum(levels, q_min=8, q_max=64, q_range=(0.5, 1.5), seed=7,
     empty = {"alpha": None, "spectrum": [], "width": None, "n": n,
              "reason": None, "convention": dict(SPECTRUM_CONVENTION),
              "q_grid": [], "tau": {}}
-    if bad:
-        empty["reason"] = bad
-        return empty
+    # the parameters are validated BEFORE the series is touched, so a broken
+    # q_range is reported as a reason and never raises
     orders, q_reason = _orders(q_range, n_q)
     if orders is None:
         empty["reason"] = q_reason
+        return empty
+    if bad:
+        empty["reason"] = bad
         return empty
     lo, hi = int(q_min), int(q_max)
     if n < 2 * lo or hi < lo:
