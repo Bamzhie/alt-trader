@@ -165,12 +165,24 @@ class EvaluationReport:
     (fees + slippage).  ``*_funding_adjusted`` re-evaluates the selected
     config with venue-attributed funding costs added, and carries explicit
     denominators (n_events, n_funding_adjusted, n_excluded_*).
+
+    ``selected`` records the IDENTITY of the strategy dev selected (rule
+    id, geometry key, resolved RuleParams and Geometry, geom index) plus
+    ``n_configs`` / ``spa`` / ``dev_config_means`` / ``top5_dev`` showing
+    HOW the selection was made (a multiplicity-corrected max-t / SPA-style
+    day-cluster test over the whole pre-declared grid).  Without this the
+    report states metrics for an unnamed strategy.
     """
     config_hash: str
     cost_hash: str
     splits: Dict[str, Any]
     dev: Dict[str, Any]
     val: Dict[str, Any]
+    n_configs: int = 0
+    selected: Optional[Dict[str, Any]] = None
+    spa: Optional[Dict[str, Any]] = None
+    dev_config_means: Optional[Dict[str, Any]] = None
+    top5_dev: List[Any] = field(default_factory=list)
     holdout: Optional[Dict[str, Any]] = None
     holdout_slip2x: Optional[Dict[str, Any]] = None
     dev_funding_adjusted: Optional[Dict[str, Any]] = None
@@ -424,6 +436,18 @@ def evaluate(data_dir: str, funding_dir: Optional[str] = None,
     rule_obj = selected.get("rule_obj")
     bounds = dev_val.get("bounds") or cfg.splits.bounds(meta["n_days"])
 
+    # Selection identity: make the strategy the dev stage picked recoverable
+    # from evaluation.json alone (rule id, geometry key, resolved params).
+    # JSON-safe: the live RuleParams/Geometry objects become dicts.
+    selected_geom = selected.get("geom")
+    selected_identity = {
+        "rule": selected.get("rule"),
+        "geometry": selected.get("geometry"),
+        "geom_idx": selected.get("geom_idx"),
+        "params": asdict(rule_obj) if rule_obj is not None else None,
+        "geom": asdict(selected_geom) if selected_geom is not None else None,
+    }
+
     # 4. Funding-adjusted dev/val for the selected config (REPORTING ONLY:
     # selection already happened on friction numbers; no val tuning).
     fa_dev = fa_val = None
@@ -520,6 +544,11 @@ def evaluate(data_dir: str, funding_dir: Optional[str] = None,
                 "max_horizon_bars": splits.max_horizon_bars},
         dev=dev_val["dev"],
         val=dev_val["val"],
+        n_configs=dev_val.get("n_configs", 0),
+        selected=selected_identity,
+        spa=dev_val.get("spa"),
+        dev_config_means=dev_val.get("dev_config_means"),
+        top5_dev=dev_val.get("top5_dev", []),
         holdout=holdout,
         holdout_slip2x=holdout_slip2x,
         dev_funding_adjusted=fa_dev,

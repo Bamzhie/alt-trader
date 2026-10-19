@@ -285,6 +285,38 @@ for label, blk in (("dev", report.dev_funding_adjusted),
 check("AAA appears in missing_cost_coins", "AAA" in report.missing_cost_coins,
       str(report.missing_cost_coins))
 
+# Selection identity must be persisted so the evaluated strategy is
+# recoverable from evaluation.json alone (not just its metrics).
+check("report exposes n_configs", isinstance(report.n_configs, int))
+check("report exposes selection identity", isinstance(report.selected, dict),
+      str(report.selected))
+sel_id = report.selected or {}
+if sel_id.get("rule") == "insufficient-data":
+    check("insufficient-data selection is explicit", True)
+    check("insufficient-data has no params/geom",
+          sel_id.get("params") is None and sel_id.get("geom") is None,
+          str(sel_id))
+else:
+    check("selected identity names a rule", bool(sel_id.get("rule")), str(sel_id))
+    check("selected identity names a geometry", bool(sel_id.get("geometry")),
+          str(sel_id))
+    check("selected identity carries resolved params",
+          isinstance(sel_id.get("params"), dict), str(sel_id))
+    check("selected identity carries resolved geometry",
+          isinstance(sel_id.get("geom"), dict), str(sel_id))
+check("report exposes spa multiplicity test",
+      isinstance(report.spa, dict) and "p_value" in report.spa, str(report.spa))
+check("report exposes dev_config_means",
+      report.dev_config_means is None or isinstance(report.dev_config_means, dict))
+check("report exposes top5_dev", isinstance(report.top5_dev, list))
+_selected_json = json.loads(report.to_json())
+check("serialized report carries selection identity",
+      "selected" in _selected_json
+      and _selected_json["selected"] == report.selected,
+      "selection identity lost in JSON round-trip")
+check("serialized report carries n_configs",
+      _selected_json.get("n_configs") == report.n_configs)
+
 
 print("\n=== case 8: holdout lock is enforced (one-shot) ===")
 
@@ -919,6 +951,31 @@ try:
           and rep20.incomplete_boundary_denominator == 160,
           f"{rep20.incomplete_boundary_events}/"
           f"{rep20.incomplete_boundary_denominator}")
+
+    # Selection identity must survive for a REAL selection (case 7 only
+    # exercises the insufficient-data fallback).
+    check("case20: selection identity names the dev-selected rule",
+          isinstance(rep20.selected, dict)
+          and isinstance(rep20.selected.get("rule"), str)
+          and rep20.selected["rule"] != "insufficient-data",
+          str(rep20.selected))
+    check("case20: selection identity carries resolved rule params",
+          isinstance(rep20.selected.get("params"), dict)
+          and rep20.selected["params"].get("family") is not None,
+          str(rep20.selected))
+    check("case20: selection identity carries resolved geometry",
+          isinstance(rep20.selected.get("geom"), dict)
+          and "horizon_bars" in rep20.selected["geom"],
+          str(rep20.selected))
+    check("case20: selection identity records how many configs were tried",
+          isinstance(rep20.n_configs, int) and rep20.n_configs > 0,
+          str(rep20.n_configs))
+    check("case20: spa multiplicity test recorded",
+          isinstance(rep20.spa, dict) and "p_value" in rep20.spa,
+          str(rep20.spa))
+    check("case20: selection identity survives JSON round-trip (from file)",
+          json.load(open(os.path.join(out20, "evaluation.json")))["selected"]
+          == rep20.selected)
 
     print("\n=== case 21: no funding data -> funding-adjusted metrics are None ===")
 
