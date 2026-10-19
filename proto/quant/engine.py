@@ -43,15 +43,17 @@ REPLAY_BARS = (DEFAULT.feat.rvol_lags_days * BARS_PER_DAY
                + DEFAULT.feat.warmup_bars + 120)
 TAIL_ROWS = 600
 
-# The rebuild only ever replays the LAST REPLAY_BARS bars, so the archive
-# only has to be read that far back.  The bound is the one the feature
-# warmup needs: 14 days of same-slot volume for rvol (14 * 288 = 4032) plus
-# the 6-day warmup (6 * 288 = 1728) = 5760, and REPLAY_BARS (5880) keeps
-# the historical margin.  The bounded reader is EXACTLY equivalent to the
-# full parse: it keeps the same REPLAY_BARS largest timestamps with the same
+# The rebuild only ever replays the LAST REPLAY_BARS bars, so only that
+# window has to be MATERIALISED.  The bound is the one the feature warmup
+# needs: 14 days of same-slot volume for rvol (14 * 288 = 4032) plus the
+# 6-day warmup (6 * 288 = 1728) = 5760, and REPLAY_BARS (5880) keeps the
+# historical margin.  The bounded reader is EXACTLY equivalent to the full
+# parse: it keeps the same REPLAY_BARS largest timestamps with the same
 # "first occurrence of a duplicate wins" rule, so the replayed window - and
 # therefore every feature value - is identical (see
-# tests/test_ws_f_startup.py).
+# tests/test_ws_f_startup.py).  The gzip STREAM is still decompressed end
+# to end (it cannot be seeked): what is bounded is the materialisation and
+# the per-row parsing, not the decompression.
 BOUNDED_REBUILD_BARS = max(15 * BARS_PER_DAY, REPLAY_BARS)
 
 
@@ -80,19 +82,26 @@ def read_tail(path, n=TAIL_ROWS):
 def load_coin_window(data_dir, coin, n=BOUNDED_REBUILD_BARS):
     """The n newest bars of a coin's archive, in timestamp order.
 
-    One streaming pass over the gzip file that keeps ONLY the n largest
-    timestamps (first occurrence of a duplicate wins, exactly like
-    ``bars.load_coin``), so a 28k-row archive is never materialised in
-    full.  The result has the same shape as ``load_coin`` and selects the
-    same bars as "the last n of the full parse", so a rebuild over it
-    replays EXACTLY the same window (and produces identical features) as a
-    rebuild over the whole archive.
+    WHAT IS BOUNDED: the MATERIALISED window and the CPU spent on bar
+    construction.  One streaming pass keeps only the n largest timestamps
+    (first occurrence of a duplicate wins, exactly like
+    ``bars.load_coin``) and parses the OHLCV values of those n rows only,
+    so a 28k-row archive is never turned into 28k parsed bar objects and
+    never sorted in full.  The result has the same shape as
+    ``load_coin`` and selects the same bars as "the last n of the full
+    parse", so a rebuild over it replays EXACTLY the same window (and
+    produces identical features) as a rebuild over the whole archive.
 
-    Only the timestamp of every row is parsed while streaming; the OHLCV
-    values are parsed for the n rows that are kept.  A row that is not
-    well formed (a truncated archive, say) makes the whole coin fall back
-    to the full parse, so the window is never silently different from the
-    one ``load_coin`` would have produced.
+    WHAT IS NOT BOUNDED: the gzip stream itself.  A gzip file cannot be
+    seeked, so the archive is still decompressed end to end (the bytes
+    are read and discarded); only the materialisation and the per-row
+    float parsing are avoided.  That is why the measured win is a
+    constant factor (the parse), not an order of magnitude.
+
+    Only the timestamp of every row is parsed while streaming; a row that
+    is not well formed makes the whole coin fall back to the full parse,
+    so the window is never silently different from the one ``load_coin``
+    would have produced.
 
     Returns None when the file is missing or has no usable header (the
     same contract as ``load_coin``).
@@ -216,17 +225,28 @@ class Watcher:
     def _rebuild(self, coin, reason, full=False):
         """Replay a coin's last contiguous run into a fresh state.
 
-        ``full=False`` (the default) reads only the bounded tail window the
+        ``full=False`` (the default) reads only the bounded window the
         feature warmup needs; ``full=True`` parses the whole archive (the
         historical behaviour) and is kept for the equivalence test.  Both
         replay the SAME bars, so both produce identical features.
 
-        The persisted ``quant_watermark`` of the coin is read back: it
-        proves which bars were already processed, and it lets the rebuild
-        skip the redundant full-file tail read that would follow it (the
-        rebuild already covers the file's current content).  If the archive
-        is BEHIND the watermark (the file changed underneath) the shortcut
-        is refused and the current behaviour is kept.
+        The rebuild cost is bounded by that window (see
+        ``load_coin_window``): the feature replay itself is unchanged.
+
+        The persisted ``quant_watermark`` of the coin is read back.  It
+        does NOT skip any work - it is used to
+        * record the resume state (``resumed`` counter): which bars were
+          already processed before the restart;
+        * detect a ROLLBACK: an archive whose newest bar is OLDER than
+          the watermark means the file changed underneath, and the
+          shortcut below is refused (``watermark_rollback``) so the
+          current behaviour is kept.
+
+        The shortcut itself is the FILE SIGNATURE: the rebuild records the
+        ``(size, mtime_ns)`` it read and, when the file did not change
+        while it was read and the rebuild consumed the whole window, the
+        next ``_advance`` skips the redundant full-file tail read (the
+        rebuild already covers the file's current content).
         """
         cs = CoinState(self.cfg, self.hs)
         path = os.path.join(self.data_dir, f"{coin}.csv.gz")
@@ -259,10 +279,19 @@ class Watcher:
             cs.reason = ""
         self.states[coin] = cs
         # The persisted watermark (read back from the quant store) says which
-        # bars were already processed before the restart.  A watermark
-        # AHEAD of the archive means the file changed underneath: the
-        # shortcut is refused and the current behaviour is kept.
+        # bars were already processed before the restart.  It does NOT skip
+        # any work: it records the resume state and detects a ROLLBACK (an
+        # archive whose newest bar is older than the watermark means the
+        # file changed underneath), in which case the rebuild shortcut is
+        # refused and the current behaviour is kept.
         wm = self._watermarks.get(coin)
+        if wm is None:
+            # The per-cycle cache does not know this coin (a rebuild
+            # outside a step): read the single row.
+            try:
+                wm = self.store.watermark(coin)
+            except Exception:
+                wm = None
         if wm is not None and max_ts is not None and wm > max_ts:
             self.counters["watermark_rollback"] = (
                 self.counters.get("watermark_rollback", 0) + 1)

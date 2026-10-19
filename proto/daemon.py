@@ -282,7 +282,12 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None,
     * exactly ONE sweep record (one watcher_events row + one
       dashboard_snapshot row) is written per completed iteration: the app's
       own sweep write is suppressed on the daemon path, the CLI path keeps
-      its own.
+      its own;
+    * the first-sweep state (``/scanner-health``) moves to "complete" only
+      when an iteration ENDED NORMALLY with a completed sweep.  An
+      interrupted iteration (the operator's SIGTERM arrived mid-cycle)
+      leaves it at "in_progress" with ``completed_ts`` still null - no
+      route may claim a sweep completed that did not.
     """
     app = make_app(args)
     if app_box is not None:
@@ -723,11 +728,16 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None,
                 # is a real error, reported here and never retried.
                 duration_s = time.monotonic() - t0
                 # A COMPLETED sweep is the only thing that may move the
-                # first-sweep state to "complete" (WS-F): an iteration that
-                # failed or was interrupted leaves it at "in_progress".
-                timing.mark_sweep_completed(
-                    ts=time.time(), duration_s=duration_s,
-                    stages=dict((timing.current or {}).get("stages") or {}))
+                # first-sweep state to "complete" (WS-F) — and only when
+                # the iteration ENDED NORMALLY.  An interrupted iteration
+                # (the operator's SIGTERM arrived mid-cycle) leaves the
+                # state at "in_progress" with completed_ts still null: no
+                # route may claim a sweep completed that did not.
+                if not interrupted:
+                    timing.mark_sweep_completed(
+                        ts=time.time(), duration_s=duration_s,
+                        stages=dict((timing.current or {})
+                                    .get("stages") or {}))
                 try:
                     if sweep_takes_duration:
                         on_sweep(*sweep_counts, duration_s=duration_s)

@@ -35,6 +35,7 @@ Contract (deliberately conservative):
 import json
 import os
 import tempfile
+import threading
 import time
 
 # The stages of one loop iteration, in the order the daemon runs them.
@@ -69,7 +70,14 @@ def db_key(db_path):
 
 
 def atomic_write_json(path, payload):
-    """Write *payload* as JSON to *path* atomically (temp file + replace)."""
+    """Write *payload* as JSON to *path* atomically (temp file + replace).
+
+    The temp file lives in the target directory (so the rename is on the
+    same filesystem), it is removed when anything goes wrong, and the
+    parent directory is fsynced after the rename so the replacement is
+    crash-durable (a rename that is not fsynced can be lost by a power
+    cut even though the file content was fsynced).
+    """
     d = os.path.dirname(os.path.abspath(path)) or "."
     os.makedirs(d, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-", suffix=".json")
@@ -85,6 +93,15 @@ def atomic_write_json(path, payload):
         except OSError:
             pass
         raise
+    # Make the rename itself durable.
+    try:
+        dfd = os.open(d, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError:
+        pass
     return path
 
 
@@ -140,9 +157,14 @@ class TimingLog:
         self.db = db_key(db)
         self.iterations = []
         self.current = None
-        self.first_sweep = {"state": "pending", "started_ts": None,
-                            "completed_ts": None, "duration_s": None,
-                            "stages": {}}
+        # The first-sweep state is published to the HTTP thread, so it is
+        # never mutated field by field: a NEW dict is built and swapped in
+        # under the lock (a reader can only ever see a whole, consistent
+        # snapshot - never "complete" with a missing completed_ts).
+        self._lock = threading.Lock()
+        self._first_sweep = {"state": "pending", "started_ts": None,
+                             "completed_ts": None, "duration_s": None,
+                             "stages": {}}
         if path:
             self.load()
 
@@ -245,36 +267,57 @@ class TimingLog:
         return format_stages(self.last_stages())
 
     # -- first sweep ----------------------------------------------------
+    @property
+    def first_sweep(self):
+        """The current first-sweep snapshot (read-only)."""
+        return self.first_sweep_state()
+
     def mark_sweep_started(self, ts=None):
         """The first iteration started: ``pending`` -> ``in_progress``."""
-        if self.first_sweep["state"] == "pending":
-            self.first_sweep["state"] = "in_progress"
-            self.first_sweep["started_ts"] = int(
-                ts if ts is not None else self.now_fn())
-        return self.first_sweep
+        with self._lock:
+            current = self._first_sweep
+            if current["state"] != "pending":
+                return dict(current)
+            new = dict(current)
+            new["state"] = "in_progress"
+            new["started_ts"] = int(ts if ts is not None else self.now_fn())
+            new["stages"] = dict(current.get("stages") or {})
+            self._first_sweep = new
+            return dict(new)
 
     def mark_sweep_completed(self, ts=None, duration_s=None, stages=None):
         """A sweep completed: the first-sweep state becomes ``complete``.
 
-        Only ever called when a sweep ACTUALLY completed - a failed or
-        interrupted iteration leaves the state at ``in_progress`` with
-        ``completed_ts`` still ``None`` (never a false "complete").
+        Only ever called when a sweep ACTUALLY completed AND the
+        iteration ended normally - a failed or interrupted iteration leaves
+        the state at ``in_progress`` with ``completed_ts`` still ``None``
+        (never a false "complete").
+
+        The new state is built as a whole dict and swapped in under the
+        lock, so a concurrent reader always sees a consistent snapshot.
         """
-        if self.first_sweep["state"] == "complete":
-            return self.first_sweep
-        if self.first_sweep["state"] == "pending":
-            self.mark_sweep_started(ts)
-        self.first_sweep["state"] = "complete"
-        self.first_sweep["completed_ts"] = int(
-            ts if ts is not None else self.now_fn())
-        self.first_sweep["duration_s"] = (None if duration_s is None
-                                          else round(float(duration_s), 3))
-        self.first_sweep["stages"] = dict(stages or {})
-        return self.first_sweep
+        with self._lock:
+            current = self._first_sweep
+            if current["state"] == "complete":
+                return dict(current)
+            new = dict(current)
+            if new["state"] == "pending":
+                new["state"] = "in_progress"
+                new["started_ts"] = int(ts if ts is not None
+                                        else self.now_fn())
+            new["state"] = "complete"
+            new["completed_ts"] = int(ts if ts is not None
+                                      else self.now_fn())
+            new["duration_s"] = (None if duration_s is None
+                                 else round(float(duration_s), 3))
+            new["stages"] = dict(stages or {})
+            self._first_sweep = new
+            return dict(new)
 
     def first_sweep_state(self):
         """The ``first_sweep`` block published by ``/scanner-health``."""
-        fs = dict(self.first_sweep)
+        with self._lock:
+            fs = dict(self._first_sweep)
         fs["stages"] = dict(fs.get("stages") or {})
         return fs
 

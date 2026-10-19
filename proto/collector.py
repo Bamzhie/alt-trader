@@ -15,6 +15,19 @@ wrong index can never lose a bar.
 
 The index is only an accelerator: it never decides WHAT is stored, only
 whether the archive can be skipped.
+
+Known failure mode (WS-F): the fast path requires the WHOLE archive to be
+gap-free, so a single missing 5-minute slot (a venue gap, a dropped
+append) silently disables the optimisation for that coin - the index
+records ``contiguous: false`` and every later append of that coin falls
+back to the full read.  The behaviour is correct (the full read is the
+historical behaviour, so no bar is ever lost or duplicated), only slower.
+Repairing the gap is what re-enables the fast path: the next full read
+recomputes the row count and the contiguity flag from the archive itself.
+
+The index file is a RUNTIME ARTIFACT, not an archive: it lives next to the
+bar files, is named ``.bar_index.json`` and is ignored by every archive
+enumerator (they only look at ``*.csv.gz``).
 """
 import csv, gzip, json, os, tempfile, threading, time
 from concurrent.futures import ThreadPoolExecutor
@@ -71,6 +84,9 @@ class BarIndex:
         self.entries = {}
         self.dirty = False
         self._lock = threading.Lock()
+        # Serialises the flushes: several collector workers can reach
+        # ``flush()`` at the same time.
+        self._flush_lock = threading.Lock()
         self.load()
 
     # -- persistence ----------------------------------------------------
@@ -87,22 +103,40 @@ class BarIndex:
         return self.entries
 
     def flush(self):
-        """Write the index atomically (temp file + replace)."""
-        if not self.dirty:
-            return None
-        d = os.path.dirname(os.path.abspath(self.path)) or "."
-        try:
-            os.makedirs(d, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-barindex-")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(self.entries, f, sort_keys=True)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, self.path)
-            self.dirty = False
-            return self.path
-        except OSError:
-            return None
+        """Write the index atomically (temp file + replace).
+
+        The entries are SNAPSHOT under the lock before they are dumped:
+        without that, a worker recording a coin while the dump is running
+        would raise "dictionary changed size during iteration" out of
+        ``append_bars``.  A failed write never propagates (the index is
+        only an accelerator) and never leaves a temp file behind.
+        """
+        with self._flush_lock:
+            with self._lock:
+                if not self.dirty:
+                    return None
+                snapshot = dict(self.entries)
+            d = os.path.dirname(os.path.abspath(self.path)) or "."
+            tmp = None
+            try:
+                os.makedirs(d, exist_ok=True)
+                fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-barindex-")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(snapshot, f, sort_keys=True)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, self.path)
+                tmp = None
+                with self._lock:
+                    self.dirty = False
+                return self.path
+            except Exception:
+                if tmp is not None:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                return None
 
     # -- lookups --------------------------------------------------------
     def get(self, coin):
@@ -189,6 +223,11 @@ def append_bars(data_dir, coin, bars, index=None):
     Returns the number of NEW rows written.  With a matching bar index the
     archive is not read at all; otherwise the full archive is read and the
     exact row set decides (unchanged behaviour).
+
+    The index is refreshed in BOTH paths - including when the fallback
+    found no new bar at all: without that the recorded ``(size,
+    mtime_ns)`` would stay stale and the fast path would stay disabled
+    for that coin forever.
     """
     os.makedirs(data_dir, exist_ok=True)
     index = index if index is not None else get_index(data_dir)
@@ -205,29 +244,32 @@ def append_bars(data_dir, coin, bars, index=None):
         new = [b for b in sorted(bars, key=lambda b: b["ts"])
                if b["ts"] not in seen]
         old_rows = rows
-    if not new:
-        return 0
-    exists = os.path.exists(p)
-    with gzip.open(p, "at", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=HEADER)
-        if not exists:
-            w.writeheader()
-        for b in new:
-            w.writerow({k: b[k] for k in HEADER})
+    if new:
+        exists = os.path.exists(p)
+        with gzip.open(p, "at", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=HEADER)
+            if not exists:
+                w.writeheader()
+            for b in new:
+                w.writerow({k: b[k] for k in HEADER})
     # Refresh the index for this coin.
     if cutoff is not None:
-        prev = index.get(coin) or {}
-        rows_total = int(prev.get("rows") or 0) + len(new)
-        min_ts = prev.get("min_ts")
-        max_ts = prev.get("max_ts")
-        for b in new:
-            ts = b["ts"]
-            if isinstance(min_ts, int) and ts < min_ts:
-                min_ts = ts
-            if isinstance(max_ts, int) and ts > max_ts:
-                max_ts = ts
-        index.record(coin, _archive_entry(coin, p, rows_total, min_ts, max_ts))
+        if new:
+            prev = index.get(coin) or {}
+            rows_total = int(prev.get("rows") or 0) + len(new)
+            min_ts = prev.get("min_ts")
+            max_ts = prev.get("max_ts")
+            for b in new:
+                ts = b["ts"]
+                if isinstance(min_ts, int) and ts < min_ts:
+                    min_ts = ts
+                if isinstance(max_ts, int) and ts > max_ts:
+                    max_ts = ts
+            index.record(coin, _archive_entry(coin, p, rows_total, min_ts,
+                                               max_ts))
     else:
+        # The full read knows the archive exactly: record it even when no
+        # new bar was written, so the next append can use the fast path.
         all_ts = sorted({b["ts"] for b in (old_rows or [])}
                         | {b["ts"] for b in new})
         index.record(coin, _archive_entry(
