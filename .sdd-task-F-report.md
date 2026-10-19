@@ -153,16 +153,26 @@ Design points:
 
 ### 2.4 `proto/collector.py`
 
-* New `BarIndex` class + `index_path(data_dir)` → `<data_dir>/.bar_index.json`:
+* New `BarIndex` class + `index_path(data_dir)` → `<data_dir>/.bar_index.json`
+  (with the default archive dir: `data/bars/.bar_index.json`). It is a
+  **runtime artifact, not an archive** — every archive enumerator filters
+  `*.csv.gz`, so the index is never picked up as a coin, and deleting it
+  is safe (the next collect rebuilds it from the archives). It stores
   `coin -> {"max_ts", "min_ts", "size", "mtime_ns", "rows", "contiguous"}`,
-  written atomically, flushed once per collect batch (not once per coin).
+  is written atomically and is flushed once per collect batch (not once
+  per coin).
 * `append_bars(data_dir, coin, bars, index=None)` — when the on-disk
   `(size, mtime_ns)` matches the index **and** the archive is provably
   gap-free (`rows == (max_ts-min_ts)//300 + 1`) **and** every incoming
   timestamp is on the archive's grid, the recorded `max_ts` is the exact
   dedupe cutoff and **the archive is not read at all**. Anything else
   (a rewritten file, a gap, an off-grid batch) falls back to the full
-  read, so a stale or wrong index can never lose or duplicate a bar.
+  read, so a stale or wrong index can never lose or duplicate a bar. The
+  index is refreshed in **both** paths — including a fallback that found
+  no new bar — so the fast path does not stay disabled for that coin.
+  **Known failure mode:** the fast path needs the *whole* archive to be
+  gap-free, so one missing 5-minute slot disables the optimisation for
+  that coin (correct, only slower — see §5 item 10).
 * `collect_full_universe(data_dir="data/bars", limit_per_coin=200, max_workers=COLLECT_WORKERS, stop_event=None)`
   — new `stop_event` (F5: the stop is observed between coins). The return
   value is now a `CollectCounts` (a `dict` subclass) that also carries
@@ -182,6 +192,11 @@ Design points:
   streaming; the OHLCV values are parsed for the n rows that are kept. A
   row that is not well formed makes the coin fall back to the full parse,
   so the window is never silently different from `load_coin`'s.
+  **What is bounded: the materialised window and the CPU spent on bar
+  construction. What is not bounded: the gzip stream itself** — a gzip
+  file cannot be seeked, so the archive is still decompressed end to end
+  (the bytes are read and discarded). That is why the measured win is a
+  constant factor (the parse), not an order of magnitude.
 * `rebuild_window(bars, n=REPLAY_BARS)` — the shared `(a, z)` window
   computation (the last contiguous run, pulled back to at most `n` bars).
   Both the full parse and the bounded window select the same bars through
@@ -190,13 +205,17 @@ Design points:
   default) uses the bounded window; `full=True` is the historical full
   parse, kept for the equivalence test. The rebuild also:
   * reads the **persisted watermark** back (`self._watermarks`, refreshed
-    once per `step()`), counts `resumed` and refuses the shortcut when the
-    archive is *behind* the watermark (`watermark_rollback`) — the
-    "file changed underneath" fallback;
+    once per `step()`, plus a single-row fallback read for a rebuild
+    outside a step). The watermark **skips no work**: it records the
+    resume state (`resumed` counter) and detects a **rollback** (an
+    archive whose newest bar is older than the watermark means the file
+    changed underneath), in which case the rebuild shortcut is refused
+    (`watermark_rollback`) and the current behaviour is kept;
   * records the file signature before and after the read and, when the
     file did not change and the rebuild consumed the whole window, stores
     it in `cs.sig` so the following `_advance` skips the redundant
-    full-file tail read (the rebuild already covers the file's content).
+    full-file tail read. **This file-signature check — not the watermark
+    — is what removes the redundant tail read.**
 * `Watcher.step(self, should_stop=None)` — the stop is observed between
   coins; the status dict gains `interrupted` and `watermarks`.
 * `Watcher.status()` gains `watermarks`.
@@ -409,6 +428,18 @@ daemon path writes exactly one of each; the CLI path keeps its own row.
 `last_sweep_duration_s` still means "whole iteration duration" and the
 per-stage breakdown is additive.
 
+**What `sweep_count` counts (F10):** *sweeps*, not iterations. An
+iteration whose scan is `not_due` (the persisted cadence says the scan
+does not have to run yet) records **no** sweep row — it legitimately did
+no data-collection pass. In practice the scan is due on every iteration:
+the scan cadence is 60 s (`--interval`) while an iteration takes minutes,
+so the scan runs in every iteration in practice; only a restart inside
+the 60 s window can produce a `not_due` scan. The `first_sweep` block is
+about the first **iteration that ended normally with a completed sweep**:
+an interrupted iteration (SIGTERM mid-cycle) leaves it at `in_progress`
+with `completed_ts` null — no route may claim a sweep completed that did
+not.
+
 ---
 
 ## 5. Concerns / deviations
@@ -460,17 +491,21 @@ per-stage breakdown is additive.
    empty collector result was recorded as a successful sweep with
    `eligible=0` — a small honesty fix that the brief's F6/F7 ask for.
 
-6. **The quant watermark's use is deliberately conservative.** The
-   watermark is read back and used to (a) prove which bars were already
-   processed, (b) let the rebuild skip the redundant full-file tail read,
-   and (c) detect an archive that is *behind* the watermark (the file
-   changed underneath) — in which case the shortcut is refused and the
-   current behaviour is kept. It is **not** used to skip the silent
-   replay of the rebuild window: replayed history never emits (the
-   engine's documented contract, and the DB's `UNIQUE(rule_id, coin,
-   bar_ts)` is the backstop), and the selector deliberately drops signals
-   older than `max_signal_age_bars`, so re-emitting replayed bars could
-   only produce stale, suppressed rows.
+6. **The quant watermark's use is deliberately conservative — and it skips
+   no work.** The watermark is read back and used to (a) record the resume
+   state (`resumed`) and (b) detect an archive that is *behind* the
+   watermark (the file changed underneath) — in which case the rebuild
+   shortcut is refused and the current behaviour is kept. It is **not**
+   used to skip the silent replay of the rebuild window: a real skip is
+   not implementable without persisting the `FeatureStream` state, and
+   replayed history never emits anyway (the engine's documented
+   contract, with the DB's `UNIQUE(rule_id, coin, bar_ts)` as the
+   backstop; the selector deliberately drops signals older than
+   `max_signal_age_bars`, so re-emitting replayed bars could only produce
+   stale, suppressed rows). **The saving that does exist comes from the
+   file-signature check** (`cs.sig`), not from the watermark: the rebuild
+   covers the file's current content, so the following `_advance` skips
+   the redundant full-file tail read.
 
 7. **The end-to-end "time to ready" is not measurable without
    deploying.** The code path makes it deterministic (readiness = the
@@ -493,6 +528,26 @@ per-stage breakdown is additive.
    `"mode": "shadow"` in `proto/service.py` are unchanged), nothing was
    promoted and the holdout was not spent.
 
+10. **The bar index: where it is and when it stops working (F8, F9).**
+    The index lives **next to the archive it describes**:
+    `<data_dir>/.bar_index.json` — with the default archive dir that is
+    `data/bars/.bar_index.json` (NOT `data/.bar_index.json`). It is a
+    **runtime artifact, not an archive**: every archive enumerator
+    filters `*.csv.gz`, so the index is never picked up as a coin, and it
+    is safe to delete (the next collect rebuilds it from the archives).
+    The reason for the location: the index describes the files of ONE
+    archive directory, and the collector does not know the DB path, so a
+    DB-relative path was not available to it.
+    **Known failure mode:** the fast path requires the *whole* archive to
+    be gap-free, so a single missing 5-minute slot (a venue gap, a
+    dropped append) silently disables the optimisation **for that coin**:
+    the index records `contiguous: false` and every later append of that
+    coin falls back to the full read. The behaviour stays correct (the
+    full read is the historical behaviour, so no bar is ever lost or
+    duplicated) — only slower. Repairing the gap re-enables the fast
+    path, because the next full read recomputes the row count and the
+    contiguity flag from the archive itself.
+
 ---
 
 ## 6. Commits
@@ -502,5 +557,260 @@ per-stage breakdown is additive.
 | `749be83` | feat(daemon): instrument the loop, persist the cadence, split readiness (WS-F) |
 | `90c5704` | test(ws-f): startup & first-sweep regression suite (76 checks) |
 | `ce0eef5` | docs(ws-f): Workstream F report |
+| `879e223` | docs(ws-f): fill the report commit hashes |
 
-(branch `feature/ws-f-startup` in `/tmp/opencode/wt-f`; not pushed)
+(branch `feature/ws-f-startup` in `/tmp/opencode/wt-f`; not pushed. The
+review fix round is committed on top of these — see section 7.)
+
+---
+
+# 7. Fix round 1 (review findings)
+
+**Status:** DONE — every finding in the review is addressed. The full
+offline suite still ends with `ALL SUITES PASS (82 files)`.
+
+## F1 — `first_sweep` was marked `complete` for an *interrupted* iteration
+
+* **Where:** `proto/daemon.py:736-742` (the sweep-accounting block).
+* **Cause:** `mark_sweep_completed()` was gated only on
+  `sweep_counts is not None`, not on `interrupted`. A scan that succeeded
+  before the stop flag arrived still moved the state to `complete`.
+* **Fix:** the call is now gated on the iteration ending normally
+  (`if not interrupted:`). An interrupted iteration leaves the state at
+  `in_progress` with `completed_ts` still null. The contract is spelled
+  out in the `run_daemon_loop` docstring (`proto/daemon.py`, "Workstream F
+  guarantees") and in `TimingLog.mark_sweep_completed`.
+* **Test:** `tests/test_ws_f_startup.py` →
+  `test_interrupted_first_iteration_is_not_complete` (a scan that
+  succeeds, then the stop arrives during the collect cycle) asserts
+  `state != "complete"` and `completed_ts is None`, and that the
+  interrupted collect is recorded as not-`ok`.
+* **Proof it catches the old behaviour** (the fix temporarily reverted,
+  the same test file run):
+
+  ```
+    FAIL  an interrupted first iteration is never 'complete'  {'state': 'complete', 'started_ts': 1792440064, 'completed_ts': 1792440064, 'duration_s': 0.002, ...}
+    FAIL  an interrupted first iteration has no completed_ts  {'state': 'complete', ...}
+  FAIL  tests/test_ws_f_startup.py  (2/86 failed: ["an interrupted first iteration is never 'complete'", 'an interrupted first iteration has no completed_ts'])
+  ```
+
+  With the fix in place: `ALL PASS  tests/test_ws_f_startup.py  (91 checks)`.
+
+## F2 — the rewritten `/readyz` assertion could not fail
+
+* **Where:** `tests/test_service_lifecycle.py:652-662` (crash scenario)
+  and the new cases in the "unwired server" section.
+* **Cause:** `status in (200, 503) and (status == 200 or ...)` accepts
+  both statuses and is satisfied by 200 alone.
+* **Fix:**
+  * the crash scenario now asserts **`status == 200`** (with
+    `ok is True` and `data.ready is True`) — the scanner is DOWN and no
+    sweep ever ran, yet the API is ready: that is the new contract, and
+    the assertion now pins it;
+  * the crash scenario's DB is created up-front
+    (`tests/test_service_lifecycle.py:572-579`) so the readiness probe has
+    a defined target and the assertion is deterministic instead of racing
+    the retry that creates the DB;
+  * two new cases in the "unwired server" section prove the other side
+    of the contract: an **unreadable** DB (a file that is not a SQLite
+    database) → `/readyz` answers `503 UNAVAILABLE`, and a **readable**
+    DB → `/readyz` answers `200 {"ready": true}`.
+* **Test:** `tests/test_service_lifecycle.py` — the three checks
+  *"/readyz is API readiness (not sweep readiness): 200 while the scanner
+  is down"*, *"unreadable DB -> /readyz answers 503 UNAVAILABLE"* and
+  *"readable DB -> /readyz answers 200 with ready=true"*.
+
+## F3 — the "failed first sweep" check raced the loop start
+
+* **Where:** `tests/test_ws_f_startup.py:257-284`.
+* **Cause:** the port binds before the loop thread starts, so the state
+  was usually still `pending` when it was read: the assertion passed
+  without the failing collect ever being attempted.
+* **Fix:** the failing collect now sets a `threading.Event`
+  (`attempted`); the test waits for it before reading the state, and it
+  additionally asserts that the collect stage is recorded as **`failed`**
+  — so the failed path is genuinely exercised, not merely "not complete".
+* **Proof the old assertion was vacuous** (the old racy form run again):
+
+  ```
+    [old racy assertion] first_sweep state: pending stages: []
+    PASS  a failed first sweep is never 'complete'
+    PASS  a failed first sweep has no completed_ts
+  ```
+
+  (the state was `pending` and **no stage had run at all**). The fixed
+  form waits for the attempted event and reports
+  `the failed collect is recorded as failed`.
+
+## F4 — the watermark was credited with a saving it does not provide
+
+* **Where:** `proto/quant/engine.py` (`_rebuild` docstring, the
+  `watermark_rollback` / `resumed` block) and the report (§2.5, §5.6).
+* **Ruling applied:** the wording is corrected, the behaviour is not.
+  The watermark **skips no work**. It is used to
+  (a) record the resume state (`resumed`), and
+  (b) detect a **rollback** (an archive whose newest bar is older than the
+  watermark → the file changed underneath), in which case the rebuild
+  shortcut is refused (`watermark_rollback`) and the current behaviour is
+  kept. The saving that does exist comes from the **file-signature
+  check** (`cs.sig`), which is now named as such in the docstring, in
+  the module comment above `BOUNDED_REBUILD_BARS` and in the report.
+  The report's §2.5 and §5.6 were rewritten to say exactly this.
+* **Test:** `tests/test_ws_f_startup.py` →
+  `test_watermark_rollback_is_detected` (new): a watermark ahead of the
+  archive is detected (`watermark_rollback == 1`) and the rebuild
+  shortcut is refused (`cs.sig is None`); a watermark behind the archive
+  is a normal resume (`resumed == 1`) and keeps the shortcut.
+* `Watcher._rebuild` now also reads the single watermark row when the
+  per-cycle cache does not know the coin (`QuantStore.watermark(coin)`,
+  `proto/quant/qstore.py`), so the behaviour is observable outside a
+  `step()` cycle.
+
+## F5 — "the archive is never parsed" overstated what the bound is
+
+* **Where:** `proto/quant/engine.py:82-118` (`load_coin_window`) and the
+  module comment above `BOUNDED_REBUILD_BARS` (`:46-58`).
+* **Fix:** both now state exactly what is bounded — **the materialised
+  window and the CPU spent on bar construction** — and what is not: **the
+  gzip stream is still decompressed end to end** (a gzip file cannot be
+  seeked; the bytes are read and discarded). The measured numbers are
+  unchanged (434 → 275 ms/coin) and keep the "not measurable without
+  deploying" caveat for the end-to-end time.
+
+## F6 — the bar index: stale entries and a racy flush
+
+* **(a) a fallback that found no new bar never refreshed the index** —
+  `proto/collector.py:220-283` (`append_bars`). The early
+  `if not new: return 0` skipped the index refresh, so `(size,
+  mtime_ns)` stayed stale and the fast path stayed disabled for that
+  coin forever. The index is now refreshed in **both** paths (the
+  fallback knows the archive exactly from the full read).
+  *Test:* `tests/test_ws_f_startup.py` → `test_bar_index`:
+  *"the fallback refreshed the index (the fast path is back)"*. Proof it
+  catches the old behaviour (the fix temporarily reverted):
+  `FAIL  the fallback refreshed the index (the fast path is back)  calls=['BBB'] n=0`.
+* **(b) `BarIndex.flush()` could raise out of `append_bars` and leaked
+  its temp file** — `proto/collector.py:105-140`. The dump now takes a
+  **snapshot of the entries under the lock** (so a concurrent `record()`
+  from another collector worker cannot make `json.dump` raise
+  "dictionary changed size during iteration"), the flushes are serialised
+  by a dedicated lock, the failure is caught (`except Exception`) and the
+  temp file is removed.
+  *Test:* `tests/test_ws_f_startup.py` → `test_bar_index`:
+  *"concurrent appends never break the index write"* (8 workers) and
+  *"the index still holds every coin"*.
+
+## F7 — dead helpers and an inert public API in `proto/service.py`
+
+* **Callers were grepped first** (the review asked for that):
+  `_db_writable` had **no** caller left; `_default_is_ready` was only
+  used by `_ready_ok`; `_ready_ok` itself was unreachable. `serve()`'s
+  `ready`/`is_ready` parameters are passed by **6 call sites in 3 test
+  files** — `tests/test_service_routes.py` (owned), plus
+  `tests/test_service_events.py` and `tests/test_quant_api.py`, which
+  are **outside** Workstream F's file list and must not be broken.
+* **Fix (the "keep with an explicit deprecation note" option, plus a
+  runtime signal):**
+  * the dead helpers `_db_writable` and `_default_is_ready` are
+    **removed**;
+  * `ready` / `is_ready` are still **accepted** (public signature, six
+    external call sites) and are now explicitly documented as
+    **DEPRECATED** in `serve()`, `serve_with_fallback()` and
+    `_make_handler()`: they no longer gate `/readyz`, and the first-sweep
+    state is published in `/scanner-health -> first_sweep`;
+  * they are **not silent any more**: `serve()` raises a
+    `DeprecationWarning` (once per process) when either is supplied —
+    visible in the test output:
+    `DeprecationWarning: serve(ready=...)/serve(is_ready=...) is deprecated (WS-F): ...`;
+  * they still have a single documented meaning: they are read as the
+    first-sweep signal for a server that wires its own `scanner_health`
+    without a `first_sweep` block (`proto/service.py:1112-1122`), so the
+    parameters are not inert;
+  * the service itself no longer wires them (`run_service` dropped the
+    `sweep_done` event and the `is_ready=` argument) — the production
+    path uses the timing log's first-sweep state.
+
+## F9 — the gap-free requirement of the fast path is now documented
+
+* **Where:** `proto/collector.py:1-33` (module docstring) and the report
+  (§5, new item 10).
+* **Fix:** the docstring now names the known failure mode: the fast path
+  requires the **whole** archive to be gap-free, so a single missing
+  5-minute slot (a venue gap, a dropped append) silently disables the
+  optimisation for that coin — the index records `contiguous: false` and
+  every later append of that coin falls back to the full read. The
+  behaviour stays correct (the full read is the historical behaviour, so
+  no bar is ever lost or duplicated), only slower; repairing the gap
+  re-enables the fast path, because the next full read recomputes the
+  row count and the contiguity flag from the archive itself.
+
+## F11 — the first-sweep state was mutated field by field
+
+* **Where:** `proto/daemon_timing.py:160-166, 275-322`.
+* **Cause:** the HTTP thread could read the state between the field
+  assignments and see `state="complete"` with `completed_ts=None`.
+* **Fix:** the state is now a **whole dict** that is built and swapped in
+  under a `threading.Lock` (`mark_sweep_started` / `mark_sweep_completed`
+  build a new dict and assign it; `first_sweep_state()` returns a copy
+  under the same lock). A reader can only ever see a complete, consistent
+  snapshot.
+
+## F12 — `atomic_write_json` was not crash-durable
+
+* **Where:** `proto/daemon_timing.py:72-104`.
+* **Fix:** the temp file is removed on any failure (it already was) and
+  the **parent directory is now fsynced after the rename**, so the
+  replacement itself is durable (a rename that is not fsynced can be
+  lost by a power cut even though the file content was fsynced).
+
+## F13 — the report listed 3 commits, the branch had 4
+
+* **Fix:** §6 now lists all four (`749be83`, `90c5704`, `ce0eef5`,
+  `879e223`).
+
+## Documented instead of changed (as the review asked)
+
+* **F8 — the bar index location.** Kept: `<data_dir>/.bar_index.json`
+  (with the default archive dir that is `data/bars/.bar_index.json`).
+  It is a **runtime artifact, not an archive**: every archive enumerator
+  filters `*.csv.gz`, so the index is never picked up as a coin. The
+  report states the path and its nature (§2.4, §5 item 10) and the
+  collector's module docstring says so.
+* **F10 — an iteration whose scan is `not_due` writes zero sweep rows.**
+  Kept, and now stated explicitly in the report (§4.4): the scan cadence
+  is 60 s while an iteration takes minutes, so the scan is due in
+  practice; when it is not due the iteration legitimately records no
+  sweep, and `sweep_count` / `last_sweep_ts` therefore reflect **sweeps**,
+  not iterations.
+
+## Test output after the fix round
+
+```
+$ python3 tests/test_ws_f_startup.py
+exit=0
+ALL PASS  tests/test_ws_f_startup.py  (91 checks)
+
+$ python3 tests/test_service_lifecycle.py
+exit=0
+ALL PASS  tests/test_service_lifecycle.py  (81 checks)
+
+$ python3 tests/test_service_routes.py
+exit=0
+ALL PASS  tests/test_service_routes.py  (34 checks)
+
+$ python3 tests/test_collector.py
+exit=0
+  PASS  every coin has its bars on disk
+ALL PASS
+
+$ python3 tests/test_quant_engine.py
+exit=0
+ALL PASS
+
+$ python3 tests/run_all.py
+exit=0
+PASS  test_ws5_eval_harness.py  [ALL PASS]
+PASS  test_ws_f_startup.py  [ALL PASS  tests/test_ws_f_startup.py  (91 checks)]
+
+ALL SUITES PASS (82 files)
+```
