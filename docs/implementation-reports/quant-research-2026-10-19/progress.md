@@ -55,17 +55,58 @@ never read; the quant step's `seconds` return is discarded).
 
 | WS | Scope | State |
 |---|---|---|
-| A | measurement & structure engine | not started |
-| B | outcomes & inference | not started |
-| C | preregistered research workflow | not started |
-| D | Research UI expansion | not started |
-| E | champion/candidate tracking | not started |
-| F | startup & first-sweep optimization | not started |
+| A | measurement & structure engine | implementing (worktree `/tmp/opencode/wt-a`) |
+| B | outcomes & inference | implementing (worktree `/tmp/opencode/wt-b`) |
+| C | preregistered research workflow | briefed; starts after A+B merge |
+| D | Research UI expansion | briefed; starts after the API contracts land |
+| E | champion/candidate tracking | briefed; starts after B merges |
+| F | startup & first-sweep optimization | implemented, under review |
 
-## 4. Safety status
+## 4. Owner decisions taken (2026-10-19)
 
-- Live service: **not** restarted, **not** altered (pid 572048, operator
-  drop-in `TimeoutStopSec=600s` untouched).
+1. **`/readyz` changes meaning** to API-serving readiness (200 once the
+   listener is up and the DB is *readable* via a read-only probe). The
+   first-sweep status moves into `/scanner-health` as a distinct
+   `first_sweep` block (`pending` / `in_progress` / `complete`, with
+   `completed_ts` and per-stage durations). Nothing may report a completed
+   sweep that did not complete.
+2. **All six workstreams are attempted**, staged by wave, and any workstream
+   that ends partial is reported as partial.
+3. **The new hash-chained decision log is a separate artifact**
+   (`docs/decisions/chain.jsonl`). The human-owned
+   `docs/decisions/log.jsonl` stays 0 bytes and untouched.
+
+## 5. Execution waves
+
+| Wave | Workstreams | Isolation | State |
+|---|---|---|---|
+| 1 | F, A, B | separate git worktrees, disjoint file ownership | running |
+| 2 | C, E | separate worktrees; depend on A/B contracts | pending |
+| 3 | D | separate worktree; depends on the A/B/C/E API contracts | pending |
+| 4 | whole-branch review + full suites + integration | orchestrator + fresh reviewer | pending |
+
+Ownership map (no two agents may edit the same file concurrently):
+
+| WS | Files owned |
+|---|---|
+| F | `proto/daemon_timing.py`, `proto/daemon.py`, `proto/service.py`, `proto/collector.py`, `proto/quant/engine.py`, `proto/quant/qstore.py`, `proto/app.py` (snapshot suppression only) |
+| A | `proto/quant/structure.py`, `proto/quant/estimators.py`, `proto/quant/feature_store.py` |
+| B | `proto/quant/competing_outcomes.py`, `proto/quant/inference.py`, `proto/quant/family_test.py` |
+| C | `proto/quant/prereg.py`, `proto/quant/research_report.py`, `docs/hypotheses/*` |
+| E | `proto/quant/champion.py`, `proto/quant/decision_log.py` |
+| D | `app/src/**`, `app/tests/**`, `app/dev/**` |
+
+Protected (read-only to every workstream): `proto/quant/stats.py`,
+`proto/quant/barrier.py`, `proto/quant/cost_attribution.py`,
+`proto/quant/research.py`, `proto/quant/eval_harness.py`,
+`proto/quant/gates.py`, `proto/quant/registry.py`, `proto/decisions.py`,
+`proto/hypothesis_registry.py`, `data/**`.
+
+## 6. Safety status
+
+- Live service: **not** restarted, **not** altered (operator drop-in
+  `TimeoutStopSec=600s` untouched).
 - Production archives: not modified, not backfilled.
 - Holdout: sealed, untouched. ACTIONABLE output: still disabled. No
-  promotion performed.
+  promotion performed. `docs/decisions/log.jsonl` still 0 bytes.
+
