@@ -475,8 +475,10 @@ VERIFIED by direct archive read (2026-10-18):
     `tests/test_quant_funding_regressions.py`. MEXC's per-row `collectCycle`
     was verified against the archive (the gap to the next row equals the
     current row's cycle in 1,365,207 of the 1,365,701 rows that have a
-    following row; the 494 exceptions are the venue-stated transition
-    bridges); the schedule is now a sequence of per-regime grids, so a
+    following row; the 494 exceptions include cycle transitions and
+    same-cycle gaps, so they are not all transition bridges. A separate
+    audit found 512 cycle-label transitions, with 23 bridges longer than
+    the new cycle treated as unverifiable. The schedule is now a sequence of per-regime grids, so a
     shortening transition (8h→4h) charges its intermediate settlements, a
     lengthening transition (4h→8h) does not demand the settlement the
     venue skipped, and an unestablishable schedule is reported incomplete
@@ -567,10 +569,14 @@ VERIFIED by direct archive read (2026-10-18):
   Universe **dev** n=24,749 mean_r −0.0154 CI[−0.0417,+0.0142] and **val**
   n=6,495 mean_r −0.0166 CI[−0.0468,+0.0174] (95% **day-cluster bootstrap**
   intervals) — both straddle zero with negative point estimates: **the run
-  found no evidence of a positive edge**. Funding-adjusted metrics are
-  reported **separately**: dev n=24,311 (excluded 5 missing-coin + 433
-  incomplete; coverage 0.982) mean_r −0.0149 CI[−0.0411,+0.0153]; val
-  n=6,374 (excluded 121 incomplete) mean_r −0.0163 CI[−0.0473,+0.0184].
+  found no evidence of a positive edge**. Current transition-aware
+  funding-adjusted metrics are reported separately on matched denominators:
+  dev 24,736/24,749 (5 missing-coin + 8 incomplete; coverage 0.9995),
+  mean_r −0.01585, 95% day-cluster CI[−0.04191,+0.01339]; val
+  6,478/6,495 (17 incomplete; coverage 0.9974), mean_r −0.01745, CI
+  [−0.04736,+0.01666]. Funding deltas are −0.00051R / −0.00113R on the
+  matched sets. The initial pre-transition-audit figures are historical and
+  superseded by these results.
   `missing_cost_coins=[1000BTT,RON,ZBCN]`, no leakage, all holdout keys
   `null`. **The one-shot holdout remains SEALED.** Still owned (not started, evidence-gated): a frozen-setup
   decision to spend the holdout once; a calibration record; estimators
@@ -687,8 +693,12 @@ VERIFIED by direct archive read (2026-10-18):
 |  straddle zero: NO EVIDENCE of a positive edge. Selected rule
 |  breakout_start[rvol>=4]/cont × geom T288_ks3_R2, best of 288 configs,
 |  dev day-cluster t −1.06 / SPA p 1.0 / 0 of 288 positive on dev.
-|  Funding-adjusted reported separately (dev 24,311 excl. 5+433; val 6,374
-|  excl. 121); holdout keys null. Reproduced identically by an independent
+|  Historical, superseded funding-adjusted figures from the initial run:
+|  dev 24,311 (excluded 5 missing-coin + 433 incomplete; coverage 0.982),
+|  mean −0.0149 CI[−0.0411,+0.0153]; val 6,374 (excluded 121 incomplete),
+|  mean −0.0163 CI[−0.0473,+0.0184]. These were superseded by the
+|  transition-aware recompute documented in the current WS5 summary and
+|  canonical implementation report. Holdout keys null. Reproduced identically by an independent
 |  concurrent run at 17e9a74 and by a third snapshot on 2026-10-19. Holdout
 |  remains SEALED. Report + hashed artifacts:
 |  docs/implementation-reports/quant-roadmap-2026-10-18/.

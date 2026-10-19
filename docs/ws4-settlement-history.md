@@ -40,9 +40,11 @@ schema, commands, route contract, limitations, and the no-estimation rule.
 Verified against the archive (2026-10-19): `collectCycle` is the interval in
 force **from that settlement onwards** — the gap to the next row equals the
 current row's cycle in 1,365,207 of the 1,365,701 rows that have a
-following row; the 494 exceptions are exactly the venue-stated transition
-bridges. 1h/2h/4h/8h cycles all occur (175 of 559 archives hold more than
-one cycle value; 512 transitions in the archive), so a consumer must treat a
+following row. The 494 exceptions include cycle transitions and same-cycle
+gaps, so they cannot all be identified as transition bridges. The separate
+audit found 512 cycle-label transitions; 23 bridges longer than the new
+cycle were treated as unverifiable. 1h/2h/4h/8h cycles all occur (175 of
+559 archives hold more than one cycle value), so a consumer must treat a
 holding window's schedule as a **sequence of constant-cycle regimes**:
 
 - a **shortening** transition (8h→4h) *adds* settlements — the new grid's

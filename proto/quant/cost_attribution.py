@@ -6,8 +6,9 @@ venue-reported settlement archive (``proto/settlements.py``) as the two
 cost data sources.
 
 Design rules (reused from WS4 archives, proposal §3.1/§4):
-  * Funding is paid/received at the venue's settle boundaries (every
-    ``SETTLE_SECONDS`` = 8h on MEXC). Those boundaries are the FUNDING
+  * Funding is paid/received at the venue's settle boundaries. MEXC's
+    per-row cycle can vary; ``SETTLE_SECONDS`` = 8h is the fallback only
+    for coins with no settlement archive. Those boundaries are the FUNDING
     EVENTS; a cost exists only at a funding event, never at an arbitrary
     observation timestamp.
   * Settlements are venue-reported settled funding
@@ -36,8 +37,11 @@ Design rules (reused from WS4 archives, proposal §3.1/§4):
   * CYCLE TRANSITIONS: MEXC reports a per-row ``collectCycle`` — the
     funding interval in force FROM that settlement onwards (verified
     against the archive: the gap to the next row equals the current row's
-    cycle in 1,365,207 of the 1,365,701 rows that have a following row;
-    the 494 exceptions are exactly the venue-stated transition bridges).
+    cycle in 1,365,207 of the 1,365,701 rows that have a following row.
+    The 494 exceptions include cycle transitions and same-cycle gaps, so
+    they cannot all be identified as transition bridges. The separate audit
+    found 512 cycle-label transitions; 23 bridges longer than the new cycle
+    were treated as unverifiable).
     A coin's cycle does change (1h/2h/4h/8h all occur), so the schedule of
     a holding window is a SEQUENCE of constant-cycle REGIMES, not one grid:
       - a LENGTHENING transition (4h -> 8h) skips the intermediate

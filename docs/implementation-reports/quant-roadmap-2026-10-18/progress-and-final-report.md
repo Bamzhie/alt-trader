@@ -441,10 +441,12 @@ report).
 MEXC's per-row `collectCycle` is the funding interval in force **from**
 that settlement onwards — verified against the archive, not assumed: the gap
 to the next row equals the current row's cycle in **1,365,207 of the
-1,365,701** rows that have a following row, and the **494** exceptions are
-exactly the venue-stated transition bridges. The cycle does change (1h/2h/4h/8h
-all occur; 175 of 559 settlement archives hold more than one cycle value,
-512 transitions in the archive), so a holding window's schedule is a
+1,365,701** rows that have a following row. The **494** exceptions include
+cycle transitions and same-cycle gaps, so they cannot all be identified as
+transition bridges. The separate audit found **512 cycle-label transitions**;
+**23** bridges longer than the new cycle were treated as unverifiable. The
+cycle does change (1h/2h/4h/8h all occur; 175 of 559 settlement archives hold
+more than one cycle value), so a holding window's schedule is a
 **sequence of constant-cycle regimes**, not one grid:
 
 - a **shortening** transition (8h→4h) *adds* settlements — the new grid's
@@ -619,7 +621,7 @@ holdout fields remain `null`.
 | post-fix `run_stage_dev_val` recompute | identical to canonical: 288 configs, `spa {best_t: −1.06197, p: 1.0}`, same selection/dev/val |
 | `python3 tests/test_quant_pipeline_regressions.py` | ALL PASS (4 regression groups: run-boundary path, union archive span, CUSUM restart, sparse-day guard) |
 | `python3 tests/test_quant_funding_regressions.py` | ALL PASS (5 regression groups: window-local settle grid, matched funding denominator, TIME-exit close, 289-bar leakage bound, cycle transitions 8h→4h / 4h→8h / observation fallback) |
-| cycle-semantics audit over all 559 settlement archives (read-only) | 1,366,260 rows, 0 without a cycle; the gap to the next row equals the current row's `collectCycle` in 1,365,207 of the 1,365,701 rows that have a following row; the 494 exceptions are the transition bridges; 175 archives hold >1 cycle value; 512 venue-stated transitions; 23 have a bridge longer than the new cycle (unverifiable) |
+| cycle-semantics audit over all 559 settlement archives (read-only) | 1,366,260 rows, 0 without a cycle; the gap to the next row equals the current row's `collectCycle` in 1,365,207 of the 1,365,701 rows that have a following row; the 494 exceptions include transitions and same-cycle gaps; 175 archives hold >1 cycle value; 512 cycle-label transitions; 23 have a bridge longer than the new cycle (unverifiable) |
 | cycle-transition audit over the real evaluation windows (read-only) | 219 of 24,749 dev and 99 of 6,495 val holding windows (selected config) cross a transition; 1,602 of 197,724 across all 8 rules × dev+val; **all 318 crossing windows are attributed** |
 | funding-adjusted recompute after the transition fix (dev-only) | dev −0.01585 on 24,736 events (coverage 0.9995), val −0.01745 on 6,478 (0.9974); funding −0.00051R / −0.00113R on the matched set; evidence §11 |
 | dev-only diagnostics (cached canonical event set) | 288 configs decomposed into gross/drag/net; rule, geometry, coin, sub-period and funding splits; cost sensitivity (§4) |
@@ -722,7 +724,7 @@ claims above can be re-checked without trusting this prose.
 | `run.log` | `9a21f580260bfd1f9416ef95baece3c79370049db2fef51221bad41b446a9de3` | Console output of the main dev-only diagnostics, including the cost-sensitivity table. |
 | `funding-fixed.json` | `26a82fc801c1068acc5cf8e994f49813f065634062023aa0ac8eb23984f4719a` | First correction round (window-local grid, matched denominators) — **superseded** by `funding-transitions.json`. |
 | `funding-transitions.json` | `622cee87d50964db62ce660335fcd9b41b24146f9d5d120bf54fbba3c20e038e` | **Current** funding-adjusted dev/val (per-regime schedule, matched denominators) plus the cycle-transition audit counts (219 dev / 99 val / 1,602 of 197,724 windows); supersedes the funding blocks in `evaluation.json`. |
-| `cycle-semantics.json` | `3747560b794bcd81eca1229256d15d981b0cd697cbe4084508e7ee7f2274d706` | Read-only audit of all 559 settlement archives: MEXC `collectCycle` semantics (gap-to-next-row vs the current row's cycle), the 512 venue-stated transitions and their bridge shapes. |
+| `cycle-semantics.json` | `3747560b794bcd81eca1229256d15d981b0cd697cbe4084508e7ee7f2274d706` | Read-only audit of all 559 settlement archives: MEXC `collectCycle` semantics (gap-to-next-row vs the current row's cycle), 512 observed cycle-label transitions, and bridge shapes. |
 | `transition-attribution.json` | `666af808523084924f0d06552be7f07f0f780e10d11fcd3b2683b5f1b42aebb4` | Per-window outcome for the evaluation windows that cross a cycle transition: 219 dev / 99 val, all attributed (none excluded). |
 
 Both evaluation artifacts keep `holdout`, `holdout_slip2x` and the two
