@@ -68,6 +68,7 @@ def collect_events(data_dir, cfg=DEFAULT, coins=None, progress=False):
             continue
         o, h, l, c, amt, ts = (bars[k] for k in ("o", "h", "l", "c", "amt", "ts"))
         t_min = min(t_min, ts[0])
+        t_max = max(t_max, ts[-1])          # union span, not BTC's alone
         for (a, z) in contiguous_runs(ts):
             st = FeatureStream(cfg.feat)
             cus = {hh: Cusum(hh, cfg.feat.cusum_k, cfg.feat.cusum_cooldown)
@@ -77,7 +78,13 @@ def collect_events(data_dir, cfg=DEFAULT, coins=None, progress=False):
                     snap = st.update(ts[i], o[i], h[i], l[i], c[i], amt[i],
                                      br.get(ts[i], 0.0))
                 except ValueError:
-                    st = FeatureStream(cfg.feat)      # invalid bar: restart
+                    # Invalid bar: restart the stream AND its CUSUM state.
+                    # Keeping the old CUSUM would carry a stale event index
+                    # into an n-restarted stream and suppress shocks for
+                    # thousands of bars.
+                    st = FeatureStream(cfg.feat)
+                    cus = {hh: Cusum(hh, cfg.feat.cusum_k, cfg.feat.cusum_cooldown)
+                           for hh in SHOCK_HS}
                     continue
                 if snap is None:
                     continue
@@ -93,7 +100,7 @@ def collect_events(data_dir, cfg=DEFAULT, coins=None, progress=False):
                     continue
                 if snap.sigma <= 1e-6:
                     continue
-                path = B.make_path(o, h, l, c, i, MAX_H)
+                path = B.make_path(o, h, l, c, i, MAX_H, run_end=z)
                 if path is None:
                     continue
                 gross = array.array("d")
@@ -197,7 +204,9 @@ def run_stage_dev_val(events, meta, cfg=DEFAULT):
     for r in rules:
         for gi, g in enumerate(geoms):
             res = eval_config(events, r, gi, g, bounds["dev"], cfg)
-            if res["n"] < 30:
+            # A config observed on <3 distinct days has no defined cluster t
+            # (day_cluster_t returns 0.0), which would let it win selection.
+            if res["n"] < 30 or len(set(res["days"])) < 3:
                 continue
             configs.append((r, gi, g, res))
             vals.append(res["values"])

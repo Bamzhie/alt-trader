@@ -119,15 +119,17 @@ def check_no_leakage(events: List, splits: EvalSplits) -> List[str]:
     """Verify no event's label window crosses a split boundary.
 
     Each event has a ``ts`` (bar_ts) and a ``day`` field.  The maximum
-    horizon is MAX_HORIZON_BARS bars = ~1 day.  An event at day D has its
-    outcome window span [D, D + max_horizon_days].  The embargo gap
+    horizon is MAX_HORIZON_BARS bars from the signal bar to the LAST exit
+    bar, and a TIME exit happens at that bar's CLOSE, one bar later:
+    ``(MAX_HORIZON_BARS + 1) / BARS_PER_DAY`` days.  An event at day D has
+    its outcome window span [D, D + max_horizon_days].  The embargo gap
     between dev_end and val_start must exceed max_horizon_days, and
     similarly between val_end and holdout_start.
 
     Returns a list of violation strings (empty = clean).
     """
     violations = []
-    max_horizon_days = MAX_HORIZON_BARS / BARS_PER_DAY  # ~1.0 day
+    max_horizon_days = (MAX_HORIZON_BARS + 1) / BARS_PER_DAY
 
     if splits.val[0] - splits.dev[1] < max_horizon_days - 1e-9:
         violations.append(
@@ -272,8 +274,12 @@ def _event_exit_ts(ev, geom_idx: int, rule: RuleParams) -> Optional[int]:
         exit_ts = ev.ts + BAR_S + exit_offset[k] * BAR_S
 
     For TP/SL exits the offset is < horizon_bars (early exit); for TIME
-    exits the offset is horizon_bars - 1 (full horizon).  Funding is
-    charged only through this actual exit timestamp.
+    exits the offset is horizon_bars - 1 (full horizon).  A TP/SL fill is
+    assumed at the open of the exit bar, so its timestamp is
+    ``ev.ts + (1 + off) * BAR_S``.  A TIME exit is the CLOSE of the final
+    bar, which is the open of the following bar:
+    ``ev.ts + (2 + off) * BAR_S``.  Funding is charged only through this
+    actual exit timestamp.
     """
     if not hasattr(ev, "exit_offset"):
         return None
@@ -283,8 +289,11 @@ def _event_exit_ts(ev, geom_idx: int, rule: RuleParams) -> Optional[int]:
         off = ev.exit_offset[k]
     except (IndexError, AttributeError):
         return None
-    # Entry is at the open of bar i+1 = ev.ts + BAR_S; exit is at bar i+1+off
-    return ev.ts + (1 + off) * BAR_S
+    kind = ev.kind[k] if hasattr(ev, "kind") else None
+    # Entry is at the open of bar i+1 = ev.ts + BAR_S.  The exit bar is
+    # i+1+off; TP/SL exit at its open, TIME at its close (+1 bar).
+    extra = 2 if kind == 2 else 1
+    return ev.ts + (extra + off) * BAR_S
 
 
 def funding_adjusted_config(events, rule: RuleParams, geom_idx: int,
@@ -315,13 +324,20 @@ def funding_adjusted_config(events, rule: RuleParams, geom_idx: int,
       coverage               n_funding_adjusted / n_events
       missing_coins          sorted coins counted as missing
     and the funding-adjusted metric itself (mean_r / ci_lo / ci_hi / t /
-    days / coins / tp / sl / time) over the attributed events.  When
-    n_funding_adjusted is 0 every metric field is None -- a
-    funding-adjusted label never carries a friction-only number.
+    days / coins / tp / sl / time) over the attributed events.  For a
+    like-for-like funding effect it also returns
+    ``mean_r_friction_matched`` / ``t_friction_matched`` (friction only,
+    over EXACTLY the attributed events) and
+    ``funding_delta = mean_r - mean_r_friction_matched``.  The delta must
+    never be computed against the all-event friction-only mean, which has a
+    different denominator.  When n_funding_adjusted is 0 every metric field
+    is None -- a funding-adjusted label never carries a friction-only
+    number.
     """
     lo, hi = window
     sel = R._select(events, rule, lo, hi)
     values, days, kinds = [], [], [0, 0, 0]
+    friction_values, friction_days = [], []
     coins = set()
     missing_coins = set()
     n_events = n_missing = n_incomplete = 0
@@ -334,8 +350,10 @@ def funding_adjusted_config(events, rule: RuleParams, geom_idx: int,
             continue                       # untradeable: not an event
         exit_ts = _event_exit_ts(ev, geom_idx, rule)
         if exit_ts is None:
-            # Fall back to the full horizon for this geometry
-            exit_ts = ev.ts + geom.horizon_bars * BAR_S
+            # No stored exit offset: charge through the full-horizon CLOSE
+            # (the entry bar plus horizon bars, i.e. horizon+1 bars after
+            # the signal bar's open).
+            exit_ts = ev.ts + (geom.horizon_bars + 1) * BAR_S
         open_ts = ev.ts + BAR_S
         fc = funding_cost(ev.coin, open_ts, exit_ts,
                           funding_dir=funding_dir,
@@ -351,6 +369,11 @@ def funding_adjusted_config(events, rule: RuleParams, geom_idx: int,
         dd = B.stop_distance(ev.sigma, geom.horizon_bars, geom.k_stop)
         values.append(B.net_r(ev.gross[k], dd, friction + fc.cost))
         days.append(int(ev.day))
+        # Same events, friction only: the like-for-like counterfactual.  A
+        # funding-adjusted mean must never be compared with the friction-only
+        # mean over a DIFFERENT (all-event) denominator.
+        friction_values.append(B.net_r(ev.gross[k], dd, friction))
+        friction_days.append(int(ev.day))
         kinds[ev.kind[k]] += 1
         coins.add(ev.coin)
 
@@ -365,16 +388,25 @@ def funding_adjusted_config(events, rule: RuleParams, geom_idx: int,
     }
     if n:
         m, c_lo, c_hi, nd = S.day_cluster_mean(values, days, B=1500)
+        matched = sum(friction_values) / n
         out.update({
             "mean_r": m, "ci_lo": c_lo, "ci_hi": c_hi, "days": nd,
             "coins": len(coins),
             "tp": kinds[0] / n, "sl": kinds[1] / n, "time": kinds[2] / n,
             "t": S.day_cluster_t(values, days),
+            # Like-for-like funding effect: funding-adjusted mean minus the
+            # friction-only mean over exactly the attributed events.
+            "mean_r_friction_matched": matched,
+            "t_friction_matched": S.day_cluster_t(friction_values,
+                                                  friction_days),
+            "funding_delta": m - matched,
         })
     else:
         out.update({
             "mean_r": None, "ci_lo": None, "ci_hi": None, "days": 0,
             "coins": 0, "tp": None, "sl": None, "time": None, "t": None,
+            "mean_r_friction_matched": None, "t_friction_matched": None,
+            "funding_delta": None,
         })
     return out
 

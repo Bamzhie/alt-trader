@@ -71,11 +71,21 @@ class Path:
         self.n = len(highs)
 
 
-def make_path(o, h, l, c, i, max_horizon):
-    """Path for a signal on bar i, or None if the horizon is not available."""
+def make_path(o, h, l, c, i, max_horizon, run_end=None):
+    """Path for a signal on bar i, or None if the horizon is not available.
+
+    The arrays are concatenated across timestamp gaps, so ``len(c)`` is not a
+    safe end: a path that runs past the end of the signal's contiguous run
+    would silently label on post-gap bars (different regime, and the entry
+    bar itself could be the gap's first bar).  Callers that know the run
+    boundary must pass ``run_end`` (exclusive index, e.g. from
+    ``bars.contiguous_runs``); omitting it keeps the historical
+    end-of-file contract.
+    """
     s = i + 1
     e = s + max_horizon
-    if e > len(c):
+    end = len(c) if run_end is None else min(run_end, len(c))
+    if e > end:
         return None
     return Path(o[s], h[s:e], l[s:e], c[s:e])
 

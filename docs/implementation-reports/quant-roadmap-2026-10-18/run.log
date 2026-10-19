@@ -1,0 +1,11 @@
+loaded 86038 events, meta={'t_min': 1783910100, 't_max': 1792404900, 'n_days': 98.31944444444444}, dev=(6.0, 61.0), val=(63.0, 77.0)
+SELECTED dev: n=24749  d=55  c=375  net=-0.0154 t=-1.06 | gross=+0.0040 t=+0.27 | drag=0.0194
+SENS gross (no friction)    n=24749  d=55  c=375  net=+0.0040 t=+0.27 | gross=+0.0040 t=+0.27 | drag=0.0000
+SENS fees only (slip 0)     n=24749  d=55  c=375  net=-0.0033 t=-0.23 | gross=+0.0040 t=+0.27 | drag=0.0073
+SENS slip only (fee 0)      n=24749  d=55  c=375  net=-0.0081 t=-0.56 | gross=+0.0040 t=+0.27 | drag=0.0121
+SENS base (5bp/side)        n=24749  d=55  c=375  net=-0.0154 t=-1.06 | gross=+0.0040 t=+0.27 | drag=0.0194
+SENS MEXC 2bp/side          n=24749  d=55  c=375  net=-0.0110 t=-0.76 | gross=+0.0040 t=+0.27 | drag=0.0150
+SENS 2bp + half slip        n=24749  d=55  c=375  net=-0.0050 t=-0.34 | gross=+0.0040 t=+0.27 | drag=0.0090
+SENS 2bp + double slip      n=24749  d=55  c=375  net=-0.0232 t=-1.59 | gross=+0.0040 t=+0.27 | drag=0.0272
+VAL selected: n=6495   d=14  c=248  net=-0.0166 t=-1.01 | gross=-0.0015 t=-0.09 | drag=0.0151
+wrote /tmp/opencode/diag/dev-diagnostics.json (1032s)

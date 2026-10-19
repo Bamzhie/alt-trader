@@ -771,9 +771,9 @@ check("trade_side: cont keeps the break side",
 # Exit-offset slot follows the SAME side: fade(short) exits at offset 20,
 # cont(long) at offset 5.
 check("_event_exit_ts: fade uses the short slot's exit offset",
-      eh._event_exit_ts(ev19, 0, fade_rule) == ev19.ts + (1 + 20) * BAR_S)
+      eh._event_exit_ts(ev19, 0, fade_rule) == ev19.ts + (2 + 20) * BAR_S)
 check("_event_exit_ts: cont uses the long slot's exit offset",
-      eh._event_exit_ts(ev19, 0, cont_rule) == ev19.ts + (1 + 5) * BAR_S)
+      eh._event_exit_ts(ev19, 0, cont_rule) == ev19.ts + (2 + 5) * BAR_S)
 
 # One venue settlement at B1 with a positive rate: a FADE of an up-break
 # is a SHORT -> the positive rate is a CREDIT (negative cost).

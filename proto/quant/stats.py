@@ -64,6 +64,11 @@ def spa_max_t(config_values, config_days, B=1000, seed=7):
     config_values / config_days: list (one per config) of parallel lists.
     Null: every configuration has zero mean (each is centered at its own
     estimate).  Returns (best_index, best_t, p_value).
+
+    Configurations observed on fewer than 3 distinct days are excluded from
+    selection: day_cluster_t is undefined there and returns 0.0, which would
+    otherwise beat any genuinely negative configuration and win the max-t
+    search spuriously.
     """
     K = len(config_values)
     all_days = sorted({d for ds in config_days for d in ds})
@@ -80,7 +85,10 @@ def spa_max_t(config_values, config_days, B=1000, seed=7):
         n = sum(N[k])
         mu.append(sum(S[k]) / n if n else 0.0)
     obs = [day_cluster_t(config_values[k], config_days[k]) for k in range(K)]
-    best = max(range(K), key=lambda k: obs[k])
+    eligible = [k for k in range(K) if len(set(config_days[k])) >= 3]
+    if not eligible:
+        return 0, 0.0, 1.0
+    best = max(eligible, key=lambda k: obs[k])
     rng = random.Random(seed)
     # per-config bootstrap sd of the centered mean
     boots = [[] for _ in range(K)]
@@ -100,7 +108,7 @@ def spa_max_t(config_values, config_days, B=1000, seed=7):
         sds.append(math.sqrt(sum((x - m) ** 2 for x in b) / (len(b) - 1)) or 1e-12)
     cnt = 0
     for t in range(B):
-        mx = max(boots[k][t] / sds[k] for k in range(K))
+        mx = max(boots[k][t] / sds[k] for k in eligible)
         if mx >= obs[best]:
             cnt += 1
     return best, obs[best], (cnt + 1) / (B + 1)

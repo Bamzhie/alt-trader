@@ -162,26 +162,66 @@ def _grid_boundaries(lo: int, hi: int, phase: int,
     return out
 
 
-def _settlement_grid(settle_rows: List[Tuple[int, float, Optional[float]]]
-                     ) -> Optional[Tuple[int, int]]:
-    """The venue's own settle grid ``(phase, cycle)`` from its reported rows.
+_MAX_CYCLE_S = 8 * 3600      # longest documented venue funding cycle
+
+
+def _settlement_grid(settle_rows: List[Tuple[int, float, Optional[float]]],
+                     open_ts: Optional[int] = None,
+                     close_ts: Optional[int] = None) -> Optional[Tuple[int, int]]:
+    """The venue's own settle grid ``(phase, cycle)`` for a holding window.
 
     phase: ``settle_ts % cycle`` -- venue rows sit ON the grid, so any row
         reveals the phase (which need not be epoch-aligned).
-    cycle: the venue-reported ``cycle_hours`` (most common when they
-        differ), or ``None`` when the archive reports no usable cycle.
+    cycle: the venue-reported ``cycle_hours`` in force at the window.
+
+    A coin's funding cycle and phase can change over its history (1h/4h/8h
+    transitions are observed in the archive).  Inferring the grid from the
+    WHOLE archive's modal cycle and the OLDEST row's phase therefore marks
+    perfectly covered windows as incomplete -- and can silently undercharge
+    when the old cycle is a divisor of the new one.  When ``open_ts`` and
+    ``close_ts`` are supplied, infer the grid from rows around the window:
+    the anchor is the first row inside the window (else the last row before
+    it, else the first row after it), and the anchor row's own reported
+    cycle is preferred, falling back to the local mode.
+
+    ``open_ts=close_ts=None`` keeps the historical whole-archive behaviour
+    for callers that only have a grid to infer and no window.
 
     Returns ``None`` when the archive does not carry enough information to
     infer the grid. Callers must NOT substitute an epoch-aligned assumption
     for that case: an uninferable venue grid makes the window incomplete.
     """
-    cycles = [c for _, _, c in settle_rows if c and c > 0]
+    if not settle_rows:
+        return None
+    rows = sorted(settle_rows)
+    if open_ts is None or close_ts is None:
+        local = rows
+        anchor = rows[0]
+    else:
+        lo = open_ts - _MAX_CYCLE_S
+        hi = close_ts + _MAX_CYCLE_S
+        local = [r for r in rows if lo <= r[0] <= hi]
+        if not local:
+            # No venue rows near the window: the grid in force is unknown.
+            return None
+        inwin = [r for r in local if open_ts <= r[0] <= close_ts]
+        if inwin:
+            anchor = inwin[0]
+        else:
+            before = [r for r in local if r[0] <= open_ts]
+            anchor = before[-1] if before else local[0]
+
+    cycles = [c for _, _, c in local if c and c > 0]
     if not cycles:
         return None
-    cycle = int(round(max(set(cycles), key=cycles.count))) * 3600
+    anchor_cycle = anchor[2]
+    if anchor_cycle and anchor_cycle > 0:
+        cycle = int(round(anchor_cycle)) * 3600
+    else:
+        cycle = int(round(max(set(cycles), key=cycles.count))) * 3600
     if cycle <= 0:
         return None
-    return settle_rows[0][0] % cycle, cycle
+    return anchor[0] % cycle, cycle
 
 
 def _settlement_attribution(settle_rows, open_ts, close_ts, side,
@@ -300,7 +340,7 @@ def funding_cost(
     # coverage check AND the observation fallback, so a gap-period fallback
     # maps snapshots to the same boundaries the venue actually settles on
     # (which may be off-epoch). None => the venue grid cannot be inferred.
-    grid = _settlement_grid(settles) if settles else None
+    grid = _settlement_grid(settles, open_bar_ts, close_bar_ts) if settles else None
 
     # Venue-reported settlements first (settled facts, no mapping).
     if settles:

@@ -4,9 +4,11 @@ Product goal: quantitative research and analysis for MEXC altcoin perpetual
 futures. Rules support quant analysis; heuristic scores are not evidence of
 edge. Read-only; no order execution. BTC is labeled market context only.
 
-Last updated: 2026-10-19 (per-coin settlement-backfill manifest reconciled
-against the venue; the WS5 evaluation report now records the selected
-strategy's identity; both re-verified on the current ~97-day bar snapshot).
+Last updated: 2026-10-19 (dev-only investigation of the all-negative WS5
+result: friction, not a signal defect; three independent audits; four
+pipeline and four funding-path fixes with corrected funding-adjusted
+numbers; per-coin settlement-backfill manifest reconciled against the
+venue; the WS5 evaluation report records the selected strategy's identity).
 The live service (pid 715, 2026-10-16 15:41) predates all 2026-10-17
 commits and has not been restarted — deploy is pending owner approval.
 Verified against code/data/live probes/tests, not inherited summaries.
@@ -425,14 +427,19 @@ VERIFIED by direct archive read (2026-10-18):
   restarted, no quant.db is created. Also fixed a latent holdout crash:
   the one-shot path re-summarized an already-summarized holdout, so any
   real holdout spend would have failed. Verification:
-  `tests/test_ws5_eval_harness.py` → ALL PASS (120 checks covering
+  `tests/test_ws5_eval_harness.py` → ALL PASS (137 checks covering
   settlement-boundary attribution, snapshot-vs-boundary mapping,
   off-epoch venue-grid fallback / uninferable-grid exclusion, sign
   correctness, actual-exit charging, fade-policy side regression,
   funding-adjusted vs friction-only divergence, no-funding null metrics,
   missing-boundary exclusion+count, holdout-once, splits, leakage, archive
-  digests, and no-production-write guarantees); full offline backend suite
-  `tests/run_all.py` → ALL SUITES PASS (77 files). The venue-network suite
+  digests, and no-production-write guarantees); the 2026-10-19 audit
+  regressions are covered by `tests/test_quant_pipeline_regressions.py`
+  (run-boundary path, union span, CUSUM reset, sparse-day guard) and
+  `tests/test_quant_funding_regressions.py` (window-local settle grid,
+  matched funding denominator, TIME-exit close, 289-bar leakage bound);
+  full offline backend suite `tests/run_all.py` → ALL SUITES PASS (81
+  files). The venue-network suite
   `tests/test_app.py` is excluded from run_all and timed out in this
   environment (unverified here).
   - Added (2026-10-19): the evaluation report now persists the SELECTION
@@ -442,6 +449,31 @@ VERIFIED by direct archive read (2026-10-18):
   strategy it evaluated instead of reporting metrics for an unnamed config.
   Regression: `tests/test_ws5_eval_harness.py` case 7 (insufficient-data
   fallback) and case 20 (real selection).
+  - Investigated (2026-10-19, dev-only): why all 288 configs had negative
+    dev means and the selected config lost on val. Per-event decomposition
+    `net_R = gross_R − drag_R` over the canonical cached event set shows the
+    gross distribution is centred on zero (median +0.0012R; 150/288 configs
+    positive; selected dev gross +0.0040, t +0.27; val gross −0.0015,
+    t −0.09), while drag follows `cost/(k·σ·√T)` (median 0.1796R at
+    T48_ks1, 0.0244R at T288_ks3; ratio 7.36 vs 7.35 predicted), so the
+    negative net means are friction, not a sign/label/metric defect. A
+    gross-outcome SPA finds one real pre-cost short-horizon reversal
+    (`residual_shock[cusum_h=5]/fade`, T48_ks1.5_R3): +0.052R/trade
+    (t +3.71, p = 0.005), positive at 36/36 geometries and 5/5 sub-periods,
+    but drag is 0.1198R, so net is −0.068R and negative at every geometry.
+    Coin and sub-period splits are in the report (§4). Independent read-only
+    audits: signal/event SOUND; metrics/statistics SOUND; cost/split found
+    four funding-path defects (whole-archive settle grid, one-bar-early TIME
+    exit, unmatched funding denominator, 288-bar leakage bound), all fixed
+    TDD in `tests/test_quant_funding_regressions.py`. Corrected
+    funding-adjusted dev/val means are −0.01632 / −0.01727; funding is a
+    small cost (−0.0007R dev) on the matched set, not a credit. The
+    friction-only selection and no-edge conclusion are unchanged.
+    Recommendation: do not promote and do not spend the holdout; preregister
+    H1 (short-horizon reversal) only with a frozen ≤~15 bp round-trip
+    execution model, and reject H2 (long-horizon breakout) and H3 (funding
+    carry) as standalone edges. Evidence + hashes: report §11; diagnostics
+    in `docs/implementation-reports/quant-roadmap-2026-10-18/`.
 
 ### 6. Evidence communication in app — PARTIAL (Research view delivered; broader evidence display not started)
 - Deps: WS5 outputs to display; WS1/WS4 coverage labels.

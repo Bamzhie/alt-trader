@@ -1,8 +1,10 @@
 # ALT RADAR Quant Roadmap — Progress and Final Report
 
-**Date:** 2026-10-18 — **updated 2026-10-19** (per-coin settlement manifest,
-selected-strategy identity in the evaluation report, evidence files preserved,
-tightened no-edge wording and reproducibility notes)
+**Date:** 2026-10-18 — **updated 2026-10-19** (dev-only investigation of the
+all-negative WS5 result; three independent audits; four pipeline and four
+funding-attribution fixes with regression tests and corrected
+funding-adjusted numbers; per-coin settlement manifest; selected-strategy
+identity; evidence files preserved)
 **Plan:** `docs/superpowers/plans/2026-10-18-quant-roadmap-completion.md` (local, gitignored)
 **Role:** implementation lead. Research-only / SHADOW; service untouched.
 
@@ -151,6 +153,28 @@ Span = (last − first)/86400 over **unique sorted** timestamps.
   `dev_config_means`, `top5_dev`, so a saved report names what it
   evaluated. Tests: `tests/test_ws5_eval_harness.py` case 7
   (insufficient-data fallback) and case 20 (real selection).
+- **Pipeline hardening from the 2026-10-19 audit** — four latent defects,
+  each fixed TDD with `tests/test_quant_pipeline_regressions.py`:
+  `barrier.make_path` now takes `run_end`, so a label path cannot cross a
+  timestamp gap into a different contiguous run; `research.collect_events`
+  recreates the CUSUM state on an invalid-bar restart; `meta.t_max` uses
+  the union archive max instead of BTC's alone; `stats.spa_max_t` and
+  `research.run_stage_dev_val` exclude configs with <3 distinct days (where
+  `day_cluster_t` is undefined and returns 0.0). None fires on the current
+  archive (no gaps, no invalid bars, all 288 configs have 55 days), and the
+  post-fix dev/val recompute is identical; the union-span fix moves the
+  holdout end by minutes only.
+- **Funding-attribution fixes from the 2026-10-19 cost/split audit** — TDD
+  with `tests/test_quant_funding_regressions.py` (RED→GREEN, 4 cases):
+  `cost_attribution._settlement_grid` now infers the cycle/phase from rows
+  around the holding window (preferring the anchor row's own reported
+  cycle), not the whole archive's mode/oldest row; `eval_harness.
+  _event_exit_ts` timestamps a TIME exit at the final bar's close
+  (`horizon+1` bars) while keeping TP/SL at the exit bar's open;
+  `funding_adjusted_config` returns the matched friction-only mean and
+  `funding_delta`; `check_no_leakage` uses the true 289-bar span. The
+  friction-only selection is unchanged; corrected funding-adjusted dev/val
+  means are −0.01632 / −0.01727 (funding is a small cost, not a credit).
 
 ## 4. WS5 evaluation (holdout SEALED)
 
@@ -169,8 +193,15 @@ python3 -m proto.quant evaluate --data data/bars --funding-dir data/funding \
 |---|---:|---:|---:|---:|---|---:|
 | dev (friction-only) | 24,749 | 55 | 375 | −0.01542 | [−0.04171, +0.01424] | −1.062 |
 | val (friction-only) | 6,495 | 14 | 248 | −0.01661 | [−0.04676, +0.01742] | −1.013 |
-| dev (funding-adjusted) | 24,311 | 55 | 364 | −0.01485 | [−0.04114, +0.01526] | −1.007 |
-| val (funding-adjusted) | 6,374 | 14 | 241 | −0.01633 | [−0.04725, +0.01836] | −0.978 |
+| dev (funding-adjusted, corrected) | 24,663 | 55 | 371 | −0.01632 | [−0.04234, +0.01295] | −1.122 |
+| val (funding-adjusted, corrected) | 6,440 | 14 | 246 | −0.01727 | [−0.04810, +0.01708] | −1.037 |
+
+The funding-adjusted rows were **corrected on 2026-10-19** after the
+cost/split audit (window-local settlement grid; TIME exit at the final
+bar's close; matched denominators). The preserved `evaluation.json`
+predates that fix and records the old pre-fix values
+(dev 24,311, −0.01485; val 6,374, −0.01633); the corrected recompute is
+`funding-fixed.json` (§11). The friction-only rows are unchanged.
 
 ### The strategy these numbers describe
 
@@ -196,20 +227,23 @@ evaluated. That gap is fixed in `4419f49`, and the canonical run's
   validation even enters.
 
 - **Denominators reconcile** exactly (friction-only = funding-adj + excluded):
-  dev 24,311 + 5 (missing coin) + 433 (incomplete) = **24,749**;
-  val 6,374 + 0 + 121 = **6,495**. Funding coverage ≈0.982.
+  dev 24,663 + 5 (missing coin) + 81 (incomplete) = **24,749**;
+  val 6,440 + 0 + 55 = **6,495**. Corrected funding coverage 0.9965 / 0.9915
+  (was 0.9823 / 0.9814 before the 2026-10-19 audit-B grid fix).
   `missing_cost_coins = [1000BTT, RON, ZBCN]`; `leakage_violations = []`;
-  incomplete-boundary 554 / 31,244 events; digests bars 450 / funding 447 /
-  settlements 443.
+  incomplete-boundary 136 / 31,244 events (was 554 under the pre-fix grid);
+  digests bars 450 / funding 447 / settlements 443.
 - **In this run every dev/val interval straddles zero and every point
   estimate is negative: it found no evidence of a positive edge.**
   Intervals are **95% day-cluster bootstrap** intervals (resampled over
-  trading days, the harness's unit of independence). They do **not**
-  establish robustness across coins or across sub-periods — no coin-level
-  or period-split analysis was run — so a future snapshot or a different
+  trading days, the harness's unit of independence). Dev-only coin and
+  sub-period splits are reported below; they show the same negative net
+  result and large cross-sectional dispersion, so they do **not** establish
+  robustness across coins or periods. A future snapshot or a different
   universe could differ. Friction-only and funding-adjusted are reported
-  **separately** (never merged); funding adjustment moves the mean by only
-  ~+0.0005.
+  **separately** (never merged). On the **matched** event set, funding is a
+  small **cost** (−0.0007R dev, −0.0012R val); the earlier +0.0005R
+  "credit" was a different-denominator artefact and is corrected below.
 - **The one-shot holdout stays SEALED:** `holdout`, `holdout_slip2x`,
   `holdout_funding_adjusted`, `holdout_slip2x_funding_adjusted` are all
   `null`. No decision to spend it has been made, and none is warranted
@@ -218,8 +252,10 @@ evaluated. That gap is fixed in `4419f49`, and the canonical run's
   this one at `e51ce1c` and an independent concurrent run at `17e9a74` —
   produced **identical dev/val statistics** (byte-identical `dev` and `val`
   blocks, including both funding-adjusted ones) under the same
-  `config_hash d33cff513c30` / `cost_hash 762515f702934998`. The runs are
-  **not**, however, over identical inputs:
+  `config_hash d33cff513c30` / `cost_hash 762515f702934998`. Those
+  funding-adjusted blocks are historical: they use the pre-fix grid and
+  unmatched denominator, and are superseded by `funding-fixed.json`. The
+  runs are **not**, however, over identical inputs:
   - `n_days` differs (97.3993 vs 97.4514) — the live collector appended
     bars between them;
   - of the 448 coins contributing events, **441 bar digests differ** and
@@ -239,6 +275,236 @@ evaluated. That gap is fixed in `4419f49`, and the canonical run's
   and a separate `run_stage_dev_val` recomputation from a cached event
   set, which matched on rule, geometry, params, `n_configs`, `spa`, `dev`
   and `val`). The digest sets grew only because two coins listed.
+
+### Why all 288 dev configs were negative — dev-only diagnostics (2026-10-19)
+
+**Question.** The canonical run selected the *least negative* of 288
+pre-declared configs and still lost on dev and val. Was that a sign, label,
+cost, or metric defect — or the cost model doing its job? This section
+separates the two. It uses **dev only** (days 6–61): no selection, no
+validation tuning, and no holdout access.
+
+**Method.** Reuse the canonical run's cached `collect_events` output
+(86,038 events; `t_min=1783910100`, `t_max=1792404900`, `n_days=98.3194`)
+and decompose every event exactly:
+
+```
+net_R = gross_log / dd - cost_frac / dd = gross_R - drag_R
+```
+
+`gross_R` is the triple-barrier outcome before costs, in stop-distance
+units; `drag_R` is the same round-trip friction expressed in those units.
+`mean(net_R) = mean(gross_R) - mean(drag_R)`, so a negative net with a
+zero-mean gross is friction; a negative gross is a signal/label problem.
+The three audits below were independent and read-only: two audited the code
+and one re-derived the statistics.
+
+**288 configs, dev, friction-only.**
+
+| statistic | value |
+|---|---:|
+| net mean, min / median / max | −0.23358 / −0.05596 / −0.01467 |
+| configs with net mean > 0 | **0 / 288** |
+| gross mean, min / median / max | −0.03850 / **+0.00119** / +0.07425 |
+| configs with gross mean > 0 | **150 / 288** |
+| gross day-cluster t > +1.96 | 20 / 288 |
+| gross day-cluster t < −1.96 | 8 / 288 |
+| selected config, dev | gross **+0.00400** (t +0.27), drag 0.01942, net **−0.01542** (t −1.06) |
+| selected config, val | gross **−0.00152** (t −0.09), drag 0.01509, net **−0.01661** (t −1.01) |
+
+The pre-cost distribution is centred on zero (median +0.0012R; 52% of
+configs positive) while every net mean is negative. That is the signature
+of a cost drag, not a sign or label inversion.
+
+**The drag is geometric.** For a fixed geometry the friction in R units is
+`cost_frac / (k_stop · sigma · sqrt(T))`; the measured medians follow
+`1/(k·√T)`:
+
+| geometry | median gross R (8 rules) | median drag R | median net R |
+|---|---:|---:|---:|
+| `T48_ks1_R3` | +0.0239 | 0.1796 | −0.1249 |
+| `T48_ks1.5_R3` | +0.0244 | 0.1198 | −0.0829 |
+| `T48_ks3_R2` | +0.0131 | 0.0599 | −0.0438 |
+| `T144_ks3_R2` | +0.0036 | 0.0346 | −0.0284 |
+| `T288_ks3_R2` | +0.0001 | 0.0244 | −0.0265 |
+
+The `T48_ks1` / `T288_ks3` drag ratio is **7.36**, against
+`(3√288)/(1√48) = 7.35` from the formula (0.1% apart); 4 of 8 rules have
+positive gross at every geometry, i.e. no direction is consistently
+favoured.
+
+**Cost sensitivity (selected config, dev).** Recomputing the same events
+under different friction assumptions (reporting only — not a new
+selection):
+
+| friction assumption | net mean R | t | drag R |
+|---|---:|---:|---:|
+| none (gross) | +0.00400 | +0.27 | 0 |
+| fees only (5 bp/side) | −0.00329 | −0.23 | 0.00730 |
+| slippage only | −0.00812 | −0.56 | 0.01213 |
+| **base (5 bp/side + tiered slip)** | **−0.01542** | **−1.06** | **0.01942** |
+| MEXC 2 bp/side + tiered slip | −0.01104 | −0.76 | 0.01505 |
+| 2 bp/side + half slip | −0.00498 | −0.34 | 0.00898 |
+| 2 bp/side + double slip | −0.02317 | −1.59 | 0.02717 |
+
+The planner's 5 bp/side constant is **2.5×** the 2 bp/side MEXC futures
+taker rate. Even halving slippage does not lift the selected config above
+zero, because its gross edge is only +0.004R.
+
+**A pre-cost signal does exist — at short horizons.** Running the *same*
+day-cluster max-t/SPA procedure on **gross** outcomes (still 288 configs,
+still dev only) rejects the no-edge null: `best_t = +3.7149`, `p = 0.0050`
+(3 of 601 replicates). The best config is
+`residual_shock[cusum_h=5]/fade`, `T48_ks1.5_R3` (fade the residual shock;
+4-hour horizon):
+
+| | gross | drag | net |
+|---|---:|---:|---:|
+| mean R | **+0.05208** | 0.11976 | **−0.06768** |
+| 95% day-cluster CI | [+0.02464, +0.07928] | — | [−0.10379, −0.03263] |
+| t | +3.71 | — | −3.81 |
+
+n = 9,951 events, 341 coins, 55 days; TP/SL/TIME = 0.02/0.25/0.73.
+It is not a single-cell fluke: gross is positive at **all 36 geometries**
+(+0.0062 … +0.0570), in **5 of 5** sub-periods (+0.0150 … +0.0885), at
+both CUSUM thresholds (h=8: +0.04715, t +1.92), and the *opposite* policy
+is negative (cont: −0.02836, t −1.57). Breadth is 208/341 coins positive;
+the top 10 coins contribute 34.5% of gross P&L and the top 5 days 44.7%.
+But net is negative at **all 36 geometries**, because the edge is only
+**0.435×** the modelled friction at the best cell (0.369× at
+`T48_ks3_R2`; 0.220× at `T288_ks3_R2`). Break-even at the best cell needs
+round-trip friction ≤ ~0.052R, i.e. roughly **15 bp** versus the modelled
+~34 bp for that coin mix — about 56% lower.
+
+**By coin (selected config, dev, friction-only).** 24,749 events across
+375 coins. 140/375 coins have a positive gross mean and 123/375 a positive
+net mean; restricting to coins with n ≥ 30, 91/220 are gross-positive.
+Coin net means are dispersed: p10 −0.1223, median −0.0305, p90 +0.0797
+(best: LSK +0.3226 on 40 events, XRP +0.2944 on 92, TUT +0.2894 on 163;
+worst: STAR −0.3132 on 37, BLUAI −0.2710 on 41, PI −0.2658 on 72). This is
+cross-sectional noise plus a few large winners, not a broad-based edge —
+consistent with 0/288 positive net means.
+
+**By sub-period (selected config, dev, friction-only).**
+
+| days | n | gross R | gross t | drag R | net R | net t |
+|---|---:|---:|---:|---:|---:|---:|
+| 6–17 | 4,042 | −0.00405 | −0.24 | 0.0206 | −0.02466 | −1.43 |
+| 17–28 | 4,089 | −0.01420 | −1.10 | 0.0210 | −0.03522 | −2.79 |
+| 28–39 | 4,969 | +0.07818 | +1.46 | 0.0193 | **+0.05891** | +1.10 |
+| 39–50 | 6,715 | −0.03122 | −1.52 | 0.0137 | −0.04494 | −2.25 |
+| 50–61 | 4,934 | −0.00107 | −0.07 | 0.0251 | −0.02613 | −1.42 |
+
+Four of five sub-periods lose net; the one positive window is not
+replicated and does not survive the full-window test.
+
+**Funding-adjusted (separate, reporting only; corrected 2026-10-19).**
+After the audit-B fixes (window-local settlement grid; TIME exit at the
+final bar's close; matched denominators), the selected config's dev mean is
+**−0.01632** (95% CI [−0.04234, +0.01295], t −1.12) on
+**24,663 / 24,749** events (coverage 0.9965; 5 events on coins with no
+funding archive + 81 unattributable holding windows excluded, never
+zero-filled). Val is **−0.01727** ([−0.04810, +0.01708], t −1.04) on
+6,440 / 6,495. On the **matched** event set the friction-only mean is
+−0.01560 (dev) / −0.01609 (val), so funding is a small **cost** of
+**−0.00072R** (dev) and **−0.00118R** (val) — not the +0.00057R credit
+obtained by comparing different denominators. At the selected geometry,
+corrected funding-adjusted dev means are −0.0264 (rvol≥4/fade), −0.0163
+(rvol≥4/cont), −0.0191 (h=5/fade), −0.0312 (h=5/cont); by sub-period:
+−0.0276, −0.0360, +0.0584, −0.0456, −0.0261. Same pattern as
+friction-only. The preserved `evaluation.json` predates this fix and still
+records the old 24,311 / −0.01485 (dev) and 6,374 / −0.01633 (val); the
+corrected recompute is `funding-fixed.json` (§11). Note: `cost_hash` covers
+the archive paths and settle constants, **not the attribution code**, so it
+is unchanged by this fix; the corrected numbers are identified by the
+`funding-fixed.json` hash and the commit (`git_rev` is recorded in the
+report).
+
+**Independent audits.**
+
+- **Signal/event construction (A): SOUND.** No look-ahead (perturbing all
+  future bars changed 0 fields; `label_path` vs `label_reference` 0/1,800
+  mismatches; RVOL 0/300 mismatches; the channel excludes the current bar).
+  Archive hygiene: 578 non-BTC coins, 578 contiguous runs, 0 gaps / 0
+  duplicates / 0 invalid / 0 non-finite in 2.3M sampled rows. Three
+  **latent** defects were found and fixed with regression tests (none is
+  triggered by this archive): `make_path` could cross a contiguous-run
+  boundary; CUSUM state survived an invalid-bar restart; `meta.t_max` used
+  BTC alone. The union max is 600 s beyond BTC now (98.413194 vs 98.406250
+  days); dev/val bounds are fixed at (6,61)/(63,77), so the canonical
+  dev/val numbers are unchanged (confirmed by recompute, §7). The preserved
+  `evaluation.json` predates this fix, so its holdout end is the BTC-only
+  `n_days 98.3194`; a fresh run would extend it by minutes. All reported
+  dev/val metrics and the still-sealed holdout status are unaffected.
+- **Metric/statistics (C): SOUND.** The day-cluster mean/t is correctly
+  specified and calibrated (false-positive rate 4.875% at |t| > 1.96; 94.1%
+  CI coverage; algebraically identical to a cluster-robust sandwich). SPA
+  resamples whole days jointly across configs and recentres each config at
+  its own mean; the bootstrap max-t* minimum is **+0.324**, above the
+  observed best **−1.062**, so p = 1.0 is exactly what the test implies
+  (not a mis-specification); a planted edge returns p = 0.003, so the test
+  is responsive. A driftless simulation gives net ≈ −c/dd with fade/cont
+  symmetric. One latent sparse-day defect (a config with <3 distinct days
+  got t = 0.0 and could win) was fixed with a guard + regression test; not
+  triggered here (all 288 configs have 55 days). Three reporting nits are
+  documented, not inference defects: the reported median is the upper
+  median (−0.05596 vs true −0.05657); `top5_dev` CIs use B=300 vs B=1500;
+  and "days" are 24h blocks anchored at t_min (2026-07-13 02:35 UTC), not
+  UTC calendar days.
+- **Cost/split integrity (B): DEFECT found and fixed — funding path only;
+  friction-only SOUND.** The friction cost is applied exactly once per
+  path, the units are consistent, the splits do not leak (the corrected
+  289-bar bound is still below every embargo), and the selection path uses
+  dev only. The defects were in funding attribution: `_settlement_grid`
+  inferred the cycle from the whole archive's mode and the phase from the
+  **oldest** row, so 14 coins whose cycle changed (1h/4h/8h) and 2 with a
+  poisoned oldest phase were wrongly marked incomplete — 387 of the 433
+  pre-fix dev exclusions — and 6 coins were silently undercharged; the TIME
+  exit was timestamped one bar early; and the funding-adjusted mean was
+  compared with a different-denominator friction-only mean. All four are
+  fixed with `tests/test_quant_funding_regressions.py` (4 cases, RED→GREEN).
+  The corrected dev funding-adjusted mean is **−0.01632** on 24,663 events
+  (was −0.01485 on 24,311), and funding is a **−0.00072R cost** on the
+  matched set. The friction-only headline is **unchanged**: all 288 dev
+  means remain negative, the selected config remains `T288_ks3_R2`, and
+  SPA p remains 1.0.
+
+**What this means.** The negative dev means are **friction**, not a
+sign/label/metric defect: gross is centred on zero for the
+selection-relevant breakout family (dev +0.0040, val −0.0015) and the drag
+matches `cost/(k·σ·√T)` to 0.1%. The pre-declared hypotheses therefore
+show **no promise at the modelled costs**: even the best pre-cost cell
+loses after friction, and the best-of-288 gross edge (+0.0743R) is
+overwhelmed by its geometry's drag (0.195R). One **pre-cost**
+short-horizon reversal signal is real enough to survive the multiplicity
+correction, but it is ~2.3× smaller than friction at the best geometry.
+The study is also underpowered relative to the drag: the selected dev mean
+has SE ≈ 0.0145R, so ~0.04R is needed for 80% power, while the drag at
+that geometry is 0.019R; the run cannot resolve an edge of the size that
+would matter.
+
+**Preregistered hypotheses for a later run (not evaluated here).**
+
+1. **H1 — short-horizon residual-shock reversal (fade).** `cusum_h=5`
+   (secondary h=8), `T48`, `k_stop` 1.5–3, `r_tp` 2–3. Pre-cost dev
+   +0.052R/trade (t +3.71; SPA p = 0.005), positive across 36/36 geometries
+   and 5/5 sub-periods, with the opposite policy negative. **The viability
+   gate must be frozen in advance:** round-trip friction ≤ ~0.05R at the
+   chosen geometry (≤ ~15 bp), which requires maker/limit execution or a
+   documented ≤2 bp/side fee — not the planner's 5 bp constant.
+   Preregister before touching new data.
+2. **H2 — long-horizon breakout continuation: reject.** Gross is ~0
+   (dev +0.004R, val −0.0015R) and drag is 0.019R at `T288_ks3_R2`.
+3. **H3 — funding carry: reject as a standalone edge.** On the matched
+   event set funding is a small **cost** (−0.0007R dev, −0.0012R val), not
+   a return source.
+4. **Do not spend the one-shot holdout on exploration.** It is ~19 days
+   and is the only clean sample. It may be used once to confirm a fully
+   specified, preregistered H1 under a frozen cost model; otherwise it
+   stays sealed.
+
+No live behavior changed, no production archive was rewritten, and the
+holdout fields remain `null`.
 
 ## 5. WS3/WS4/WS6/WS7 findings (subagent audit, VERIFIED probes)
 
@@ -269,11 +535,18 @@ evaluated. That gap is fixed in `4419f49`, and the canonical run's
 | `python3 tests/test_quant_coverage.py` | ALL PASS |
 | `python3 tests/test_settlement_audit.py` | ALL PASS (50 checks) |
 | `python3 tests/test_ws5_eval_harness.py` | ALL PASS (137 checks; selection-identity cases added) |
-| `python3 tests/run_all.py` | **ALL SUITES PASS (79 files, 0 failures)** |
+| `python3 tests/run_all.py` | **ALL SUITES PASS (81 files, 0 failures)** |
 | `python3 -m proto.bar_quality --data-dir data/bars --all --json` | 578 coins; 0 gaps / 0 dups / 0 invalid; ratio 1.0 |
 | `python3 -m proto.quant.settlement_audit …` | `EXIT=0`; 579 coins → 544 / 7 / 28 / 0 (§1, §11) |
 | `python3 -m proto.quant evaluate …` (no `--holdout`) | `EXIT=0`; numbers + selected identity in §4 |
 | selection-identity cross-check (`run_stage_dev_val` recompute from a cached event set) | matches the harness exactly: rule, geometry, params, `n_configs`, `spa`, `dev`, `val` |
+| post-fix `run_stage_dev_val` recompute | identical to canonical: 288 configs, `spa {best_t: −1.06197, p: 1.0}`, same selection/dev/val |
+| `python3 tests/test_quant_pipeline_regressions.py` | ALL PASS (4 regression groups: run-boundary path, union archive span, CUSUM restart, sparse-day guard) |
+| `python3 tests/test_quant_funding_regressions.py` | ALL PASS (4 regression groups: window-local settle grid, matched funding denominator, TIME-exit close, 289-bar leakage bound) |
+| dev-only diagnostics (cached canonical event set) | 288 configs decomposed into gross/drag/net; rule, geometry, coin, sub-period and funding splits; cost sensitivity (§4) |
+| gross-outcome SPA (dev only) | `best_t = +3.7149`, `p = 0.0050`; net-outcome SPA `p = 1.0000` |
+| reversal-signal robustness (dev only) | gross-positive at 36/36 geometries, 5/5 sub-periods, both CUSUM thresholds; net negative at 36/36 |
+| independent audits (3, read-only) | signal/event SOUND; metrics/statistics SOUND; cost/split **DEFECT found and fixed** (funding attribution/reporting only; friction-only sound) |
 | `python3 -m proto.quant evaluate --help` | shows `--coins` |
 | independent code review (subagent) | 2 must-fix docs issues + hardening; all addressed in `e51ce1c` |
 | `tests/test_app.py` (venue-network smoke) | excluded — needs a live venue |
@@ -311,6 +584,14 @@ evaluated. That gap is fixed in `4419f49`, and the canonical run's
   nothing to promote: the registry stays `research` and
   `docs/decisions/log.jsonl` stays empty until a config shows a positive,
   CI-clearing edge. These items are deliberately not forced.
+- **Dev-only follow-up (2026-10-19):** the negative result is friction, not
+  a sign/label/metric defect (gross median +0.0012R; selected gross +0.0040
+  dev / −0.0015 val; drag 0.0194R). One pre-cost short-horizon reversal
+  survives multiplicity (gross SPA p = 0.005) but is smaller than friction
+  at every geometry. Nothing is promoted. A later run may preregister H1
+  (fade residual shock, `T48`, `k_stop` 1.5–3, `r_tp` 2–3) **only** with a
+  frozen ≤~15 bp round-trip execution model; do not spend the one-shot
+  holdout on exploration (§4).
 
 ## 10. Deployment / live-verification checklist (restart PENDING owner approval)
 
@@ -333,6 +614,14 @@ claims above can be re-checked without trusting this prose.
 | `evaluation-prior-concurrent-17e9a74.json` | `011663b701b7cb7cc6ef6108a51d955ca141e67db08c72a2c3ff29a21a38ea60` | Independent concurrent run at `17e9a74` — the source of the digest comparison in §4. |
 | `settlement-backfill-manifest.json` | `de4334ae47706c809611296d49b86d69e3fefc373dbb9e0c342612b79fe9f36e` | Per-coin settlement backfill manifest (579 bar-universe coins, read-only). |
 | `settlement-backfill-manifest.csv` | `45e4b666fc8f24d75c946a9c70668f5c513d5bba1cf44790393ef6c9f6718997` | The same manifest as a flat CSV (one row per coin). |
+| `dev-diagnostics.json` | `2dd3d79d3be4293cc429fa3d09660bf430a28be1fafb87f22deb605606ddc86c` | Full dev-only diagnostics: all 288 configs' gross/net/drag, rule/geometry/coin/sub-period splits, and cost-sensitivity tables (2026-10-19). Its funding block is **pre-audit-B** and superseded by `funding-fixed.json`. |
+| `dev-diagnostics-summary.json` | `ff709cf5a8b7658c8dabc823ec836adfe53705bdb908afdc772432ddbe8d2cf4` | Compact extract of the above, including the 36-geometry and 5-sub-period reversal tables used in §4. Funding block pre-audit-B. |
+| `gross-spa.json` | `36d210cda5aabf5b752c9d8b0b214ce628c054cb777b3895d6a856cf0a887332` | Pre-cost vs net SPA results: `gross p=0.0050`, `net p=1.0000`. |
+| `archive-span.json` | `5d8625319eddae835ab72e599f86612bbf0d7aec0a88333f76131eee48a69340` | Read-only 579-file archive span scan (union vs BTC; 15,372,713 rows). |
+| `post-fix-recompute.json` | `d836b26f412055d37cafc3795e4b070bc1f2df720b5f44f9985cae8e7b153e08` | `run_stage_dev_val` after the four regression fixes — identical to the canonical dev/val result. |
+| `signal-characterization.log` | `d598c2f1430d79e1dfba1a30c65c7316efe4cb45c8ea5db56bcc5dd6ea3b3633` | Console output of the reversal-signal characterization (36 geometries, 5 sub-periods, coin breadth). |
+| `run.log` | `9a21f580260bfd1f9416ef95baece3c79370049db2fef51221bad41b446a9de3` | Console output of the main dev-only diagnostics, including the cost-sensitivity table. |
+| `funding-fixed.json` | `26a82fc801c1068acc5cf8e994f49813f065634062023aa0ac8eb23984f4719a` | Corrected funding-adjusted dev/val (matched denominators) after the audit-B grid/exit fixes; supersedes the funding blocks in `evaluation.json`. |
 
 Both evaluation artifacts keep `holdout`, `holdout_slip2x` and the two
 `holdout*_funding_adjusted` blocks **null** — the one-shot holdout is SEALED.

@@ -1,0 +1,22 @@
+{
+ "n_configs": 288,
+ "gross_spa": {
+  "best": [
+   "residual_shock[cusum_h=5]/fade",
+   "T48_ks1.5_R3"
+  ],
+  "best_t": 3.7148859087763437,
+  "p": 0.004991680532445923
+ },
+ "net_spa": {
+  "best": [
+   "breakout_start[rvol>=4]/cont",
+   "T288_ks3_R2"
+  ],
+  "best_t": -1.0619704147237248,
+  "p": 1.0
+ },
+ "gross_t_max": 3.7148859087763437,
+ "gross_t_gt_196": 20,
+ "net_t_max": -1.0619704147237248
+}
