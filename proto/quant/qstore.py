@@ -137,6 +137,18 @@ class QuantStore:
         return {r["coin"]: r["last_bar_ts"] for r in
                 self.conn.execute("SELECT coin,last_bar_ts FROM quant_watermark")}
 
+    def watermark(self, coin):
+        """The persisted watermark of *coin* (None when it never ran).
+
+        Read back by the watcher on every cycle: it says which bars were
+        already processed, so a restart resumes instead of re-emitting
+        them.
+        """
+        r = self.conn.execute(
+            "SELECT last_bar_ts FROM quant_watermark WHERE coin=?",
+            (coin,)).fetchone()
+        return r[0] if r else None
+
     def set_meta(self, key, value):
         self.conn.execute(
             "INSERT INTO quant_meta (key,value,updated_ts) VALUES (?,?,?) "

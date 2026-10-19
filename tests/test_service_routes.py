@@ -299,17 +299,34 @@ def main():
         check("tradeplan unknown -> 404", st == 404, f"got {st}")
 
         # -- readyz ---------------------------------------------------------------
+        # WS-F: /readyz is API-SERVING readiness - 200 as soon as the HTTP
+        # server serves and the DB is READABLE.  It no longer waits for the
+        # first sweep: the first-sweep state moved to /scanner-health.
         st, body = get(port, "/readyz")
         check("readyz ready -> 200",
               st == 200 and body.get("ok") is True, f"got {st}")
         ready_state["ok"] = False
         st, body = get(port, "/readyz")
-        check("readyz not-ready -> 503 UNAVAILABLE",
-              st == 503 and (body.get("error") or {}).get("code")
-              == "UNAVAILABLE", f"got {st}")
+        check("readyz does not wait for the first sweep (still 200)",
+              st == 200 and body.get("ok") is True
+              and (body.get("data") or {}).get("ready") is True,
+              f"got {st} {str(body)[:160]}")
         ready_state["ok"] = True
         st, _ = get(port, "/readyz", token=None)
         check("readyz no token -> 401", st == 401, f"got {st}")
+        # An unreadable DB is the only thing that makes /readyz 503.
+        missing = os.path.join(tmp, "does-not-exist.db")
+        server2 = svc.serve(0, TOKEN, lambda: {}, store_path=missing)
+        port2 = server2.server_address[1]
+        time.sleep(0.15)
+        try:
+            st, body = get(port2, "/readyz")
+            check("readyz unreadable db -> 503 UNAVAILABLE",
+                  st == 503 and (body.get("error") or {}).get("code")
+                  == "UNAVAILABLE", f"got {st}")
+        finally:
+            server2.shutdown()
+            server2.server_close()
     finally:
         server.shutdown()
         server.server_close()

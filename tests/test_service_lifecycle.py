@@ -454,9 +454,14 @@ def main():
                           encoding="utf-8").read()
         check("daemon owns the loop (no copy in service)",
               "def run_daemon_loop" in daemon_src)
+        # WS-F: the daemon CALLS the app's scan entry point (plain, with
+        # the record_sweep flag, or through a getattr probe when the app
+        # has no scan at all).  The check below still means "no scan body
+        # was copied into the daemon": the daemon must neither define one
+        # nor inline the scoring.
         check("daemon has no copied scan body",
-              "scan_once" not in daemon_src.replace(
-                  "app.scan_once()", "").replace("FakeApp", ""),
+              "def scan_once" not in daemon_src
+              and "score_universe" not in daemon_src,
               "loop body leaked into the wrapper")
         check("daemon delegates to the service",
               "from .service import" in daemon_src
@@ -635,14 +640,27 @@ def main():
                   in str(((failed_body or {}).get("data") or {})
                          .get("last_error")),
                   str(failed_body))
-            # API stays reachable while the scanner is down; readiness is
-            # the distinct first-sweep signal (no sweep ever ran).
+            # API stays reachable while the scanner is down.  WS-F:
+            # /readyz is API-SERVING readiness (HTTP serving + the DB
+            # readable) and no longer waits for the first sweep; the
+            # first-sweep signal lives in /scanner-health -> first_sweep
+            # and must never claim a sweep that did not complete.
             status, body = _get("/healthz")
             check("/healthz stays 200 while scanner failed",
                   status == 200, f"status={status}")
             status, body = _get("/readyz")
-            check("/readyz stays 503 while scanner failed (distinct signal)",
-                  status == 503, f"status={status}")
+            check("/readyz is API readiness (not sweep readiness)",
+                  status in (200, 503)
+                  and (status == 200 or (body.get("error") or {}).get("code")
+                       == "UNAVAILABLE"),
+                  f"status={status} {str(body)[:160]}")
+            status, body = _get("/scanner-health")
+            fs = (body.get("data") or {}).get("first_sweep") or {}
+            check("scanner-health publishes the first-sweep state",
+                  fs.get("state") in ("pending", "in_progress", "complete"),
+                  str(fs))
+            check("a failed scanner never claims a completed first sweep",
+                  fs.get("completed_ts") is None, str(fs))
 
             # Recovery must be DEMONSTRATED: the retry's first completed
             # sweep is the only thing that moves the scanner from

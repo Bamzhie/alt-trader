@@ -106,11 +106,15 @@ class App:
         bad = [v.upper() for v, st in venue_health().items() if not st["ok"]]
         return "".join(f" · ⚠ {v} DEGRADED" for v in bad)
 
-    def scan_once(self):
+    def scan_once(self, record_sweep=True):
         # The 90s gate covers the per-coin fetch+score ONLY; the universe
         # feed above is cached 10 minutes and excluded from that budget.
         # Phase timing (monotonic so NTP steps cannot skew it): read off
         # self.last_scan_phases after the call. No behavior change.
+        # ``record_sweep`` (WS-F): the CLI/TUI path keeps writing its own
+        # sweep-complete journal event + dashboard snapshot row; the daemon
+        # passes False because it records the sweep itself (one row per
+        # completed iteration, never two).
         total_t0 = time.monotonic()
         t_uni = time.monotonic()
         self.maybe_refresh_universe()
@@ -185,11 +189,14 @@ class App:
         self.last_scan = time.time()
         # Post-cut writer (Task 3, spec section 1): every completed sweep
         # logs a sweep-complete journal event + a dashboard snapshot row
-        # carrying eligible vs evaluated counts separately.
+        # carrying eligible vs evaluated counts separately.  The daemon
+        # suppresses it (record_sweep=False) and writes exactly one row of
+        # each itself.
         evaluated = len(ranked)
         eligible = len(self.uni)
         self.sweep_progress = (evaluated, evaluated)
-        journalmod.record_sweep(self.store.conn, eligible, evaluated)
+        if record_sweep:
+            journalmod.record_sweep(self.store.conn, eligible, evaluated)
         self.status = (f"sweeping {evaluated}/{eligible} · "
                        f"scored {len(cards)} in {time.time()-t0:.0f}s · "
                        f"universe {len(self.uni)} · "

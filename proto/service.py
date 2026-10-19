@@ -9,6 +9,13 @@ Stdlib only: ``http.server`` + ``threading`` + ``hmac`` + ``secrets``.
 Port fallback scan, routes, SSE, commands and daemon embedding arrive in
 later tasks; this module owns ``serve`` / ``load_or_create_token`` and the
 auth/origin gate every future route inherits.
+
+Readiness contract (WS-F): ``GET /readyz`` is API-SERVING readiness - it
+answers 200 as soon as the HTTP server serves and the signals DB is
+READABLE (a read-only probe, so the daemon's write lock can never make it
+flap).  It no longer waits for the first sweep: that state has its own
+place, the ``first_sweep`` block of ``GET /scanner-health``, which never
+claims a sweep completed that did not.
 """
 
 import argparse
@@ -37,6 +44,7 @@ from .funding import read_funding
 from .settlements import read_settlements
 from .prices import read_prices
 from . import daemon as _daemon_mod
+from . import daemon_timing as _daemon_timing
 from .planner import REFERENCE_NOTIONAL, reference_plan
 from . import watcher as _watcher_mod
 from .watcher import CUSUM_RULE_ID, T1_RULE_ID
@@ -459,6 +467,29 @@ def _db_writable(store_path):
         conn.close()
 
 
+def _db_readable(store_path):
+    """True when the DB can be READ (WS-F: the readiness probe).
+
+    A pure read: the schema is queried, nothing is written and no lock is
+    taken that a writer could hold.  The daemon's own write lock therefore
+    can never make ``/readyz`` flap - which is exactly what the old write
+    probe did on the live 170 MB WAL database.
+    """
+    if not store_path or not os.path.exists(store_path):
+        return False
+    try:
+        conn = sqlite3.connect(store_path, timeout=5)
+    except sqlite3.Error:
+        return False
+    try:
+        conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
 def _quant_status_for(writable, paused, watermarks, total):
     """Availability state from store meta + watermark (single source).
 
@@ -644,6 +675,12 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
         os.path.dirname(cfg_data), "quant.db"))
 
     def _ready_ok():
+        """The first-sweep flag (WS-F: no longer gates /readyz).
+
+        Kept for the callers that wire ``is_ready``; the first-sweep state
+        is published through the ``first_sweep`` block of
+        ``/scanner-health`` instead of through ``/readyz``.
+        """
         if is_ready is not None:
             try:
                 return bool(is_ready() if callable(is_ready) else is_ready)
@@ -760,7 +797,7 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                 return
 
             if self.command == "GET" and path == "/readyz":
-                self._handle_readyz(gated, _ready_ok, cfg_store)
+                self._handle_readyz(gated, cfg_store)
                 return
 
             if self.command == "GET" and path == "/scanner-health":
@@ -1008,30 +1045,43 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                 conn.close()
             self._send_json(200, envelope(True, data), origin=origin)
 
-        def _handle_readyz(self, origin, ready_ok, store_path):
+        def _handle_readyz(self, origin, store_path):
+            """API-serving readiness (WS-F).
+
+            200 as soon as the HTTP server is serving and the signals DB is
+            READABLE.  The probe is read-only, so the daemon's write lock
+            can never make readiness flap.  On an unreadable DB the route
+            answers 503 UNAVAILABLE, exactly as before.
+
+            The first-sweep state has its OWN place: the ``first_sweep``
+            block of ``GET /scanner-health``.  It never claims a sweep
+            completed that did not (a failed or interrupted first iteration
+            leaves ``completed_ts`` at null).
+            """
             now = int(time.time())
-            if not ready_ok():
+            if not _db_readable(store_path):
                 self._send_json(503, envelope(
                     False, None, "UNAVAILABLE",
-                    "first sweep not complete"), origin=origin)
-                return
-            if not _db_writable(store_path):
-                self._send_json(503, envelope(
-                    False, None, "UNAVAILABLE",
-                    "database not writable"), origin=origin)
+                    "database not readable"), origin=origin)
                 return
             self._send_json(200, envelope(True, {"ready": True, "ts": now}),
                             origin=origin)
 
         def _handle_scanner_health(self, origin, scanner_health):
             """Scanner lifecycle state — distinct from /healthz (process
-            alive) and /readyz (first sweep done). 503 UNAVAILABLE when no
+            alive) and /readyz (API serving). 503 UNAVAILABLE when no
             health source is wired: never claim health we cannot read.
 
             ``status`` is healthy / restarting / failed (see run_service
             for the exact transitions); ``restart_count`` /
             ``last_restart_ts`` count restart attempts begun after crashes
             (the initial start and crash detections are not restarts).
+
+            WS-F additions (purely additive, existing keys keep their
+            meaning): ``first_sweep`` carries the first-sweep state
+            machine (pending / in_progress / complete with the measured
+            duration) and ``stages`` carries the per-stage durations of the
+            last completed iteration.
             """
             if scanner_health is None:
                 self._deny(503, "UNAVAILABLE",
@@ -1065,6 +1115,12 @@ def _make_handler(token, ready, store_path=None, data_dir=None,
                 "observed_sweep_interval_s":
                     state.get("observed_sweep_interval_s"),
                 "data_lag_s": data_lag_s,
+                # WS-F: the first-sweep state machine and the per-stage
+                # breakdown of the last completed iteration.
+                "first_sweep": state.get("first_sweep") or {
+                    "state": "pending", "started_ts": None,
+                    "completed_ts": None, "duration_s": None, "stages": {}},
+                "stages": state.get("stages") or {},
             }), origin=origin)
 
         def _handle_setups(self, origin, qs, store_path):
@@ -1716,7 +1772,10 @@ def serve(port, token, ready, store_path=None, data_dir=None,
     (default: funding_settlements sibling of `data_dir`); `prices_dir`
     locates the mark/index price archive root the /prices route reads
     (default: prices sibling of `data_dir`); `is_ready`
-    optionally overrides readiness; `scanner_health` optionally supplies
+    optionally overrides the first-sweep signal (WS-F: it no longer gates
+    `/readyz`, which is API-serving readiness - the first-sweep state lives
+    in the `first_sweep` block of `GET /scanner-health`);
+    `scanner_health` optionally supplies
     the scanner lifecycle state for `GET /scanner-health` (a callable
     returning a dict, or a dict). All are optional so Task 1 callers keep
     working unchanged; when `scanner_health` is absent the route answers
@@ -1964,6 +2023,12 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
         loop_args = parser.parse_args(daemon_argv or [])
         loop_args.db = db
         sweep_done = threading.Event()
+        # WS-F: the shared timing log (per-stage durations + the
+        # first-sweep state machine).  The service owns it so
+        # /scanner-health can publish both; the daemon writes into it.
+        timing = _daemon_timing.TimingLog(
+            _daemon_timing.sidecar_path(db, _daemon_timing.TIMING_FILE),
+            db=db)
 
         def _on_sweep(eligible, evaluated, duration_s=None):
             # Explicit recovery signal: a completed sweep proves the
@@ -2004,7 +2069,15 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
 
         def _scanner_health():
             with scanner_lock:
-                return dict(scanner_state)
+                state = dict(scanner_state)
+            # WS-F: the first-sweep state machine and the per-stage
+            # breakdown of the last completed iteration (additive).
+            try:
+                state["first_sweep"] = timing.first_sweep_state()
+                state["stages"] = timing.last_stages()
+            except Exception:
+                pass
+            return state
 
         server, bound = serve_with_fallback(
             port, token, lambda: {"sweep_done": sweep_done.is_set()},
@@ -2023,7 +2096,9 @@ def run_service(*, port=DEFAULT_PORT, token, db, data_dir=None,
         if on_health is not None:
             on_health(_scanner_health)
 
-        app_box = {}
+        # The shared timing log travels in the app box, so the embedded
+        # loop's call shape stays exactly as it was.
+        app_box = {"timing": timing}
 
         def _run_loop():
             backoff_s = backoff_base_s
