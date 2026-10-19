@@ -4,34 +4,30 @@ A preregistration record is the machine-readable answer to two questions:
 
   1. **What was declared BEFORE the evaluation?**  Feature definitions, the
      point-in-time membership rule, the horizons, the event rules, the cost
-     model, the chronological splits, the embargo, the statistics, the
-     promotion criteria, the declared experiment family and the
-     config / data / code hashes.
+     model, the splits, the embargo, the statistics, the promotion
+     criteria, the declared experiment family and the config / data / code
+     hashes.
   2. **What did every tested variant actually show?**  The variant registry
      lists EVERY tested variant -- the failures included -- with its own
      result (metric, value, denominator, interval) and the hash of the
      evidence file that carries the numbers.
 
-Two rules make the record worth keeping:
-
-  * **append-only.**  A ``variant_id`` that is already registered keeps its
-    result forever.  Re-registering it with a different result is a
-    validation error (``variant-result-changed``), never an overwrite.
-    Re-registering it with an identical result is idempotent.
-  * **denominators everywhere.**  A result without a denominator is not a
-    result; ``n`` is required for every variant that is not ``pending``.
+Two rules make the record worth keeping: the registry is **append-only**
+(a registered ``variant_id`` keeps its result forever; a changed result is
+a validation error, never an overwrite; an identical result is idempotent)
+and **denominators are mandatory** (``n`` is required for every variant that
+is not ``pending``).
 
 The record lives in a **sidecar JSON** next to the hypothesis markdown
-(``docs/hypotheses/<ID>.json``).  The markdown front-matter format is
-untouched by this module: the sidecar is strictly additive and the shipped
-``docs/hypotheses/*.md`` files keep validating clean under
-``proto.hypothesis_registry``.
+(``docs/hypotheses/<ID>.json``); the markdown front-matter format is
+untouched by this module, so the shipped ``docs/hypotheses/*.md`` files
+keep validating clean under ``proto.hypothesis_registry``.
 
 THE SEALED HOLDOUT: nothing here evaluates a holdout window, spends the
 one-shot holdout or writes the holdout lock.  A record may *declare* a
-holdout window (it is part of the split discipline), but the holdout is
-only ever evaluated by ``proto.quant.research.holdout_once``, under its own
-one-shot lock, and only after validation kept a config.
+holdout window, but the holdout is only ever evaluated by
+``proto.quant.research.holdout_once``, under its own one-shot lock, and
+only after validation kept a config.
 
 Standard library only.
 """
@@ -97,9 +93,9 @@ class Variant:
     """One tested variant of a hypothesis.
 
     ``result`` carries the metric, the value, the DENOMINATOR (``n``) and
-    the interval, plus a free-form ``detail``.  ``evidence`` lists the
-    files that carry the numbers, each with the sha256 that was read when
-    the variant was registered.
+    the interval, plus a free-form ``detail``; ``evidence`` lists the
+    files that carry the numbers, each with the sha256 read at
+    registration.
     """
 
     variant_id: str
@@ -190,7 +186,7 @@ def _variants_key(variants):
 def file_sha256(path) -> str:
     """sha256 of a file, as 64 lowercase hex characters.
 
-    Read-only.  A missing file raises ``FileNotFoundError`` -- the digest of
+    Read-only; a missing file raises ``FileNotFoundError`` -- the digest of
     a file that is not there is never invented.
     """
     h = hashlib.sha256()
@@ -235,9 +231,9 @@ def git_rev(root: str):
 def code_hash(root: str, files: list) -> str:
     """sha256 over the git revision (if available) and the file digests.
 
-    ``files`` are paths relative to ``root``.  A missing file raises
-    ``FileNotFoundError`` naming it, for the same reason ``data_hash``
-    refuses to skip one: the code hash must cover exactly the code that ran.
+    ``files`` are paths relative to ``root``; a missing file raises
+    ``FileNotFoundError`` naming it (the code hash must cover exactly the
+    code that ran).
     """
     parts = []
     rev = git_rev(root)
@@ -251,6 +247,29 @@ def code_hash(root: str, files: list) -> str:
         parts.append(f"{rel}:{file_sha256(path)}")
     if not parts:
         raise ValueError("code_hash needs at least one file")
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
+def code_hash_at(root: str, rev: str, files: list) -> str:
+    """The same construction as ``code_hash``, pinned to a git revision.
+
+    The file contents are read from the named revision, so a result
+    produced by an older revision is fingerprinted by THAT code and not by
+    whatever the working tree holds now.
+    """
+    parts = [f"git:{rev}"]
+    for rel in sorted(files):
+        try:
+            out = subprocess.run(["git", "-C", str(root), "cat-file", "blob",
+                                  f"{rev}:{rel}"],
+                                 capture_output=True, timeout=15)
+        except Exception as exc:
+            raise FileNotFoundError(
+                f"code_hash_at: cannot read {rel} at {rev}: {exc}") from exc
+        if out.returncode != 0:
+            raise FileNotFoundError(
+                f"code_hash_at: {rel} does not exist at {rev}")
+        parts.append(f"{rel}:{hashlib.sha256(out.stdout).hexdigest()}")
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
@@ -334,11 +353,7 @@ def new_record(id, title, status="registered", hypothesis="", *,
                promotion_criteria=None, family=None, config_hash="",
                data_hash="", code_hash="", variants=None,
                created_ts=None, updated_ts=None) -> PreregRecord:
-    """Build a preregistration record.
-
-    ``created_ts`` / ``updated_ts`` default to now; pass them explicitly
-    when a record documents a run that happened earlier.
-    """
+    """Build a preregistration record (timestamps default to now)."""
     now = int(time.time())
     return PreregRecord(
         id=id,
@@ -400,7 +415,7 @@ def load_all(directory) -> list:
     """Load every preregistration record in ``directory`` (sorted by id).
 
     Files that are not preregistration records are skipped; a file that
-    claims to be one but cannot be parsed is an error, never a silent skip.
+    claims to be one but cannot be parsed is an error, not a silent skip.
     """
     out = []
     try:
@@ -463,8 +478,7 @@ def validate(record, *, known_hypothesis_ids=None) -> list:
     The vocabulary mirrors ``proto.hypothesis_registry`` where the rule is
     the same rule (``required-field:``, ``ordering:``, ``embargo:``,
     ``within-window:``, ``unknown-hypothesis:``) and adds the
-    machine-readable ones (``bad-hash:``, ``variant-result-changed:``,
-    ``evidence-hash-mismatch:``).
+    machine-readable ones (``bad-hash:``, ``variant-result-changed:``).
     """
     if record is None:
         return ["required-field: record is required"]
@@ -639,30 +653,23 @@ def _validate_variants(record, known_hypothesis_ids=None):
 def register_variant(record: PreregRecord, variant: Variant, directory):
     """Register one tested variant; return the updated record.
 
-    The registry is **append-only**:
-
-      * a new ``variant_id`` is appended (and the record is written);
-      * the same ``variant_id`` with an identical result is idempotent (the
-        stored file is left byte-identical);
-      * the same ``variant_id`` with a DIFFERENT result raises
-        ``PreregError("variant-result-changed: ...")`` and changes nothing
-        on disk.
-
-    The comparison is made against the record in hand AND against the
-    stored file, so a result cannot be changed by re-registering it from
-    another process either.
+    The registry is **append-only**: a new ``variant_id`` is appended (and
+    written); the same id with an identical result is idempotent; the same
+    id with a DIFFERENT result raises
+    ``PreregError("variant-result-changed: ...")`` and changes nothing on
+    disk.  The comparison is made against the record in hand AND against
+    the stored file, so a result cannot be changed from another process.
     """
     incoming = _result_key(variant.result)
-    for source, label in ((record, "record"),):
-        existing = _find_variant(source, variant.variant_id)
-        if existing is not None and _result_key(existing.result) != incoming:
-            raise PreregError(
-                f"variant-result-changed: variant {variant.variant_id!r} is "
-                f"already registered with a different result; the variant "
-                f"registry is append-only",
-                errors=[f"variant-result-changed: variant "
-                        f"{variant.variant_id!r} already registered with a "
-                        f"different result"])
+    existing = _find_variant(record, variant.variant_id)
+    if existing is not None and _result_key(existing.result) != incoming:
+        raise PreregError(
+            f"variant-result-changed: variant {variant.variant_id!r} is "
+            f"already registered with a different result; the variant "
+            f"registry is append-only",
+            errors=[f"variant-result-changed: variant "
+                    f"{variant.variant_id!r} already registered with a "
+                    f"different result"])
     stored = None
     try:
         stored = load(directory, record.id)

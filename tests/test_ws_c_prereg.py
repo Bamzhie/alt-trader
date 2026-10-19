@@ -185,6 +185,21 @@ check("code_hash is order independent", ch == ch2)
 check("code_hash changes when the file set changes",
       ch != prereg.code_hash(ROOT, ["proto/quant/config.py"]))
 
+# code_hash_at pins the fingerprint to a revision instead of the worktree
+head = prereg.git_rev(ROOT)
+clean_files = ["proto/quant/config.py", "proto/quant/stats.py",
+               "proto/quant/bars.py"]
+check("code_hash_at agrees with code_hash on a clean tree",
+      prereg.code_hash_at(ROOT, head, clean_files) ==
+      prereg.code_hash(ROOT, clean_files),
+      f"{head}")
+raised = False
+try:
+    prereg.code_hash_at(ROOT, head, ["proto/quant/does_not_exist.py"])
+except FileNotFoundError:
+    raised = True
+check("code_hash_at raises for a file missing at the revision", raised)
+
 # ------------------------------------------------------------- record + rules
 print("\n=== record validation ===")
 rec = make_record()
@@ -534,6 +549,10 @@ if reg:
     check("the record carries real hashes",
           len(r.data_hash) == 64 and len(r.code_hash) == 64,
           f"{r.data_hash} / {r.code_hash}")
+    check("the record's code hash is pinned to the sweep's revision",
+          prereg.code_hash_at(ROOT, r.statistics["code_git_rev"],
+                              r.statistics["code_files"]) == r.code_hash,
+          f"{r.statistics['code_git_rev']}")
 
 # ------------------------------------------------------------------------ CLI
 print("\n=== prereg CLI ===")

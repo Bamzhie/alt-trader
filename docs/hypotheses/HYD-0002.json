@@ -191,19 +191,18 @@
     "threshold": 0.0,
     "denominator": "tradeable_events_in_window",
     "test": "day-cluster bootstrap 95% interval on the window mean, plus a max-t SPA multiplicity correction over the 288 declared configurations",
-    "code_git_rev": "40d805fed340a7f3dfd8a24236ffee965269a194",
+    "code_git_rev": "da5f43cd86cd17e6dcb62c480d6715f0b00f1d63",
     "code_files": [
-      "proto/quant/prereg.py",
       "proto/quant/research.py",
       "proto/quant/config.py",
       "proto/quant/barrier.py",
       "proto/quant/stats.py",
       "proto/quant/eval_harness.py",
       "proto/quant/cost_attribution.py",
-      "proto/quant/feature_store.py",
       "proto/quant/stream.py",
       "proto/quant/bars.py"
-    ]
+    ],
+    "code_note": "the code hash is pinned to the revision the sweep ran from (the artifact's git_rev); six of these files have changed since, so the working tree is not the code that produced the numbers"
   },
   "promotion_criteria": [
     {
@@ -247,7 +246,7 @@
   ],
   "config_hash": "d33cff513c30",
   "data_hash": "fe2ae686a3c74e367e9bd9aa7798930314564b58bf2b1eb79ef35f559761e913",
-  "code_hash": "a2ade572aa2b708a883323a06d385cd70b4e731cdfea97e4130bc3b51a483b49",
+  "code_hash": "ed7245ba8edff28a42564f6c4c615efce06357e2f69ca54ca33e97c7ef4fdada",
   "variants": [
     {
       "variant_id": "ws5-288-config-sweep",
@@ -332,14 +331,12 @@
           "input_digests": "the per-coin bar / funding / settlement digests of the input archives are recorded inside the artifact (bar_digests, funding_digests, settlement_digests); the artifact's own sha256 is the evidence hash and is covered by this record's data_hash",
           "funding_adjusted_note": "the artifact's dev_funding_adjusted / val_funding_adjusted blocks predate the 2026-10-19 cost/split audit and are superseded by funding-transitions.json; the friction-only rows quoted here are unchanged",
           "code_files": [
-            "proto/quant/prereg.py",
             "proto/quant/research.py",
             "proto/quant/config.py",
             "proto/quant/barrier.py",
             "proto/quant/stats.py",
             "proto/quant/eval_harness.py",
             "proto/quant/cost_attribution.py",
-            "proto/quant/feature_store.py",
             "proto/quant/stream.py",
             "proto/quant/bars.py"
           ]
@@ -354,6 +351,6 @@
       ]
     }
   ],
-  "created_ts": 1792452703,
-  "updated_ts": 1792452703
+  "created_ts": 1792453723,
+  "updated_ts": 1792453723
 }
