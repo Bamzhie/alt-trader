@@ -132,7 +132,7 @@ def _orders(q_range, n_q):
     """The moment-order grid, or (None, reason) when the range is invalid."""
     try:
         lo, hi = float(q_range[0]), float(q_range[1])
-    except (TypeError, ValueError, IndexError):
+    except (TypeError, ValueError, IndexError, KeyError):
         return None, "invalid-q-range"
     if not (lo > 0.0 and hi > 0.0) or hi <= lo:
         return None, "invalid-q-range"
@@ -191,6 +191,13 @@ def mfdfa(levels, q_min=8, q_max=64, q_range=(0.5, 1.5), seed=7, n_q=5) -> Estim
         give dfa_tau = 0.5; a random-walk path gives 1.5.
       * The measure assumes a self-similar (scale-free) process over the
         scale range [q_min, q_max]; outside it the fit is not meaningful.
+      * APPLICABILITY: the log-log fit needs at least 2 scales, so with the
+        default q_min = 8 the range [8, min(q_max, n//2)] must hold 8 and 9
+        or more, i.e. **n >= 18 points**; the practical threshold quoted
+        here is **n >= 32**, which gives a 4-scale ladder (8..16) that is
+        wide enough to fit.  Below the structural floor the estimator
+        returns None + "insufficient-sample" (bisected: 0 of 20 random-walk
+        seeds produced a value at n = 16, 20 of 20 from n = 18).
       * The finite-size caveat is the dominant one: with n of this size the
         scale range must stay well below n, and the exponent has a bias of
         a few hundredths at the smallest scales.

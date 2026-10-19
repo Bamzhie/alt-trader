@@ -824,9 +824,12 @@ regressed on `log q`, and **H = slope / 2** (`estimators.py:364`,
 * A random walk now gives **H = 0.9843** (was 1.5279 — the DFA tau, the same
   statistic `mfdfa` reports).
 * White noise gives **H = 0.5559**.
-* The value is a Hurst exponent in [0, 1] and the docstring states that it
-  is NOT the DFA structure exponent (which is H + 0.5 for a path with
-  stationary increments) and that the two must never be mixed up.
+* The value is a **Hurst exponent**: ≈0.5 for white-noise levels, ≈1.0 for
+  a random-walk path. It is **not clamped**, so a finite-sample estimate can
+  fall slightly outside [0, 1] (a deterministic ramp gives 1.0079). The
+  docstring states that it is NOT the DFA structure exponent (which is
+  H + 0.5 for a path with stationary increments) and that the two must never
+  be mixed up.
 * The scale range is capped so that every scale keeps at least
   `MIN_BLOCKS = 16` non-overlapping blocks (with fewer blocks the variance
   estimate is dominated by its own sampling error). The cap is reported in
@@ -868,13 +871,23 @@ say so; the distribution/tail/regime/dependence/breadth measures keep
 
 ### F5 — the feature store was single-thread-only and off house style
 
-**Fix** (`feature_store.py:141-142`), matching `proto/quant/qstore.py:63-65`
-and `proto/store.py:383-384`:
+**Fix** (`feature_store.py:141-142`):
 
 ```python
 self._conn = sqlite3.connect(path, timeout=5, check_same_thread=False)
 self._conn.execute("PRAGMA journal_mode=WAL")
 ```
+
+**Citation corrected in round 3.** The original text of this section said
+the store "matches `proto/quant/qstore.py:63-65` and
+`proto/store.py:383-384`". That was **wrong**: `qstore.py:63-64` is
+`sqlite3.connect(path)` (no timeout) and `store.py:383` is
+`sqlite3.connect(path, timeout=30)`; neither uses `check_same_thread=False`
+(which appears nowhere else in the repo). The 5 s busy timeout convention
+comes from `proto/service.py` (e.g. `:312`, `:347`, `:487`) and
+`proto/daemon.py:179`; the WAL pragma is the house pattern of
+`qstore.py:65` and `store.py:384`. The **code** was always correct; only the
+citation was wrong.
 
 **Test (new)** — the store is written and read from a worker thread:
 
@@ -1111,7 +1124,7 @@ as_of at confirmed   : True
 | **N4** | The moment-order range is validated BEFORE the parameters are built and before the series is touched (`mfdfa.py:144-150` `_safe_q_range`, `mfdfa.py:207-217`, `mfdfa.py:290-296`).  A broken range (`None`, `"x"`, a 1-tuple, an inverted range) now returns `None` + `"invalid-q-range"` instead of raising `TypeError` / `ValueError`. | `PASS  a broken q_range (None) returns None + a reason instead of raising`, `... ('x') ...`, `... ((1.0,)) ...`, `... ((2.0, 1.0)) ...` |
 | **F3 caveat** | The docstring no longer claims H is "in [0, 1]": it says the value is a Hurst exponent (≈0.5 for noise, ≈1.0 for a random walk) and that it is **NOT clamped** — a finite-sample estimate can fall slightly outside (a deterministic ramp gives **1.0079**).  The code was left unclamped, and the report agrees. | `PASS  a deterministic ramp gives a Hurst exponent near 1.0`, `PASS  the Hurst exponent is NOT silently clamped into [0, 1]` |
 | **N6** | The stored enum stays small and stable: every failed estimate stores `"missing"` (or `"insufficient"`), and the distinction between a degenerate estimate and an absent feature lives **only** in `meta["estimator_reason"]` (and `meta["n"]`).  This is now stated in the `FeatureRecord` and `from_estimate` docstrings and in §7 below. | `PASS  from_estimate maps a failed estimate to a documented reason`, `PASS  from_estimate keeps the estimator's own reason in the meta` |
-| **N5** | The applicability limit is now in the `hurst_generalized` docstring ("APPLICABILITY", `estimators.py:389-393`) and in §6 below: the aggregated-variance estimator needs at least `MIN_BLOCKS = 16` non-overlapping blocks at every scale, i.e. roughly **n ≥ 256**; below that it returns `None` + `"insufficient-sample"`.  This is a property of the estimator (the R/S estimator has no such limit), not a defect — and it is a silent loss of applicability, so it is called out explicitly. | (docstring + report; the behaviour is `None` + "insufficient-sample" for n = 256) |
+| **N5** | The applicability limit is now in the `hurst_generalized` docstring ("APPLICABILITY") and in §6 below. **Corrected in round 3**: the threshold is **n ≥ 512** (not ~256 — at n = 256 the estimator returns `None` + `"insufficient-sample"`), because the ladder needs 3 scales (8, 16, 32) and `MIN_BLOCKS = 16` blocks at the largest scale → 16 × 32 = 512. The R/S estimator needs n ≥ 128 and the MF-DFA family n ≥ 32. | (docstring + report §6; the behaviour is `None` + "insufficient-sample" for n = 256 and a value from n = 512) |
 
 ## 4. Report accuracy corrections
 
@@ -1141,11 +1154,31 @@ as_of at confirmed   : True
 
 ## 6. Applicability limits (stated, not hidden)
 
-| estimator | minimum input | reason |
-|---|---|---|
-| `hurst_rs` | 2 * min_scale = 16 points | the R/S curve needs >= 3 scales |
-| `hurst_generalized` | ~256 points (16 non-overlapping blocks at every scale) | `MIN_BLOCKS`; below that `None` + "insufficient-sample" |
-| `mfdfa` / `mfdfa_spectrum` | 2 * q_min = 16 points, and the q range must contain 1.0 | otherwise `None` + a reason |
+The thresholds below were **bisected** on this tree: for each estimator, 20
+random-walk seeds at increasing `n`; the number is the smallest `n` at which
+20 of 20 seeds produce a value (below it the estimator returns `None` +
+`"insufficient-sample"`).  The **rule** that produces each number is given
+in the last column.
+
+| estimator | practical minimum n | structural floor | the rule |
+|---|---:|---:|---|
+| `hurst_rs` | **128** | 128 | the R/S curve needs ≥ 3 scales (8, 16, 32) and the default `max_scale = n // 4` must reach 32 → n ≥ 4 × 32 = 128 |
+| `hurst_generalized` | **512** | 512 | the ladder needs ≥ 3 scales (8, 16, 32) **and** `MIN_BLOCKS = 16` non-overlapping blocks at the largest scale → n ≥ 16 × 32 = 512 |
+| `mfdfa` / `mfdfa_spectrum` | **32** | 18 | the log-log fit needs ≥ 2 scales: `min(q_max, n // 2) ≥ q_min + 1` → n ≥ 2 × (8 + 1) = 18; **n = 32** is the practical threshold (a 4-scale ladder 8…16) |
+
+Bisection evidence (20 random-walk seeds per point):
+
+```
+  hurst_rs        n= 16  0/20     n= 32  0/20     n= 64  0/20     n= 96  0/20     n=128 20/20
+  hurst_generalized n=256  0/20   n=384  0/20    n=448  0/20     n=512 20/20
+  mfdfa           n= 16  0/20     n= 18 20/20     n= 32 20/20     n= 64 20/20
+```
+
+This is a property of the estimators (the R/S and the aggregated-variance
+estimators need a scale ladder), not a defect — but it IS a silent loss of
+applicability, so it is stated in the docstring of each estimator
+(`estimators.py` `hurst_rs` APPLICABILITY, `hurst_generalized`
+APPLICABILITY, `mfdfa.py` APPLICABILITY) and here.
 
 ## 7. The stored reason vocabulary (N6)
 
@@ -1216,6 +1249,135 @@ $ echo $?
 | `66a4a02` | docs(quant): task A report — round 0 |
 | `d4d7d77` | fix(quant): task A review findings (F1-F15) + report — round 1 |
 | _(HEAD)_ | fix(quant): task A round 2 (F15 leg fallback, N1 pivot look-ahead, N2/N3/N4/N5/N6) + report |
+
+The fix commit's hash is the branch HEAD; it is printed in the handover
+message (writing it into this file would change the file and therefore the
+hash).
+
+---
+
+# FIX ROUND 3 (documentation/report findings + one-line robustness fix)
+
+**Status: DONE** — every finding addressed; nothing left unaddressed.  No
+behavioural change except the one-line N4 residual (a `KeyError` is now a
+reason instead of an exception).
+
+- Branch: `feature/ws-a-measurement` (worktree `/tmp/opencode/wt-a`), not pushed.
+- The fix commit is the branch HEAD (see §5).
+- Sizes: `structure.py` 312, `estimators.py` 536, `mfdfa.py` 345,
+  `measures.py` 413, `feature_store.py` 294 lines; the test file is 742 lines
+  / 147 checks.
+
+## 1. N5 — the applicability thresholds were wrong
+
+The APPLICABILITY bullets and the report §6 quoted thresholds that the
+reviewer bisected and found incorrect.  The numbers were re-measured **on
+this tree** (20 random-walk seeds per point; the threshold is the smallest
+`n` at which 20 of 20 seeds produce a value):
+
+```
+  hurst_rs          n= 16  0/20   n= 32  0/20   n= 64  0/20   n= 96  0/20   n=128 20/20
+  hurst_generalized n=256  0/20   n=384  0/20   n=448  0/20   n=512 20/20
+  mfdfa             n= 16  0/20   n= 18 20/20   n= 32 20/20   n= 64 20/20
+```
+
+| estimator | practical minimum n | the rule that produces it |
+|---|---:|---|
+| `hurst_rs` | **128** | the R/S curve needs ≥ 3 scales (8, 16, 32) and the default `max_scale = n // 4` must reach 32 → n ≥ 4 × 32 = 128 |
+| `hurst_generalized` | **512** | the ladder needs ≥ 3 scales (8, 16, 32) **and** `MIN_BLOCKS = 16` non-overlapping blocks at the largest scale → n ≥ 16 × 32 = 512 |
+| `mfdfa` / `mfdfa_spectrum` | **32** (structural floor 18) | the log-log fit needs ≥ 2 scales: `min(q_max, n // 2) ≥ q_min + 1` → n ≥ 2 × (8 + 1) = 18; n = 32 is the practical threshold (a 4-scale ladder 8…16) |
+
+**Changed**
+
+* `proto/quant/estimators.py:292-297` — the `hurst_rs` docstring now has an
+  APPLICABILITY bullet: *"the R/S curve needs at least 3 scales, so with the
+  default min_scale = 8 the ladder must reach 32, and the default max_scale =
+  n // 4 must reach it: n >= 128 points"* (with the bisection evidence).
+* `proto/quant/estimators.py:396-403` — the `hurst_generalized` APPLICABILITY
+  bullet: *"the largest usable scale is therefore 32, and 16 blocks x 32 =
+  n >= 512 points"*, plus the cross-reference to the other two estimators.
+* `proto/quant/mfdfa.py:194-201` — the `mfdfa` APPLICABILITY bullet: the
+  structural floor (n ≥ 18, two scales) and the practical threshold (n ≥ 32).
+* `TASK-A-REPORT.md` §6 (round 2) — the table replaced with the corrected
+  numbers, the rules and the bisection evidence; and the round-2 N5 row
+  (§7 of the round-2 text) corrected, so the report is self-consistent.
+
+## 2. F3 caveat — a false claim left in the report body
+
+`TASK-A-REPORT.md:827` (the round-1 F3 section) still asserted *"The value
+is a Hurst exponent in [0, 1]"*, which the code does not guarantee (a
+deterministic ramp gives 1.0079 and the value is deliberately **not**
+clamped).
+
+**Changed** — the sentence now reads: *"The value is a **Hurst exponent**:
+≈0.5 for white-noise levels, ≈1.0 for a random-walk path. It is **not
+clamped**, so a finite-sample estimate can fall slightly outside [0, 1] (a
+deterministic ramp gives 1.0079)."* — consistent with the softened
+docstring (`estimators.py:377-383`).
+
+## 3. Report accuracy — a stale false claim and a stale citation
+
+* **The report** (`TASK-A-REPORT.md:871-872`, the round-1 F5 section) still
+  said the store "matches `proto/quant/qstore.py:63-65` and
+  `proto/store.py:383-384`".  Corrected in place: the 5 s busy timeout
+  convention comes from `proto/service.py` (e.g. `:312`, `:347`, `:487`) and
+  `proto/daemon.py:179`; the WAL pragma from `proto/quant/qstore.py:65` and
+  `proto/store.py:384`; and `check_same_thread=False` is used **here only**
+  (it appears nowhere else in the repo).
+* **The code** (`proto/quant/feature_store.py:143-150`, the `FeatureStore`
+  class docstring) pointed at `qstore.py` as the source of the 5 s timeout
+  and the `check_same_thread=False` pattern.  Corrected to the same
+  attribution, so the code and the report agree.
+
+## 4. N4 residual — one line
+
+`proto/quant/mfdfa.py:131-137`: `_orders` caught only `TypeError`,
+`ValueError` and `IndexError`, so a `dict` passed as `q_range` raised an
+uncaught `KeyError`.  The except tuple now also catches `KeyError`, so every
+invalid range returns `None` + `"invalid-q-range"` like the rest of the
+contract.
+
+**Test** — the dict case was added to the existing invalid-q-range test
+(`tests/test_ws_a_measurement.py`):
+
+```
+  PASS  a broken q_range (None) returns None + a reason instead of raising
+  PASS  a broken q_range ('x') returns None + a reason instead of raising
+  PASS  a broken q_range ((1.0,)) returns None + a reason instead of raising
+  PASS  a broken q_range ((2.0, 1.0)) returns None + a reason instead of raising
+  PASS  a broken q_range ({0.5: 1, 1.5: 2}) returns None + a reason instead of raising
+```
+
+## 5. Test commands and their real output
+
+```
+$ cd /tmp/opencode/wt-a && python3 tests/test_ws_a_measurement.py
+... (147 checks) ...
+ALL PASS
+$ echo $?
+0
+```
+
+```
+$ cd /tmp/opencode/wt-a && python3 tests/run_all.py
+PASS  test_adapter.py  [ALL PASS]
+... (82 files) ...
+PASS  test_ws_a_measurement.py  [ALL PASS]
+
+ALL SUITES PASS (82 files)
+$ echo $?
+0
+```
+
+## 6. Commits
+
+| Hash | Message |
+|---|---|
+| `8a6f9ab` | feat(quant): add the market measurement & structure engine — round 0 |
+| `66a4a02` | docs(quant): task A report — round 0 |
+| `d4d7d77` | fix(quant): task A review findings (F1-F15) + report — round 1 |
+| `c2d9ff9` | fix(quant): task A round 2 (F15 leg fallback, N1 pivot look-ahead, N2-N6) |
+| _(HEAD)_ | fix(quant): task A round 3 (N5 thresholds, report accuracy, N4 KeyError) |
 
 The fix commit's hash is the branch HEAD; it is printed in the handover
 message (writing it into this file would change the file and therefore the

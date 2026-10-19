@@ -140,10 +140,13 @@ class FeatureStore:
     ``UNIQUE(coin, name, version, bar_ts)``: the key is the feature identity
     plus the bar it describes.
 
-    The connection is opened the way the rest of the house does it (see
-    ``proto/quant/qstore.py``): a 5 s busy timeout, ``check_same_thread``
-    disabled and WAL journaling, so the store can be used from the service's
-    worker threads.
+    The connection follows the house conventions: the 5 s busy timeout comes
+    from ``proto/service.py`` (e.g. :312) and ``proto/daemon.py:179`` (the
+    other store classes use ``sqlite3.connect(path)`` or a 30 s timeout), and
+    the WAL pragma from ``proto/quant/qstore.py:65`` and
+    ``proto/store.py:384``.  ``check_same_thread=False`` is used HERE ONLY -
+    it appears nowhere else in the repo - because the service and the daemon
+    are threaded and this store is written from worker threads.
     """
 
     version = FEATURE_STORE_VERSION

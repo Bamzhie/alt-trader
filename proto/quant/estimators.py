@@ -289,6 +289,12 @@ def hurst_rs(levels, min_scale=8, max_scale=None, seed=7) -> Estimate:
         residual bias at these sample sizes is a few hundredths.
       * The scale range is [min_scale, max_scale] (default max_scale =
         n // 4) and the scales form a geometric ladder (q, 2q, 4q, ...).
+      * APPLICABILITY: the R/S curve needs at least 3 scales, so with the
+        default min_scale = 8 the ladder must reach 32, and the default
+        max_scale = n // 4 must reach it: **n >= 128 points**.  Below that
+        the estimator returns None + "insufficient-sample" (bisected: 0 of
+        20 random-walk seeds produced a value at n = 96, 20 of 20 at
+        n = 128).
       * The uncertainty is the STANDARD ERROR OF THE SLOPE of the log-log
         regression: it covers the scatter of the R/S points around the fitted
         line only.  It does NOT cover the finite-size bias, the effect of the
@@ -386,12 +392,16 @@ def hurst_generalized(levels, min_scale=8, max_scale=None, seed=7) -> Estimate:
         noisy.  The scale range is therefore capped so that every scale
         keeps at least MIN_BLOCKS (16) blocks - above that the variance of
         the block sums is dominated by its own sampling error.
-      * APPLICABILITY: the estimator needs at least MIN_BLOCKS blocks at
-        every scale, i.e. a series of roughly 256 points or more; below that
-        it returns None + "insufficient-sample".  This is an applicability
-        limit of the aggregated-variance estimator, NOT a defect: the R/S
-        estimator (``hurst_rs``) has no such limit and stays usable on
-        shorter series.
+      * APPLICABILITY: the estimator needs at least MIN_BLOCKS (16)
+        non-overlapping blocks at every scale of the ladder, and the ladder
+        must hold at least 3 scales (8, 16, 32 with the default
+        min_scale).  The largest usable scale is therefore 32, and
+        16 blocks x 32 = **n >= 512 points**.  Below that the estimator
+        returns None + "insufficient-sample".  (The threshold was bisected:
+        0 of 20 random-walk seeds produced a value at n = 256, 20 of 20 at
+        n = 512.)  This is an applicability limit of the aggregated-variance
+        estimator, NOT a defect: the R/S estimator (``hurst_rs``) needs
+        n >= 128 and the MF-DFA family (see :func:`mfdfa`) n >= 32.
       * The estimator measures how the variance of the AGGREGATE (block sum)
         scales.  A deterministic trend inflates H; strong mean reversion
         deflates it; the estimator assumes a self-similar process over the

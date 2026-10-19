@@ -366,7 +366,7 @@ check("an invalid q range is refused with a reason",
 check("an invalid q range never raises",
       ES.mfdfa(mono, q_range=(-1.0, 1.0)).value is None
       and ES.mfdfa(mono, q_range=(-1.0, 1.0)).reason is not None)
-for broken in (None, "x", (1.0,), (2.0, 1.0)):
+for broken in (None, "x", (1.0,), (2.0, 1.0), {0.5: 1, 1.5: 2}):
     try:
         est_broken = ES.mfdfa(mono, q_range=broken)
         spec_broken = ES.mfdfa_spectrum(mono, q_range=broken)
