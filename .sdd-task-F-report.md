@@ -558,9 +558,12 @@ not.
 | `90c5704` | test(ws-f): startup & first-sweep regression suite (76 checks) |
 | `ce0eef5` | docs(ws-f): Workstream F report |
 | `879e223` | docs(ws-f): fill the report commit hashes |
+| `5c792d8` | fix(ws-f): address the review findings (F1, F4-F7, F9, F11, F12) |
+| `f2d9807` | test(ws-f): regression tests for the review findings (F1, F2, F3, F4, F6) |
+| `51c664c` | docs(ws-f): append the fix-round-1 report (F1-F13) and correct the commit list |
 
 (branch `feature/ws-f-startup` in `/tmp/opencode/wt-f`; not pushed. The
-review fix round is committed on top of these — see section 7.)
+review fix round is committed on top of the first four — see section 7.)
 
 ---
 
