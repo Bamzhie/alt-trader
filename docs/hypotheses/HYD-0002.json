@@ -191,7 +191,7 @@
     "threshold": 0.0,
     "denominator": "tradeable_events_in_window",
     "test": "day-cluster bootstrap 95% interval on the window mean, plus a max-t SPA multiplicity correction over the 288 declared configurations",
-    "code_git_rev": "ef438e6222726600e585c13e0e7dc1c2028a9c08",
+    "code_git_rev": "40d805fed340a7f3dfd8a24236ffee965269a194",
     "code_files": [
       "proto/quant/prereg.py",
       "proto/quant/research.py",
@@ -247,7 +247,7 @@
   ],
   "config_hash": "d33cff513c30",
   "data_hash": "fe2ae686a3c74e367e9bd9aa7798930314564b58bf2b1eb79ef35f559761e913",
-  "code_hash": "5b09e74f497bc2273b23d20931735d77b1ab7a6660d25961372505b0b0a322d9",
+  "code_hash": "a2ade572aa2b708a883323a06d385cd70b4e731cdfea97e4130bc3b51a483b49",
   "variants": [
     {
       "variant_id": "ws5-288-config-sweep",
@@ -354,6 +354,6 @@
       ]
     }
   ],
-  "created_ts": 1792452678,
-  "updated_ts": 1792452678
+  "created_ts": 1792452703,
+  "updated_ts": 1792452703
 }
