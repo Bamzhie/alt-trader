@@ -123,3 +123,47 @@ Protected (read-only to every workstream): `proto/quant/stats.py`,
 - Holdout: sealed, untouched. ACTIONABLE output: still disabled. No
   promotion performed. `docs/decisions/log.jsonl` still 0 bytes.
 
+
+- Task B: **APPROVED** by the scoped re-review (all 9 findings addressed; 6 minor
+  report/doc nits deferred to the final review). Merged into `main` as `280e41c`.
+- Task A: round 2 addressed every behavioural finding; the re-review left three
+  documentation findings partially open (wrong applicability thresholds, a stale
+  "H in [0,1]" claim in the report body, a stale `qstore.py` citation). Round 3
+  (documentation + one `KeyError` line) committed as `ef438e6`; scoped re-review in flight.
+- Task E: implemented (commits 2d7ec8f RED-first, 5bef58d, e17d5cf), full suite
+  ALL SUITES PASS (84 files) in its worktree; fresh task reviewer in flight.
+  Nothing promoted: `docs/decisions/log.jsonl` still 0 bytes, `chain.jsonl` absent
+  from the repository, no `data/promotions.json`.
+## Ledger rulings (decisions taken on the owner's behalf)
+
+Preserved from the scratch SDD workspace so the decisions stay auditable.
+
+Rulings:
+- **Ruling: B does not import A's `estimators` module in wave 1.** A and B run
+  in parallel worktrees and neither can see the other's code. B implements
+  the small regime/breadth/dependence helpers it needs locally, and wave-2
+  tasks (C) may adopt A's `estimators` once merged. Cost if wrong: a small
+  amount of duplicated helper code in wave 1.
+- **Ruling: `/readyz` changes meaning (API-serving readiness) and the
+  first-sweep status moves into `/scanner-health` as a `first_sweep` block.**
+  Owner approved. The frontend (wave 3) must be updated to match; the old
+  503 "first sweep not complete" meaning must not survive anywhere.
+- **Ruling: the new hash-chained decision log is a SEPARATE artifact**
+  (`docs/decisions/chain.jsonl`); `docs/decisions/log.jsonl` stays 0 bytes and
+  untouched. Owner approved.
+- **Ruling: all six workstreams are attempted**, staged by wave, and any
+  workstream that ends up partial is reported as partial (owner approved).
+
+Rulings made in this wave:
+- **Ruling: the Pivot field name stays `leg_bars`** (the brief's name); the plan's
+  §1.2 said `bars_of_leg` and the plan is aligned to the shipped name. Cost if
+  wrong: a rename in the plan, no code change.
+- **Ruling: the Hurst/MF-DFA estimators keep their names but take a `levels`
+  parameter** (a level path), with `level_from_returns()` as the explicit bridge.
+  The brief's parameter name (`returns`) and its acceptance criterion 4 pull in
+  opposite directions; the criterion wins. Cost if wrong: a rename.
+- **Ruling: adverse excursion (MAE) is documented as not computable** from the
+  research event contract (no bar path), rather than implemented. Cost if wrong: MAE
+  is missing from the risk measures.
+- **Ruling: the placebo null is described as "retains the rule's average edge"**,
+  not as signal-free. Cost if wrong: a mis-stated limitation in the report.
