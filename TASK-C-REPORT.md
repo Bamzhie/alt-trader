@@ -7,9 +7,9 @@ that it is a retrospective registration).
 
 - Worktree: `/tmp/opencode/wt-c`, branch `feature/ws-c-prereg`
 - Base: `ef438e6` (Workstream A, `feature/ws-a-measurement`)
-- Commits: `40d805f` (implementation + data), `8517488` (code fingerprint
-  pinned), and this report (the tip of `feature/ws-c-prereg`; a commit
-  cannot contain its own hash, so its hash is in the hand-off).
+- Commits: `40d805f` (implementation + data), `8517488` (record fingerprint),
+  `d14883e` (this report, first cut), `5f4bf76` (code hash pinned to the
+  sweep's revision + report update). Nothing was pushed.
 - Nothing was pushed. `data/` was never written. The one-shot holdout was
   never evaluated, unlocked or tuned against. The 288-configuration
   evaluation was **not** re-run.
@@ -18,7 +18,7 @@ that it is a retrospective registration).
 
 ## 1. What changed, file by file
 
-### 1.1 `proto/quant/prereg.py` (NEW, 699 lines)
+### 1.1 `proto/quant/prereg.py` (NEW, 706 lines)
 
 The preregistration record and the append-only variant registry.
 
@@ -69,6 +69,7 @@ def file_sha256(path) -> str
 def data_hash(paths: dict) -> str            # sha256 over sorted (name, sha256) pairs
 def git_rev(root) -> str | None              # helper (best effort)
 def code_hash(root: str, files: list) -> str # git rev (if available) + file digests
+def code_hash_at(root: str, rev: str, files: list) -> str  # the same, pinned to a revision
 def new_record(id, title, status="registered", hypothesis="", *,
                feature_definitions=None, universe="",
                point_in_time_membership="", horizons=None, event_rules=None,
@@ -182,7 +183,7 @@ The preregistration sidecar for HYD-0002 — see §4.
 
 ### 1.6 `tests/test_ws_c_prereg.py` (NEW, 566 lines)
 
-91 self-checking assertions covering: the hash helpers (including the
+94 self-checking assertions covering: the hash helpers (including the
 missing-file error), every required field of a registered record, the
 split ordering and the embargo rules, the family rules, the variant
 denominator, the evidence hash (wrong digest, non-64-hex digest, missing
@@ -230,7 +231,7 @@ $ python3 tests/test_ws_c_prereg.py
 ...
 ALL PASS
 ```
-(91 `PASS` lines, 0 `FAIL` lines, exit 0.)
+(94 `PASS` lines, 0 `FAIL` lines, exit 0.)
 
 ```
 $ python3 tests/test_hypotheses.py
@@ -414,17 +415,22 @@ null` — the one-shot holdout was **not** spent.
 |---|---|---|
 | `config_hash` | `d33cff513c30` | the run's own config hash, quoted from the artifact |
 | `data_hash` | `fe2ae686a3c74e367e9bd9aa7798930314564b58bf2b1eb79ef35f559761e913` | `prereg.data_hash({"evaluation_artifact": <artifact>})` |
-| `code_hash` | `a2ade572aa2b708a883323a06d385cd70b4e731cdfea97e4130bc3b51a483b49` | `prereg.code_hash(<repo>, <10 source files>)` |
+| `code_hash` | `ed7245ba8edff28a42564f6c4c615efce06357e2f69ca54ca33e97c7ef4fdada` | `prereg.code_hash_at(<repo>, "da5f43c...", <8 pipeline files>)` |
 
-The `code_hash` embeds the git revision `40d805fed340a7f3dfd8a24236ffee965269a194`
-(the code commit). It is reproducible: recomputing
-`sha256("git:<rev>" + the ten file digests)` at that revision yields the
-stored value — verified:
+The `code_hash` is pinned to **`da5f43cd86cd17e6dcb62c480d6715f0b00f1d63`** —
+the revision the sweep actually ran from (the artifact's own `git_rev`).
+This matters: six of the eight pipeline files (`research.py`,
+`barrier.py`, `stats.py`, `eval_harness.py`, `cost_attribution.py` and
+`feature_store.py`, which did not exist then) have changed since, so
+hashing the working tree would have certified code that did **not**
+produce the numbers. `prereg.code_hash_at(root, rev, files)` reads the
+file contents from the named revision, and the record's
+`statistics.code_git_rev` / `statistics.code_files` name that revision
+and those files, so the fingerprint is reproducible:
 
 ```
-code_hash stored    : a2ade572aa2b708a883323a06d385cd70b4e731cdfea97e4130bc3b51a483b49
-code_hash recomputed: a2ade572aa2b708a883323a06d385cd70b4e731cdfea97e4130bc3b51a483b49 MATCH: True
-files changed since that commit: (none)
+code_hash stored    : ed7245ba8edff28a42564f6c4c615efce06357e2f69ca54ca33e97c7ef4fdada
+code_hash recomputed: ed7245ba8edff28a42564f6c4c615efce06357e2f69ca54ca33e97c7ef4fdada MATCH: True
 ```
 
 The record also states the point-in-time membership rule, the seven
@@ -520,15 +526,23 @@ is byte-identical to the committed one (no modification).
    label, at least 1 day otherwise) and not the quant `Splits`' 2-day
    embargo; the record declares `embargo_days: 2.0`, which satisfies both
    (and both window gaps are exactly 2 days).
-10. **The code fingerprint needed a second commit.** `code_hash` mixes
-    the git revision with the file digests, and a commit cannot contain
-    its own hash, so the record is committed once and then re-generated
-    (commit `8517488`) so that its `code_git_rev` names the commit that
-    carries the code. Only the fingerprint and the timestamps changed;
-    the variant's result is byte-identical — the append-only registry
-    refused the first attempt, which had put the varying git revision
-    inside the variant's result.
-11. **Not done, deliberately:** no preregistration sidecar was created for
+10. **The code fingerprint is pinned to the revision the sweep ran from**
+    (`da5f43c`), not to the working tree, because six of the eight pipeline
+    files have changed since that run. `prereg.code_hash_at(root, rev,
+    files)` (an addition to the mandated helpers) reads the file contents
+    from the revision, so the fingerprint is reproducible by anyone who has
+    the repository. The first attempt put the varying git revision inside
+    the variant's result — the append-only registry refused it, which is
+    exactly what it is for; the provenance now sits on the record
+    (`statistics.code_git_rev` / `code_files`).
+11. **`proto/quant/prereg.py` is 706 lines**, a few over the brief's
+    "~700 lines, split a module that grows past it" guidance. It was kept
+    as one module because the brief mandates the public API *path*
+    (`proto/quant/prereg.py` must expose `file_sha256`, `data_hash`,
+    `code_hash`, `new_record`, `save`, `load`, `load_all`, `validate` and
+    `register_variant`); splitting it would break the contract the
+    orchestrator integrates against.
+12. **Not done, deliberately:** no preregistration sidecar was created for
     `HYD-0001` (it has never been evaluated, so a sidecar would imply a
     declared test that never happened); no promotion, no ACTIONABLE
     output, no change to `gates.py` / `registry.py` / `selector.py` or to
@@ -543,7 +557,9 @@ is byte-identical to the committed one (no modification).
 |---|---|
 | `40d805f` | `feat(quant): preregistration record + sliced research report (workstream C)` — the implementation, the test file, the HYD-0002 markdown + sidecar |
 | `8517488` | `data(quant): pin the HYD-0002 preregistration code fingerprint to the code commit` — the record re-generated so its `code_git_rev` names `40d805f` |
-| (tip) | `docs(quant): task C report (workstream C: preregistration workflow)` — this file; the hash is in the hand-off because a commit cannot contain its own hash |
+| `d14883e` | `docs(quant): task C report (workstream C: preregistration workflow)` — this report (first cut) |
+| `5f4bf76` | `fix(quant): pin the preregistration code hash to the revision the sweep ran from` — `code_hash_at`, the record re-pinned to `da5f43c`, the extra tests |
+| (tip) | this report's final cut; the hash is in the hand-off because a commit cannot contain its own hash |
 
 Base commit: `ef438e6` (Workstream A). Working tree is clean apart from
 the untracked `task-C-brief.md` (the orchestrator's brief, deliberately
