@@ -13,7 +13,7 @@ are design decisions the reviewer should look at, listed in §5).
 
 ## 1. What changed, file by file
 
-### 1.1 `proto/quant/champion.py` (NEW, 560 lines)
+### 1.1 `proto/quant/champion.py` (NEW, 807 lines after fix round 1)
 
 The public API, verbatim:
 
@@ -45,7 +45,9 @@ class Registry:
     def get(self, id: str) -> ConfigVersion | None
     def list(self, status: str | None = None) -> list[ConfigVersion]
     def list_current(self, status: str | None = None) -> list[ConfigVersion]   # extra
-    def set_champion(self, id: str) -> None             # appends; demotes the previous champion to "retired"
+    def set_champion(self, id: str, *, allow_promote: bool = False) -> None
+        # appends; demotes the previous champion to "retired";
+        # REFUSES without the explicit allow_promote=True opt-in
     def champion(self) -> ConfigVersion | None
 
 def compare(champion: ConfigVersion, candidate: ConfigVersion, events, window, *,
@@ -73,10 +75,18 @@ Behaviour:
   - *same events, verified*: the two sides' event-id sets are compared; if
     they differ the comparison is **refused with a reason** (the reason names
     the counts and the first ids that differ on each side).
-  - *same cost model, verified*: each side's cost model is described and
-    hashed on its own (its `config_hash` + the effective fee/slippage model +
-    the slip/fee multipliers + the funding inputs).  The two hashes must
-    match, otherwise the comparison is **refused with a reason**.
+  - *the applied cost model, verified*: both sides are evaluated with ONE
+    applied cost model (the multipliers are folded into it); the descriptor
+    is computed per side and compared, and the result reports it as
+    `same_applied_cost_model` / `same_cost_model`.
+  - *the provenance, reported separately*: `same_config_hash` says whether
+    the two versions were registered under the same config hash.  When they
+    were not, the comparison is **refused** — their evidence was produced
+    under different cost models — and the reason says exactly that.
+  - *the label slots are recorded*: two configurations with the same rule
+    but different geometries select the same events and read DIFFERENT
+    label slots of them; each side block carries its `label_slots` and
+    `geometry`, and the result carries `same_label_slot`.
   - *matched costs*: `slip_mult`/`fee_mult` are folded into the **cost
     model itself** (`dataclasses.replace` on `CostModel`), so the outcome
     layer prices both sides identically instead of the multipliers being
@@ -105,11 +115,13 @@ Behaviour:
   Returned shape (the keys the brief asks for, plus extras):
   `n_events, n_champion, n_candidate, same_events, same_cost_model,
   cost_model, champion, candidate, difference, ci_lo, ci_hi, t, clusters,
-  disagreements, denominator` and — extra — `refused, reason, reasons,
-  metric, ci_lo_coin, ci_hi_coin, t_coin, window, champion_id,
-  candidate_id, version`.
+  disagreements, denominator` and — extra — `same_applied_cost_model,
+  same_config_hash, same_label_slot, refused, reason, reasons, metric,
+  ci_lo_coin, ci_hi_coin, t_coin, window, champion_id, candidate_id,
+  version`.  A refusal reports the flags that were ACTUALLY verified
+  (`True`/`False`) and `None` for the ones that were not established.
 
-### 1.2 `proto/quant/decision_log.py` (NEW, 400 lines)
+### 1.2 `proto/quant/decision_log.py` (NEW, 430 lines after fix round 1)
 
 ```python
 DECISION_LOG_VERSION = "decision-chain-v1"
@@ -144,6 +156,13 @@ def validate_chain(path: str) -> list[str]
   write (a concurrent writer is detected), and it verifies every cited
   evidence file by re-hashing it (a missing file or a changed file is a
   refusal with a reason).
+- **The timestamp is checked at write time** (fix round 1, M6): a `ts` that
+  is not strictly after the tail's `ts`, or an explicit `ts` in the future,
+  is refused BEFORE it is written — otherwise it would poison the chain and
+  make every later append impossible.  The default `ts` (now) is raised to
+  `tail_ts + 1` when the clock has not moved past the previous decision, so
+  two decisions in the same second still produce a strictly increasing
+  chain.
 - `validate_chain()` returns one string per problem and `[]` when the chain
   is valid.  It detects: a broken hash chain, an edited entry (the content
   no longer matches the recorded hash), a duplicate id, a bad id format, a
@@ -186,7 +205,7 @@ python3 -m proto.quant champions compare --db <path> --champion <id>
   `--window`, `--out`) are all present and behave as specified.  `--data` is
   needed because a comparison needs the events; the holdout is never spent.
 
-### 1.4 `tests/test_ws_e_champion.py` (NEW, 706 lines, 104 checks)
+### 1.4 `tests/test_ws_e_champion.py` (NEW, 895 lines, 138 checks after fix round 1)
 
 Self-checking script in the house style (prints `PASS`/`FAIL` per check,
 `sys.exit(1)` on failure).  Everything is synthetic: hand-built events, a
@@ -217,12 +236,12 @@ exit=1
 
 (committed as `2d7ec8f` — the test file on its own, failing.)
 
-### 2.2 Focused tests
+### 2.2 Focused tests (the FINAL state, after fix round 1)
 
 ```
 $ python3 tests/test_ws_e_champion.py
 ...
-ALL PASS  tests/test_ws_e_champion.py  (104 checks)
+ALL PASS  tests/test_ws_e_champion.py  (138 checks)
 
 $ python3 tests/test_decisions.py
   PASS  oversized JSON integer reported as bad-json with line (no raise)
@@ -240,7 +259,7 @@ $ python3 tests/test_quant.py
 ALL PASS
 ```
 
-### 2.3 The full offline suite
+### 2.3 The full offline suite (the FINAL state, after fix round 1)
 
 ```
 $ python3 tests/run_all.py
@@ -248,7 +267,7 @@ PASS  test_adapter.py  [ALL PASS]
 ... (84 files) ...
 PASS  test_ws5_eval_harness.py  [ALL PASS]
 PASS  test_ws_b_outcomes.py  [ALL PASS]
-PASS  test_ws_e_champion.py  [ALL PASS  tests/test_ws_e_champion.py  (104 checks)]
+PASS  test_ws_e_champion.py  [ALL PASS  tests/test_ws_e_champion.py  (138 checks)]
 PASS  test_ws_f_startup.py  [ALL PASS  tests/test_ws_f_startup.py  (91 checks)]
 
 ALL SUITES PASS (84 files)
@@ -321,20 +340,21 @@ $ git status --porcelain
 
 ## 5. Concerns / deviations (please look at these)
 
-1. **`same_cost_model` is derived from the version's `config_hash`, so two
-   versions registered under different config hashes are REFUSED.**  The
-   brief demands that the cost model be "verified the same way … the cost
-   model hash … must match" and that a comparison across different cost
-   models be refused.  The only per-side cost-model identity a
-   `ConfigVersion` carries is its `config_hash` (the `QuantConfig` hash the
-   version's evidence was produced under), so the per-side cost-model hash
-   is `sha256(config_hash + effective fee/slip model + multipliers + funding
-   inputs)`.  Consequence: comparing a champion registered under config
-   hash A with a candidate registered under config hash B is refused, even
-   though `compare()` re-evaluates both under the *current* config.  The
-   refusal message says exactly that.  If the reviewer prefers the lenient
-   reading (compare anyway, report the provenance mismatch as a note), the
-   check is a two-line change in `compare()`.
+1. **A cross-`config_hash` comparison is REFUSED.**  The brief demands that
+   the cost model be "verified the same way … the cost model hash … must
+   match" and that a comparison across different cost models be refused.
+   The only per-side cost-model identity a `ConfigVersion` carries is its
+   `config_hash` (the `QuantConfig` hash the version's evidence was
+   produced under).  Consequence: comparing a champion registered under
+   config hash A with a candidate registered under config hash B is
+   refused, even though `compare()` re-evaluates both under the *current*
+   config.  **Revised in fix round 1 (I1):** the refusal is now driven by
+   the PROVENANCE (`same_config_hash`), the applied cost model is
+   reported separately as `same_applied_cost_model` / `same_cost_model`,
+   and the reason says "registered under DIFFERENT config hashes" instead
+   of pretending the applied cost models differed.  If the reviewer still
+   prefers the lenient reading (compare anyway, report the provenance
+   mismatch as a note), it is a two-line change in `compare()`.
 2. **"Same events" is strict equality of the two selected event-id sets, not
    an intersection.**  A candidate with a different rule parameter (e.g.
    `rvol_min` 2.0 vs 4.0) therefore cannot be compared with the champion:
@@ -342,7 +362,10 @@ $ git status --porcelain
    That is the literal reading of the brief ("the two evaluations must cover
    the same event ids … if they differ, the comparison is refused"), but it
    does mean the "compare two different rules" use case needs the
-   intersection to be taken by the caller first.
+   intersection to be taken by the caller first.  (Unchanged by fix round 1;
+   what changed is that the result now also records the LABEL SLOTS the two
+   sides read — I2 — so a same-rule/different-geometry comparison is
+   visible as `same_label_slot: false`.)
 3. **The metric falls back to friction-only when funding is not
    attributable.**  `compare()` reports `metric: "friction_net_r"` (never
    presented as a net number) when the venue funding cost cannot be
@@ -353,15 +376,17 @@ $ git status --porcelain
    (`config.grid_geometries()`), because the events carry the barrier
    labels in per-(geometry, side) slots that are addressed by that grid.
    A version with an off-grid geometry is **refused with a reason** (not a
-   crash) — the outcome layer raises, `compare()` converts it into a
-   refusal.
-5. **The hypothesis-id check is a format check, not an existence check.**
-   `append()` has no `known_ids` parameter (the brief fixes the signature),
-   so a supplied `hypothesis_id` must match `^HYD-[0-9]{4}$` and may be
-   `null`; whether the hypothesis exists is left to the caller (the
-   human log's `proto.decisions.validate_log` is the existence check for
-   the human log).  I did **not** add an optional `known_ids` parameter, to
-   keep the published signature exactly as specified.
+   crash) — since fix round 1 (M5) `_resolve()` refuses it up front, and
+   the outcome layer's own error is the backstop.
+5. **The hypothesis-id check is a format check, not an existence check, so
+   the chain's hypothesis linkage is ADVISORY.**  `append()` has no
+   `known_ids` parameter (the brief fixes the signature), so a supplied
+   `hypothesis_id` must match `^HYD-[0-9]{4}$` and may be `null`;
+   whether the hypothesis exists is left to the caller (the human log's
+   `proto.decisions.validate_log` is the existence check for the human
+   log).  I did **not** add an optional `known_ids` parameter, to keep the
+   published signature exactly as specified.  Stated in the module
+   docstring and in §7.
 6. **The registry mints ids from the same `cfg-NNNN` space as the
    caller.**  `set_champion()` mints the next free `cfg-NNNN`; a
    caller-supplied id that collides with a minted one is refused as a
@@ -380,6 +405,307 @@ $ git status --porcelain
    repository (the brief requires it), so the chain artifact exists only as
    an implementation plus temp-dir tests.  The owner decides when to create
    the file and migrate the human log.
+10. **`set_champion` is a conscious act** (fix round 1, I3): it refuses
+    without the explicit `allow_promote=True` opt-in, so a future caller
+    cannot promote anything by accident.  The capability stays, because the
+    brief requires it.
+
+---
+
+## 7. Fix round 1
+
+**Status after fix round 1: DONE_WITH_CONCERNS** (the same concerns as §5,
+now with the reviewer's findings addressed; the two design decisions in §5
+items 1 and 2 are unchanged in substance and are now worded exactly).
+
+Commits: `74a0098` (the code + tests) and the report commit below.  The
+hashes are in `git log --oneline feature/ws-e-champion`.
+
+### B1 (blocking) — the "nothing was created in the repository" check failed in a real checkout
+
+**What was wrong.**  The check walked the whole tree for `*.db`.  In the
+worktree there is no `data/`, so it passed; in the main checkout
+`data/quant.db` and `data/signals.db` belong to the running platform, not
+to this task, and the check failed (the reviewer reproduced `1/104 failed`).
+
+**What I changed.**
+
+- `tests/test_ws_e_champion.py:762-790` — the walk was replaced by
+  `repo_artifacts(root)`, which scans ONLY the artifacts this task could
+  have created: every file in `docs/decisions/` except the human-owned
+  `log.jsonl`, `data/promotions.json`, and a champion registry
+  (`data/champions.db`, `data/champion_registry.db`,
+  `data/quant_champions.db`, or any `data/*champion*`).  The repository
+  check is now `repo_artifacts(ROOT) == []`.
+- `tests/test_ws_e_champion.py:815-832` — the regression tests: a
+  synthetic tree with an **unrelated** `data/quant.db` + `data/signals.db`
+  must NOT trip the check, while a `docs/decisions/chain.jsonl`, a
+  `data/champions.db` and a `data/promotions.json` in the same tree MUST
+  trip it.
+
+**Proof (the reviewer's own scenario, in a copy of the tree, not the
+repository):**
+
+```
+$ cp -r proto tests docs /tmp/opencode/wsE-copy/ && mkdir -p /tmp/opencode/wsE-copy/data
+$ : > /tmp/opencode/wsE-copy/data/quant.db && : > /tmp/opencode/wsE-copy/data/signals.db
+$ cd /tmp/opencode/wsE-copy && python3 tests/test_ws_e_champion.py
+...
+ALL PASS  tests/test_ws_e_champion.py  (138 checks)
+```
+
+The old check, run on the same copy, reports the false positives that the
+reviewer saw:
+
+```
+OLD check would report: ['/tmp/opencode/wsE-copy/data/signals.db',
+                          '/tmp/opencode/wsE-copy/data/quant.db']
+```
+
+And the check still catches a would-be artifact (same copy, with a chain
+file added):
+
+```
+$ : > /tmp/opencode/wsE-copy/docs/decisions/chain.jsonl
+$ python3 tests/test_ws_e_champion.py
+  FAIL  the chain file was NOT created in the repository
+  FAIL  docs/decisions holds only the human-owned log   ['chain.jsonl', 'log.jsonl']
+  FAIL  no decision/registry artifact was created in the repository   ['docs/decisions/chain.jsonl']
+FAIL  tests/test_ws_e_champion.py  (3/138 failed: [...])
+```
+
+### I1 — `same_cost_model` did not test what it claimed
+
+**What was wrong.**  `_cost_model()` hashed `version.config_hash` with the
+fee/slip params, but the APPLIED cost model is
+`_effective_cfg(cfg, slip_mult, fee_mult)` — one shared config for both
+sides, identical by construction.  The check therefore tested PROVENANCE
+equality while the refusal message called it a cost-model difference.
+
+**What I changed.**
+
+- `proto/quant/champion.py:378-404` — `_cost_model()` was replaced by
+  `_applied_cost_model(cfg, slip_mult, fee_mult, funding_dir,
+  settlements_dir)`: it describes and hashes the cost model the sides are
+  actually evaluated with (the applied model, without any version data).
+  It is still computed per side and compared, so the check stays a real
+  check.
+- `proto/quant/champion.py:520-550` — `_refusal()` now reports the
+  verification state it was given (`same_applied_cost_model`,
+  `same_config_hash`, `same_events`, `same_label_slot`).
+- `proto/quant/champion.py:626-628, 779-806` — the result now exposes the two facts
+  **separately**: `same_applied_cost_model` (the applied cost model is
+  shared → True) and `same_config_hash` (the provenance).  The brief's
+  `same_cost_model` key is kept and now means "the same APPLIED cost
+  model" (it mirrors `same_applied_cost_model`).
+- `proto/quant/champion.py:648-657` — the refusal reason is re-worded to
+  say exactly what is wrong: *"the two configurations were registered under
+  DIFFERENT config hashes (champion X, candidate Y), so their evidence was
+  produced under different cost models; the comparison is refused."*  It no
+  longer claims the applied cost models differed.
+
+**Tests that cover it** (`tests/test_ws_e_champion.py`): "the applied cost
+model is reported under its explicit name", "the provenance is reported
+separately", "different config hashes are refused", "the refusal says
+'config hashes', not 'priced with different cost models'", "the refusal
+reports the applied cost model as shared", "the refusal reports the
+provenance mismatch".
+
+### I2 — the result never recorded that the two sides may read different label slots
+
+**What was wrong.**  `same_events` compares the *selected* event sets.  Two
+configurations with the same rule but different geometries select the same
+events (so `same_events=True`) while reading **different outcome slots**
+of each event — the intended comparison, but invisible in the result.
+
+**What I changed.**
+
+- `proto/quant/champion.py:470-475` — `_label_slots(geom)` returns the two
+  label slots (long/short) a geometry reads per event.
+- `proto/quant/champion.py:643-646` — `verified["same_label_slot"]` is
+  computed for both sides.
+- `proto/quant/champion.py:484-518` — every side block now carries
+  `label_slots` and `geometry`; the result carries `same_label_slot`
+  (True = the same slot, False = different slots, None = not established).
+- The docstring of `compare()` and of the module documents it.
+
+**Tests that cover it**: "the two sides read different label slots
+(different geometries)", "each side records the label slots it reads",
+"each side records its geometry".
+
+### I3 — the "no promotion in production" guarantee was an unenforced convention
+
+**What was wrong.**  `Registry.set_champion()` was fully functional; nothing
+stopped a future caller from running it against a production DB.
+
+**What I changed (per the orchestrator's ruling: keep the capability, make
+it conscious).**
+
+- `proto/quant/champion.py:237-262` — `set_champion(self, id: str, *,
+  allow_promote: bool = False)`: without the explicit opt-in it **refuses**
+  with a reason that names the risk ("set_champion records a PROMOTION …
+  so it needs the explicit opt-in allow_promote=True. Promote only with
+  the promotion gate's evidence recorded (proto.quant.gates); a measurement
+  must never promote anything by accident.").
+- `proto/quant/champion.py:54-61` (module docstring) and
+  `proto/quant/champion.py:184-188` (the `Registry` docstring) state the
+  rule: nothing in the production path calls it, the CLI has no `promote`
+  sub-command, and no promotion happened while this module was written.
+
+**Tests that cover it**: "set_champion refuses without the explicit
+opt-in", "the refusal names the risk (a promotion)", "the refused promotion
+wrote nothing".
+
+### M4 — `set_champion` was not idempotent
+
+**What was wrong.**  The guard compared the minted champion id with the
+requested id, so asking twice appended four rows and the docstring
+("Setting the current champion again is a no-op") was wrong.
+
+**What I changed.**
+
+- `proto/quant/champion.py:307-325` — `_lineage(id)` walks the `supersedes`
+  chain, so "is this already the champion?" is a question about the
+  LINEAGE, not about the raw ids.
+- `proto/quant/champion.py:249-253` — the guard is now
+  `target.id == current.id or target.id in self._lineage(current.id)`.
+
+**Tests that cover it**: "promoting the current champion again is a no-op",
+"promoting the champion version itself is a no-op", "the champion is
+unchanged after the no-op promotions" (the history stays at 2 rows).
+
+### M5 — `_resolve()` silently dropped unknown params and filled in defaults
+
+**What was wrong.**  `params={}` resolved to `breakout_start/fade/
+rvol_min=4.0` instead of being refused, and `"rvol_min": "4.0"` escaped as
+an uncaught `TypeError` at comparison time.
+
+**What I changed.**  `proto/quant/champion.py:407-467` — `_resolve()` now
+refuses, with a reason: missing `params`/`geometry`, unknown keys, missing
+keys, a non-string `family`/`policy`, a non-numeric `rvol_min`/`cusum_h`
+or geometry field, and a geometry outside the pre-declared grid (the
+events' label slots are addressed by that grid).
+
+**Tests that cover it**: "an empty params dict is refused (not silently
+defaulted)", "the empty-params refusal names the missing params", "an
+unknown params key is refused", "the unknown-params refusal names the
+key", "a wrong params type is refused (no uncaught TypeError)", "the
+wrong-type refusal names the field", "an off-grid geometry is refused",
+"the off-grid refusal names the grid".
+
+### M6 — `append` accepted a non-monotonic / future `ts` and dead-ended the chain
+
+**What was wrong.**  A `ts` that went backwards was written; `validate_chain`
+then reported it AND every later append was refused — the chain was
+dead-ended with no recovery path.
+
+**What I changed.**  `proto/quant/decision_log.py:365-384` (the checks are
+at `:370-384`) — `append()` refuses, before writing:
+
+- a `ts` that is not STRICTLY AFTER the tail's `ts` ("the ts must be
+  strictly after the previous decision's ts (…); a ts that goes backwards
+  (or repeats it) would make the chain invalid and every later append
+  impossible");
+- an explicit `ts` in the future ("the ts is in the future: …"), as
+  `proto/decisions.py` does.
+
+The default `ts` (now) is raised to `tail_ts + 1` when the clock has not
+moved past the previous decision, so two decisions in the same second still
+produce a strictly increasing chain (documented in the docstring).
+
+**Tests that cover it**: "a ts that goes backwards is refused", "a ts that
+repeats the tail's ts is refused", "a ts in the future is refused", "the
+refused timestamps did not extend the chain", "the chain is still valid
+after the refused timestamps", "the chain still accepts a later decision".
+
+### M7 — the report's own line counts were wrong
+
+Fixed: `champion.py` is **807** lines (not 560), `decision_log.py` is
+**430** (not 400), `tests/test_ws_e_champion.py` is **895** lines with
+**138** checks (not 706/104).  The counts in §1.1-§1.4 are now the real
+ones after fix round 1.
+
+### M8 — every refusal claimed `same_events=False, same_cost_model=False`
+
+**What was wrong.**  The refusal shape set the flags to `False` by
+default, including refusals that happen *after* both were verified `True`.
+
+**What I changed.**  `proto/quant/champion.py:520-550` — `_refusal()`
+takes the verification state and reports it: a flag is `True`/`False` when
+it was actually established and `None` when it was not established at all.
+`compare()` threads the state through every refusal
+(`proto/quant/champion.py:620-720`).
+
+**Tests that cover it**: "the refusal reports what WAS verified (the
+applied cost model)", "a refusal before the event check does not claim
+same_events = False", "the no-outcome refusal reports the verified facts".
+
+### Documented, no change needed (as instructed)
+
+- **The hypothesis-id check is format-only and therefore ADVISORY.**
+  `append` has no `known_ids` parameter (the brief fixes the signature),
+  so a supplied `hypothesis_id` is checked for FORMAT only (`HYD-####`)
+  and may be `null`; `HYD-9999` is accepted.  A chain entry therefore
+  says "this decision claims to be about HYD-0007", not "this decision is
+  provably about HYD-0007".  Stated in
+  `proto/quant/decision_log.py:56-63` (module docstring) and here.
+- **`CHAIN_RELPATH` is defined but unused by `append`** (which takes an
+  explicit path).  It names the canonical location the owner chooses;
+  nothing here creates the file until the first append, and the CLI has no
+  command that creates it.  Stated in
+  `proto/quant/decision_log.py:64-70` (module docstring) and here.
+
+### Fix round 1 — test output (real)
+
+```
+$ python3 tests/test_ws_e_champion.py
+...
+ALL PASS  tests/test_ws_e_champion.py  (138 checks)
+
+$ python3 tests/test_decisions.py
+  PASS  oversized JSON integer reported as bad-json with line (no raise)
+
+ALL PASS
+
+$ python3 tests/test_promotion.py
+  PASS  outcome scope stated explicitly (WS5 unbuilt)
+
+ALL PASS  tests/test_promotion.py  (16 checks)
+
+$ python3 tests/test_quant.py
+  PASS  registered ids are unique and include controls
+
+ALL PASS
+
+$ python3 tests/run_all.py
+PASS  test_adapter.py  [ALL PASS]
+... (84 files) ...
+PASS  test_ws_e_champion.py  [ALL PASS  tests/test_ws_e_champion.py  (138 checks)]
+PASS  test_ws_f_startup.py  [ALL PASS  tests/test_ws_f_startup.py  (91 checks)]
+
+ALL SUITES PASS (84 files)
+```
+
+### Fix round 1 — the repository is still untouched
+
+```
+$ ls -la docs/decisions/
+-rw-r--r-- 1 bamzhie bamzhie   0 Oct 19 23:08 log.jsonl
+
+$ stat -c '%n %s bytes' docs/decisions/log.jsonl
+docs/decisions/log.jsonl 0 bytes
+
+$ find . -name "chain.jsonl" -not -path "./.git/*"
+(no output)
+
+$ ls data
+ls: cannot access 'data': No such file or directory
+```
+
+No chain file, no registry database and no `data/` directory exist in the
+repository; the human-owned log is still 0 bytes and untouched.  The
+reviewer's reproduction used a COPY of the tree in `/tmp/opencode/wsE-copy`,
+never the repository.
 
 ---
 
@@ -389,7 +715,9 @@ $ git status --porcelain
 |---|---|
 | `2d7ec8f` | `test(ws-e): champion/candidate + decision-chain suite (failing: modules not yet written)` |
 | `5bef58d` | `feat(quant): WS-E champion/candidate registry, matched comparison and hash-chained decision log` |
-| (this commit) | `docs(ws-e): the Workstream E report` |
+| `e17d5cf` | `docs(ws-e): the Workstream E report (champion/candidate + decision chain)` |
+| `74a0098` | `fix(ws-e): review round 1 -- scoped repo check, truthful cost-model flags, label slots, conscious promotion, timestamp rules` |
+| `FIX1-REPORT` | `docs(ws-e): append the fix round 1 section to the Workstream E report` |
 
-`git log --oneline feature/ws-e-champion` shows the three commits above (the
-report commit is the last one; it cannot name its own hash).
+`git log --oneline feature/ws-e-champion` shows the commits above (the last
+commit cannot name its own hash).
