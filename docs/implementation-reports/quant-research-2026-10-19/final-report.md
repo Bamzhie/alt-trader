@@ -140,7 +140,63 @@ beside this one (`ws-a-report.md` … `ws-f-report.md`).
   `null` and its `dev`/`val`/`spa`/`selected` blocks are byte-identical to the
   2026-10-19 artifact (sha256 `81affa4a…3242c`).
 
-### 4.2 Deployment status — **NOT deployed**
+### 4.2 Deployment status — **DEPLOYED 2026-10-20** (supersedes "NOT deployed")
+
+*This section was written before the owner authorized a deployment. It is
+updated, not rewritten: the code, the archives and the quant-safety
+statements below are unchanged, and the deployment evidence lives in
+**`deployment-report.md`**.*
+
+- The code is merged into `main` and pushed, and the **local user systemd
+  service was restarted on 2026-10-20**; it is running the deployed commit
+  **`c8647b5`**. The running service proves it itself:
+  `GET /quant-research` → `provenance.code_rev = "c8647b5"`.
+- The unit file and the operator's drop-in (`--quant-shadow`,
+  `TimeoutStopSec=600s`) are **byte-identical** to before; the stop grace
+  was not shortened, extended or overwritten.
+- Restart: requested 11:22:57 local, new process up 11:32:58 (601 s
+  stop→start — the OLD code's non-interruptible drain reaching the
+  operator's 600 s grace). The API answered `/healthz` and `/readyz`
+  **1 second** after the start.
+- First sweep after the deploy: **1 959 s (32.7 min)** vs 3 951 s before,
+  now with per-stage attribution (`scan=449.7(partial) collect=438.4
+  funding=9.0 settlements=0.0(not_due) prices=0.0(not_due)
+  resolve=0.0(skipped) measure=450.1(partial) quant=611.8`).
+- Quant output is still **SHADOW-only** (`mode:"shadow"`,
+  `actionable_events: 0`, `promotions: []`), the **holdout was not spent**
+  (`data/quant_research/` absent), the decision log is still 0 bytes, and
+  **no production archive was rewritten**.
+- **Deploying is not evidence of an edge.** The WS5 evaluation still found
+  no evidence of a positive edge; the gross-outcome SPA is still
+  exploratory; H1 is still a candidate for preregistration.
+
+#### 4.2.1 The "not deployed" statements below, and their status
+
+These statements describe the 2026-10-19 session. They are kept as
+history, with their operational status marked:
+
+- "The code is merged into `main`, and `main` is pushed to `origin/main`
+  so that the pushed tip IS the tip of `main`" — still true, and the tip is
+  now the deployed commit.
+- "The **running service still executes the pre-merge code** (pid 572048,
+  started 2026-10-19 15:46:39)" — **superseded**: the service was restarted
+  on 2026-10-20 and runs the merged code (new pid 732289).
+- "The service was **not** restarted, reloaded or altered at any point in
+  this effort" — true for the 2026-10-19 effort; the restart happened
+  under the owner's later, explicit authorization.
+- "**Deploying is a separate, explicitly authorized step.** … it is the
+  only way to produce the end-to-end time-to-ready number this report
+  declines to invent." — **superseded**: it has been authorized, performed
+  and measured (`deployment-report.md`).
+- "Two new runtime artifacts will appear on first boot of the new code:
+  `data/.cadence.json` (persisted due-times) and `data/bars/.bar_index.json`
+  (per-coin archive index)." — they did, together with
+  `data/.timing.json`; all three are accelerators/state, safe to delete,
+  and none is an archive.
+
+<details>
+<summary>The 2026-10-19 "NOT deployed" text (superseded, kept verbatim)</summary>
+
 
 - The code is merged into `main`, and `main` is pushed to `origin/main` so
   that the pushed tip IS the tip of `main` — **verify it with
@@ -165,6 +221,8 @@ beside this one (`ws-a-report.md` … `ws-f-report.md`).
   `data/.cadence.json` (persisted due-times) and `data/bars/.bar_index.json`
   (per-coin archive index). Both are accelerators, both are safe to delete
   (the code falls back to the full read), and neither is an archive.
+
+</details>
 
 ### 4.3 Quant safety
 

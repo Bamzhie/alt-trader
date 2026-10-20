@@ -167,3 +167,30 @@ Rulings made in this wave:
   is missing from the risk measures.
 - **Ruling: the placebo null is described as "retains the rule's average edge"**,
   not as signal-free. Cost if wrong: a mis-stated limitation in the report.
+
+## 2026-10-20 — pivot provenance fix + deployment
+
+- **Finding (feature provenance).** `feature_store.from_pivots()` hashed
+  the coin/name/version/index/ts/price but NOT the pivot configuration
+  (`left`/`right`/`frame_bars`), and stored the record under the bare
+  `pivots-v1`; with the store's uniqueness key and a silent
+  `INSERT OR IGNORE`, a later record computed with different settings was
+  dropped and the earlier record (and its `available_ts`) stayed in place.
+  No production caller and no stored data were affected.
+- **Fix (`c8647b5`).** The feature identity is the measure version PLUS
+  the configuration identity (`pivots-v1+L2R2F1`); `from_pivots()` requires
+  and cross-checks the configuration against the pivots themselves; the hash
+  covers it; the configuration is recorded in the meta; a same-key write
+  with different content is refused as a provenance conflict instead of
+  being silently ignored. 18 new regression checks; RED verified against the
+  pre-fix code; `tests/test_ws_a_measurement.py` ALL PASS;
+  `tests/run_all.py` → ALL SUITES PASS (87 files). No frontend change, so
+  the frontend gates were not re-run.
+- **Deployment (owner-authorized).** The local user systemd service was
+  restarted and now runs `c8647b5` (new pid 732289, up 2026-10-20
+  11:32:58 WAT). `/healthz` and `/readyz` answered 1 s after the start;
+  `/scanner-health` reported `first_sweep: in_progress` (completed_ts null)
+  until the sweep finished at **1 959 s** with the new per-stage
+  attribution. SHADOW-only, no promotion, no holdout artifact, no archive
+  rewritten, the operator's drop-in untouched. Evidence:
+  `deployment-report.md`.

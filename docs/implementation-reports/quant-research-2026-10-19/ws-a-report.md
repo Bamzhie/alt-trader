@@ -1383,3 +1383,60 @@ $ echo $?
 The fix commit's hash is the branch HEAD; it is printed in the handover
 message (writing it into this file would change the file and therefore the
 hash).
+
+---
+
+## 9. Post-review correction (2026-10-20): pivot feature provenance
+
+**Finding.** `feature_store.from_pivots()` stored pivot records under the
+bare measure version (`pivots-v1`) and hashed only
+`coin | name | version | index | ts | price`. The pivot **configuration**
+(`left`, `right`, `frame_bars`) was in neither the identity nor the hash,
+although it decides which bars are pivots and when each becomes knowable
+(`confirmed_ts = ts + (right + 1) * frame_bars * BAR_S`). The store's
+uniqueness key is `(coin, name, version, bar_ts)` and `put()` used
+`INSERT OR IGNORE`, so a later record computed with different settings was
+**silently dropped**, leaving the earlier record and its `available_ts` in
+place — a reused feature identity could therefore carry another
+configuration's provenance.
+
+**Callers.** `from_pivots()` has **no production caller** (only this
+workstream's test); the store is listed for provenance only
+(`research_report.py:79`, `research_surface.py:204`). No store file exists
+in `data/`, so no stored data is affected and no migration is needed.
+
+**Fix (commit `c8647b5`).**
+- The feature identity is the measure version **plus the configuration
+  identity**: `pivots-v1+L{left}R{right}F{frame_bars}`.
+- `from_pivots()` **requires** `left`/`right`/`frame_bars`, validates them
+  (positive integers) and **cross-checks** them against the pivots: a
+  pivot's `confirmed_ts` must equal `ts + (right + 1) * frame_bars * BAR_S`
+  for the declared configuration, so a caller cannot claim a configuration
+  that does not match the data it is storing.
+- The provenance hash covers the configuration, and the configuration is
+  recorded in the record's `meta`.
+- `put()` now refuses a same-key write with **different** content as a
+  provenance conflict instead of ignoring it silently; history is still
+  never rewritten and an identical record stays idempotent.
+- Helpers `pivot_config_id()` and `pivot_feature_version()` are exported.
+
+**Tests.** RED verified against the pre-fix code (the configuration keyword
+did not exist; a conflicting `put` returned `False`, i.e. it was silent).
+18 new checks: the identity and hash change with `left`, `right` and
+`frame_bars`; two configurations of the same bar are stored as two features,
+each with its own `available_ts`, and neither shadows the other; a
+configuration that contradicts the pivots is refused; `available_ts` is
+never earlier than the pivot's true confirmation; identical inputs stay
+deterministic and idempotent. `python3 tests/test_ws_a_measurement.py` →
+ALL PASS; `python3 tests/run_all.py` → ALL SUITES PASS (87 files).
+
+**Remaining limitation.** For estimator-backed features (`from_estimate`)
+the identity is still the estimator version, so two parameterizations under
+the same `(coin, name, version, bar_ts)` are **refused** (never silently
+merged, never overwritten) rather than stored side by side; a caller that
+needs both must use a distinct feature `name`. The estimator's own
+`inputs_hash` already differs between them, so the refusal is precise.
+
+**Deployment.** The fix is deployed: the service runs `c8647b5` (the
+running service reports it through `GET /quant-research` →
+`provenance.code_rev`). See `deployment-report.md`.

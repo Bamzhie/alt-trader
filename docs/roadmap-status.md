@@ -5,18 +5,19 @@ futures. Rules support quant analysis; heuristic scores are not evidence of
 edge. Read-only; no order execution. BTC is labeled market context only.
 
 Last updated: 2026-10-20 (six research/startup workstreams implemented and
-reviewed: measurement & structure engine, outcomes & inference, preregistered
-research workflow, Research UI expansion, champion/candidate tracking, and the
-startup/first-sweep optimization — report in
-`docs/implementation-reports/quant-research-2026-10-19/`).
+reviewed, the pivot feature-provenance fix merged, and the merged `main`
+**DEPLOYED** to the local user systemd service under owner authorization —
+service now runs `c8647b5`; reports in
+`docs/implementation-reports/quant-research-2026-10-19/`, deployment in
+`deployment-report.md`).
 Earlier (2026-10-19): dev-only investigation of the all-negative WS5 result —
 friction, not a signal defect; three independent audits; four pipeline and
 five funding-path fixes (including a transition-aware settlement schedule)
 with corrected funding-adjusted numbers; the gross-outcome SPA is
 exploratory; per-coin settlement-backfill manifest reconciled against the
 venue; the WS5 evaluation report records the selected strategy's identity.
-The live service (pid 572048, 2026-10-19 15:46) still runs the pre-2026-10-20
-code and has not been restarted — deploy is pending owner approval.
+(That line describes the 2026-10-19 state; the service was deployed and
+restarted on 2026-10-20 — see "Current deployment state" below.)
 Verified against code/data/live probes/tests, not inherited summaries.
 
 ## Research data readiness snapshot (2026-10-18, corrected)
@@ -50,7 +51,48 @@ VERIFIED by direct archive read (2026-10-18):
   remains SEALED** pending review of coverage, dev/validation results and
   the frozen evaluation setup (see WS5 below).
 
-## Current deployment state (verified live 2026-10-17)
+## Current deployment state (verified live 2026-10-20)
+
+- **Deployed 2026-10-20 (owner-authorized).** The local user systemd
+  service was restarted and now runs the merged `main` at commit
+  **`c8647b5`** — the running service proves it itself:
+  `GET /quant-research` → `provenance.code_rev = "c8647b5"`. New pid
+  **732289**, started 2026-10-20 11:32:58 WAT, one loopback listener on
+  127.0.0.1:18741. The unit file and the operator's drop-in
+  (`--quant-shadow`, `TimeoutStopSec=600s`) are **byte-identical** to
+  before; the stop grace was not modified.
+- **API readiness is now decoupled from the first sweep.** `/healthz` and
+  `/readyz` answered **1 second** after the start; `/scanner-health`
+  reported `first_sweep.state = "in_progress"` with `completed_ts: null`
+  while the sweep was still running, and `complete` with a measured
+  **1 959 s (32.7 min)** afterwards — with the new per-stage attribution
+  (`scan=449.7(partial) collect=438.4 funding=9.0 settlements=0.0(not_due)
+  prices=0.0(not_due) resolve=0.0(skipped) measure=450.1(partial)
+  quant=611.8`). The pre-deploy first sweep took 3 951 s.
+- **Boundaries intact after the deploy:** `mode:"shadow"`,
+  `actionable_events: 0`, `promotions: []`, `docs/decisions/log.jsonl`
+  still 0 bytes, no `docs/decisions/chain.jsonl`, **no
+  `data/quant_research/`** (the one-shot holdout was never evaluated), and
+  no production archive was rewritten (the collector appends only new
+  bars). The quant watcher is auto-paused (`BTC bars stale` — the venue's
+  klines lag ~12 min behind the collect; the 2026-10-19 suppression rows
+  carry the same reason, so it is pre-existing behaviour, not a
+  regression).
+- **Pivot feature-provenance fix (2026-10-20, `c8647b5`):** the feature
+  store's identity is now the measure version **plus the configuration
+  identity** (`pivots-v1+L2R2F1`), `from_pivots()` requires and
+  cross-checks the pivot configuration against the pivots themselves, and
+  a same-key write with different content is **refused** instead of
+  silently ignored. The store has no production caller and no stored
+  data, so nothing was affected. 18 new regression checks; full offline
+  suite ALL SUITES PASS (87 files).
+- Full evidence: `docs/implementation-reports/quant-research-2026-10-19/deployment-report.md`.
+- **Deploying the code is not evidence of an edge.** The WS5 evaluation
+  still found no evidence of a positive edge, the gross-outcome SPA is
+  still exploratory, and H1 is still a candidate for preregistration whose
+  ~15 bp break-even has no supporting execution-cost evidence here.
+
+## Deployment state before 2026-10-20 (verified live 2026-10-17)
 
 - Running service: systemd user unit `altradar.service`, **active**, pid
   715, `ActiveEnterTimestamp` 2026-10-16 15:41 WAT, exactly one loopback
