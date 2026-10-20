@@ -1,0 +1,357 @@
+{
+  "prereg_version": "prereg-v1",
+  "id": "HYD-0002",
+  "title": "Breakout continuation edges have no positive net edge after friction",
+  "status": "rejected",
+  "hypothesis": "Pre-declared continuation rules (breakout start, residual shock) have a positive mean net R after fees and tiered slippage on the development window. RETROSPECTIVE REGISTRATION: this record was written AFTER the run it documents (the run produced its artifact at 2026-10-19T11:37:10Z); it transcribes that run's preserved artifacts and must not be read as a prospective pre-registration. The sweep tested the continuation rule family, NOT the funding-quintile hypothesis of HYD-0001.",
+  "feature_definitions": [
+    {
+      "name": "sigma",
+      "version": "feat-v1",
+      "definition": "per-bar EWMA Garman-Klass volatility of the closed 5m bars, lagged (the current bar is excluded); the triple-barrier stop distance is k_stop * sigma * sqrt(horizon_bars)",
+      "params": {
+        "lam_sigma": 0.985,
+        "warmup_bars": 1728
+      }
+    },
+    {
+      "name": "beta",
+      "version": "feat-v1",
+      "definition": "EWMA covariance of the coin's log return with the BTC log return over the trailing bars, divided by the EWMA variance of the BTC return; capped at 3.0 and floored at 0",
+      "params": {
+        "lam_beta": 0.999,
+        "beta_cap": 3.0
+      }
+    },
+    {
+      "name": "z",
+      "version": "feat-v1",
+      "definition": "BTC-residual log return of the bar divided by the lagged EWMA volatility of that residual (the CUSUM input)",
+      "params": {
+        "lam_sigma": 0.985
+      }
+    },
+    {
+      "name": "rvol",
+      "version": "feat-v1",
+      "definition": "time-of-day relative volume: the quote volume of the latest 3 bars divided by the median of the same slot on each of the previous 14 days (at least 5 lags required)",
+      "params": {
+        "rvol_bars": 3,
+        "rvol_lags_days": 14,
+        "rvol_min_lags": 5
+      }
+    },
+    {
+      "name": "qv24",
+      "version": "feat-v1",
+      "definition": "trailing 24h quote volume in USDT (288-bar ring); the liquidity-group key and the slippage-tier key",
+      "params": {
+        "bars_per_day": 288
+      }
+    },
+    {
+      "name": "breakout_start",
+      "version": "feat-v1",
+      "definition": "the first bar of a run of closes outside the prior 48-bar channel (the channel excludes the bar itself), gated on rvol >= rvol_min",
+      "params": {
+        "channel_bars": 48,
+        "rvol_min": [
+          2.0,
+          4.0
+        ]
+      }
+    },
+    {
+      "name": "residual_shock",
+      "version": "feat-v1",
+      "definition": "two-sided CUSUM on the standardized residual z; an event fires when the statistic crosses h, then the state resets and a 12-bar cooldown applies",
+      "params": {
+        "cusum_k": 0.5,
+        "cusum_cooldown": 12,
+        "cusum_h": [
+          5.0,
+          8.0
+        ]
+      }
+    }
+  ],
+  "universe": "every coin with an archived bar file in data/bars except BTC (578 files at the 2026-10-18 data-readiness snapshot); BTC is loaded only as the market factor",
+  "point_in_time_membership": "A coin joins the traded universe with its first archived bar and leaves at the end of its last contiguous run; features are computed inside a contiguous run only (a new run restarts the feature stream and its 6-day warmup) and a label path may not cross a timestamp gap. An event is only recorded when the coin's trailing-24h quote volume is at least 1e6 USDT (the tradeable floor), its EWMA volatility is non-degenerate, and the full label horizon fits inside the run. Coins that list later contribute only from their listing; no coin is back-filled.",
+  "horizons": [
+    "4h",
+    "12h",
+    "24h"
+  ],
+  "event_rules": [
+    {
+      "rule_id": "breakout_start[rvol>=2]/fade",
+      "family": "breakout_start",
+      "params": {
+        "rvol_min": 2.0
+      },
+      "side": "fade"
+    },
+    {
+      "rule_id": "breakout_start[rvol>=2]/cont",
+      "family": "breakout_start",
+      "params": {
+        "rvol_min": 2.0
+      },
+      "side": "cont"
+    },
+    {
+      "rule_id": "breakout_start[rvol>=4]/fade",
+      "family": "breakout_start",
+      "params": {
+        "rvol_min": 4.0
+      },
+      "side": "fade"
+    },
+    {
+      "rule_id": "breakout_start[rvol>=4]/cont",
+      "family": "breakout_start",
+      "params": {
+        "rvol_min": 4.0
+      },
+      "side": "cont"
+    },
+    {
+      "rule_id": "residual_shock[cusum_h=5]/fade",
+      "family": "residual_shock",
+      "params": {
+        "cusum_h": 5.0
+      },
+      "side": "fade"
+    },
+    {
+      "rule_id": "residual_shock[cusum_h=5]/cont",
+      "family": "residual_shock",
+      "params": {
+        "cusum_h": 5.0
+      },
+      "side": "cont"
+    },
+    {
+      "rule_id": "residual_shock[cusum_h=8]/fade",
+      "family": "residual_shock",
+      "params": {
+        "cusum_h": 8.0
+      },
+      "side": "fade"
+    },
+    {
+      "rule_id": "residual_shock[cusum_h=8]/cont",
+      "family": "residual_shock",
+      "params": {
+        "cusum_h": 8.0
+      },
+      "side": "cont"
+    }
+  ],
+  "costs": {
+    "fee_per_side": 0.0005,
+    "slip_tiers": [
+      [
+        30000000,
+        0.00015
+      ],
+      [
+        10000000,
+        0.0003
+      ],
+      [
+        3000000,
+        0.0006
+      ],
+      [
+        1000000,
+        0.0012
+      ]
+    ],
+    "funding": "none",
+    "source": "proto/quant/config.py CostModel (quant-v1): taker 0.05pct per side plus per-side slippage by trailing-24h quote volume (30M/10M/3M/1M floors). The selection metric is friction only and does NOT model funding; the artifact's funding-adjusted blocks are reporting only."
+  },
+  "splits": {
+    "dev": [
+      6.0,
+      61.0
+    ],
+    "val": [
+      63.0,
+      77.0
+    ],
+    "holdout": [
+      79.0,
+      98.31944444444444
+    ]
+  },
+  "embargo_days": 2.0,
+  "statistics": {
+    "metric": "mean_r",
+    "threshold": 0.0,
+    "denominator": "tradeable_events_in_window",
+    "test": "day-cluster bootstrap 95% interval on the window mean, plus a max-t SPA multiplicity correction over the 288 declared configurations",
+    "code_git_rev": "da5f43cd86cd17e6dcb62c480d6715f0b00f1d63",
+    "code_files": [
+      "proto/quant/research.py",
+      "proto/quant/config.py",
+      "proto/quant/barrier.py",
+      "proto/quant/stats.py",
+      "proto/quant/eval_harness.py",
+      "proto/quant/cost_attribution.py",
+      "proto/quant/stream.py",
+      "proto/quant/bars.py"
+    ],
+    "code_note": "the code hash is pinned to the revision the sweep ran from (the artifact's git_rev); five of these files have changed since, so the working tree is not the code that produced the numbers",
+    "regime_note": "the volatility/regime groups of a sliced report are trailing volatility terciles of each event's own sigma; they are NOT comparable with the six-state codes of proto.quant.estimators.regime, which needs the market-factor return series"
+  },
+  "promotion_criteria": [
+    {
+      "name": "holdout_events",
+      "test": "holdout event count",
+      "threshold": 200
+    },
+    {
+      "name": "holdout_days",
+      "test": "distinct holdout days",
+      "threshold": 25
+    },
+    {
+      "name": "holdout_coins",
+      "test": "distinct holdout coins",
+      "threshold": 15
+    },
+    {
+      "name": "holdout_ci_lower_bound",
+      "test": "95% day-cluster bootstrap CI lower bound of the holdout mean net R",
+      "threshold": 0.0
+    },
+    {
+      "name": "validation_mean_net_r",
+      "test": "validation mean net R (friction only) of the dev-selected config",
+      "threshold": 0.0
+    },
+    {
+      "name": "spa_p_value",
+      "test": "best-of-configs max-t (SPA) p-value on the dev window",
+      "threshold": 0.1
+    },
+    {
+      "name": "slippage_2x",
+      "test": "holdout mean net R with slippage doubled stays above zero",
+      "threshold": 0.0
+    }
+  ],
+  "family": [
+    "HYD-0002"
+  ],
+  "config_hash": "d33cff513c30",
+  "data_hash": "fe2ae686a3c74e367e9bd9aa7798930314564b58bf2b1eb79ef35f559761e913",
+  "code_hash": "ed7245ba8edff28a42564f6c4c615efce06357e2f69ca54ca33e97c7ef4fdada",
+  "variants": [
+    {
+      "variant_id": "ws5-288-config-sweep",
+      "hypothesis_id": "HYD-0002",
+      "description": "Completed 288-configuration sweep (8 pre-declared rules x 36 pre-declared geometries) over the development window, then the dev-selected configuration re-evaluated on the validation window; friction-only metric; the one-shot holdout was NOT spent.",
+      "config_hash": "d33cff513c30",
+      "result": {
+        "status": "failed",
+        "metric": "mean_r",
+        "value": -0.015419825470978433,
+        "n": 24749,
+        "ci_lo": -0.04171311066689822,
+        "ci_hi": 0.014238059376343185,
+        "detail": {
+          "reason": "no positive edge",
+          "outcome": "no evidence of a positive edge: every dev and val interval straddles zero and every point estimate is negative",
+          "window": "dev",
+          "n_configs": 288,
+          "dev": {
+            "n": 24749,
+            "days": 55,
+            "coins": 375,
+            "mean_r": -0.015419825470978433,
+            "ci_lo": -0.04171311066689822,
+            "ci_hi": 0.014238059376343185,
+            "tp": 0.006060850943472464,
+            "sl": 0.028849650490928927,
+            "time": 0.9650894985655986,
+            "t": -1.0619704147237248
+          },
+          "val": {
+            "n": 6495,
+            "days": 14,
+            "coins": 248,
+            "mean_r": -0.016606089545525376,
+            "ci_lo": -0.04675817709982529,
+            "ci_hi": 0.017415955039167874,
+            "tp": 0.0024634334103156275,
+            "sl": 0.02340261739799846,
+            "time": 0.9741339491916859,
+            "t": -1.012698095285041
+          },
+          "spa": {
+            "best_t": -1.0619704147237248,
+            "p_value": 1.0
+          },
+          "selected": {
+            "rule": "breakout_start[rvol>=4]/cont",
+            "geometry": "T288_ks3_R2",
+            "geom_idx": 34,
+            "params": {
+              "family": "breakout_start",
+              "policy": "cont",
+              "rvol_min": 4.0,
+              "cusum_h": 5.0
+            },
+            "geom": {
+              "horizon_bars": 288,
+              "k_stop": 3.0,
+              "r_tp": 2.0
+            }
+          },
+          "dev_config_means": {
+            "min": -0.23358317375566032,
+            "median": -0.05595718008510838,
+            "max": -0.014668345820862311,
+            "share_positive": 0.0
+          },
+          "leakage_violations": [],
+          "missing_cost_coins": [
+            "1000BTT",
+            "RON",
+            "ZBCN"
+          ],
+          "holdout_evaluated": false,
+          "holdout": null,
+          "holdout_note": "the one-shot holdout stays sealed; the artifact's holdout fields are null and no decision to spend it was taken",
+          "artifact": "docs/implementation-reports/quant-roadmap-2026-10-18/evaluation.json",
+          "artifact_sha256": "81affa4ad5d1661f7a2b55f3e776f74bea65ef7ec136f7b1f70c1836f513242c",
+          "artifact_produced_at": 1792409830,
+          "artifact_git_rev": "da5f43cd86cd17e6dcb62c480d6715f0b00f1d63",
+          "input_digests": "the per-coin bar / funding / settlement digests of the input archives are recorded inside the artifact (bar_digests, funding_digests, settlement_digests); the artifact's own sha256 is the evidence hash and is covered by this record's data_hash",
+          "funding_adjusted_note": "the artifact's dev_funding_adjusted / val_funding_adjusted blocks predate the 2026-10-19 cost/split audit and are superseded by funding-transitions.json; the friction-only rows quoted here are unchanged",
+          "code_files": [
+            "proto/quant/research.py",
+            "proto/quant/config.py",
+            "proto/quant/barrier.py",
+            "proto/quant/stats.py",
+            "proto/quant/eval_harness.py",
+            "proto/quant/cost_attribution.py",
+            "proto/quant/stream.py",
+            "proto/quant/bars.py"
+          ]
+        }
+      },
+      "tested_ts": 1792409830,
+      "evidence": [
+        {
+          "path": "docs/implementation-reports/quant-roadmap-2026-10-18/evaluation.json",
+          "sha256": "81affa4ad5d1661f7a2b55f3e776f74bea65ef7ec136f7b1f70c1836f513242c"
+        }
+      ]
+    }
+  ],
+  "created_ts": 1792458606,
+  "updated_ts": 1792458606
+}

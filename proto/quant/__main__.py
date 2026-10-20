@@ -6,6 +6,8 @@
   status     watcher / pause status
   pause / resume   manual global pause flag
   gates      evaluate promotion for the config research.json selected
+  prereg     preregistration records: `prereg validate` / `prereg show <ID>`
+             (read-only; never evaluates a holdout, never writes to data/)
 """
 import argparse
 import json
@@ -19,6 +21,51 @@ from .config import DEFAULT
 def _store(path):
     from .qstore import QuantStore
     return QuantStore(path)
+
+
+def _prereg_validate(directory):
+    """`prereg validate`: print every record and its validation errors."""
+    from . import prereg
+    from .. import hypothesis_registry as hr
+    try:
+        records = prereg.load_all(directory)
+    except ValueError as exc:
+        # A sidecar that claims to be a preregistration record but cannot be
+        # parsed is reported, not raised as a traceback.
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    # A hypothesis is "known" when the markdown registry declares it or when
+    # a preregistration record for it exists in the same directory.
+    known = {e["id"] for e in hr.load_registry(directory)
+             if isinstance(e.get("id"), str)}
+    known |= {r.id for r in records}
+    if not records:
+        print(f"no preregistration records in {directory}")
+        return 0
+    failed = 0
+    for rec in records:
+        errors = prereg.validate(rec, known_hypothesis_ids=known)
+        print(f"{rec.id}  status={rec.status}  variants={len(rec.variants)}  "
+              f"{rec.title}")
+        for err in errors:
+            print(f"  ERROR: {err}")
+        if errors:
+            failed += 1
+    print(f"{len(records)} record(s), {failed} with errors")
+    return 1 if failed else 0
+
+
+def _prereg_show(record_id, directory):
+    """`prereg show <ID>`: print one record as JSON."""
+    from . import prereg
+    try:
+        rec = prereg.load(directory, record_id)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"no readable preregistration record {record_id!r} in "
+              f"{directory}: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(prereg.record_to_dict(rec), indent=2, default=str))
+    return 0
 
 
 def main(argv=None):
@@ -58,6 +105,14 @@ def main(argv=None):
     ev.add_argument("--coins", default=None,
                     help="comma list of traded coins (default: all); BTC is "
                          "always loaded as the market factor")
+
+    pr = sub.add_parser("prereg", help="preregistration records (read-only)")
+    prsub = pr.add_subparsers(dest="prereg_cmd", required=True)
+    prv = prsub.add_parser("validate", help="validate every record in --dir")
+    prv.add_argument("--dir", default=os.path.join("docs", "hypotheses"))
+    prs = prsub.add_parser("show", help="print one record as JSON")
+    prs.add_argument("id")
+    prs.add_argument("--dir", default=os.path.join("docs", "hypotheses"))
 
     a = ap.parse_args(argv)
 
@@ -157,6 +212,13 @@ def main(argv=None):
                 print(f"  ... and {len(report.missing_cost_coins) - 20} more",
                       file=sys.stderr)
         return 0
+    if a.cmd == "prereg":
+        from . import prereg
+        if a.prereg_cmd == "validate":
+            return _prereg_validate(a.dir)
+        if a.prereg_cmd == "show":
+            return _prereg_show(a.id, a.dir)
+        return 1
     return 1
 
 
