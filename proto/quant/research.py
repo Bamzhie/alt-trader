@@ -233,6 +233,36 @@ def run_stage_dev_val(events, meta, cfg=DEFAULT):
     }
 
 
+def holdout_spend_blocked(prereg_dir="docs/hypotheses", cfg=DEFAULT):
+    """A reason the holdout may not be spent, or None.
+
+    A PREREGISTERED hypothesis that declares a holdout window owns the
+    one-shot spend: the holdout may then only be evaluated on a
+    configuration that passed that preregistration's frozen criteria.  The
+    legacy path (the WS5 sweep) does not carry those criteria, so it is
+    refused while such a preregistration is open.  With no preregistration
+    the legacy behaviour is unchanged.
+    """
+    try:
+        from . import prereg
+        records = prereg.load_all(prereg_dir)
+    except Exception:
+        return None
+    for rec in records:
+        splits = getattr(rec, "splits", None) or {}
+        if not splits.get("holdout"):
+            continue
+        status = (getattr(rec, "status", "") or "").lower()
+        if status in ("validated", "rejected"):
+            continue
+        return (f"holdout-sealed: the preregistration {rec.id} declares a "
+                f"holdout window and is '{status}'. The one-shot holdout may "
+                f"only be spent on a configuration that passed that "
+                f"preregistration's frozen criteria, through its own spend "
+                f"path; the legacy WS5 sweep does not carry them.")
+    return None
+
+
 def holdout_once(events, meta, selected, out_dir, cfg=DEFAULT):
     lock = os.path.join(out_dir, "holdout_evaluated.json")
     key = f"{selected['rule']}|{selected['geometry']}|{cfg.config_hash()}"
@@ -372,6 +402,10 @@ def main(argv=None):
            "dev": r["dev"], "val": r["val"],
            "dev_config_means": r["dev_config_means"], "top5_dev": r["top5_dev"]}
     if a.holdout:
+        blocked = holdout_spend_blocked()
+        if blocked:
+            print(blocked)
+            raise SystemExit(2)
         if not (r["val"]["mean_r"] > 0):
             print("holdout NOT spent: validation did not keep the dev-selected "
                   "config (mean net R <= 0). The untouched holdout stays "

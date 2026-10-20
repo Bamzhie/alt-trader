@@ -273,14 +273,31 @@ r_without = SG.build_signals([{**dict(ev_row(42, "MB", 1, int(time.time()) - 100
 check("another member of the same rule does NOT inherit the verdict",
       r_without and r_without[0]["evidence"]["status"] == "insufficient",
       str(r_without[0]["evidence"] if r_without else None))
-ev_wrong = dict(ev_by_member, config_hash="cfgB")
-r_wrong = SG.build_signals([{**dict(ev_row(43, "MB", 1, int(time.time()) - 100)),
+# the artifact is checked against the PREREGISTRATION RECORD it names
+ev_checked = dict(ev_by_member,
+                  _prereg={"id": "HYD-0003", "config_hash": "cfgA"})
+r_ok = SG.build_signals([{**dict(ev_row(44, "MB", 1, int(time.time()) - 100)),
+                           "feature_id": "pivot_low"}],
+                         {}, now=int(time.time()), evidence=ev_checked)
+check("an artifact that matches its preregistration is used",
+      r_ok and r_ok[0]["evidence"]["status"] == "exploratory",
+      str(r_ok[0]["evidence"] if r_ok else None))
+ev_wrong = dict(ev_checked, config_hash="cfgB")
+r_wrong = SG.build_signals([{**dict(ev_row(45, "MB", 1, int(time.time()) - 100)),
                               "feature_id": "pivot_low"}],
                             {}, now=int(time.time()), evidence=ev_wrong)
 check("an artifact produced under another config is refused",
       r_wrong and r_wrong[0]["evidence"]["status"] == "insufficient"
       and "config" in (r_wrong[0]["evidence"]["reason"] or ""),
       str(r_wrong[0]["evidence"] if r_wrong else None))
+ev_foreign = dict(ev_checked, preregistration_id="HYD-9999")
+r_foreign = SG.build_signals([{**dict(ev_row(46, "MB", 1, int(time.time()) - 100)),
+                                "feature_id": "pivot_low"}],
+                              {}, now=int(time.time()), evidence=ev_foreign)
+check("an artifact from another preregistration is refused",
+      r_foreign and r_foreign[0]["evidence"]["status"] == "insufficient"
+      and "preregistration" in (r_foreign[0]["evidence"]["reason"] or ""),
+      str(r_foreign[0]["evidence"] if r_foreign else None))
 
 print()
 if FAILURES:

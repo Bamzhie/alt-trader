@@ -114,6 +114,17 @@ function buildQuery(query: SetupsQuery): string {
  * surface is a contract violation — it is reported as such, never rendered
  * as a partial surface.
  */
+function isQuantSignals(value: unknown): value is QuantSignals {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Partial<QuantSignals>;
+  return (
+    typeof v.version === "string" &&
+    typeof v.count === "number" &&
+    typeof v.generated_ts === "number" &&
+    Array.isArray(v.signals)
+  );
+}
+
 function isQuantResearch(value: unknown): value is QuantResearch {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Partial<QuantResearch>;
@@ -214,7 +225,11 @@ export function createClient(opts: CreateClientOptions): ApiClient {
     },
 
     async signals(): Promise<QuantSignals> {
-      return (await get("/quant-signals")) as QuantSignals;
+      const data = await get("/quant-signals");
+      if (!isQuantSignals(data)) {
+        throw new ApiError("NETWORK", "response was not a candidate surface");
+      }
+      return data;
     },
 
     async setups(query: SetupsQuery): Promise<SetupsPage> {

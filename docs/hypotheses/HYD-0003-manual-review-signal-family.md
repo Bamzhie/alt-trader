@@ -3,7 +3,7 @@ id: HYD-0003
 title: Manual-review signal family on the collected altcoin history
 status: registered
 prediction: A point-in-time structure filter applied to the registered breakout/shock rules produces a positive expected net R per trade on the dev window that survives the validation window, the family-level multiple-testing correction and the matched-placebo comparison.
-universe: MEXC USDT perpetuals in the archived bar universe, restricted to the preregistered point-in-time coverage rule (>= 60 complete days of 5m bars covering the dev window, no malformed rows); BTC excluded
+universe: MEXC USDT perpetuals in the archived bar universe, restricted to the preregistered coverage rule (>= 60 days of 5m bars, no malformed rows, no gap in the sorted series); BTC excluded
 horizon: 24h
 dev_start: 2026-07-19
 dev_end: 2026-09-12
@@ -61,7 +61,9 @@ are reported.
 **Splits (chronological, from the archive start 2026-07-13 02:35 UTC).**
 dev = days [6, 61) = 2026-07-19 .. 2026-09-12; validation = days
 [63, 77) = 2026-09-14 .. 2026-09-28; embargo 2 days between windows;
-holdout = days [79, end] = 2026-09-30 onward, **sealed**. The splits are
+holdout = days [79, 99.3924] = 2026-09-30 onward, **sealed**
+(the end is the archive end at preregistration time; it moves with the
+live archive, and the holdout is never evaluated). The splits are
 the configured `proto/quant/config.py:Splits` boundaries, applied to the
 measured archive span.
 

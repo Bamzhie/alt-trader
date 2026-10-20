@@ -82,7 +82,7 @@
     ],
     "holdout": [
       79.0,
-      null
+      99.3924
     ],
     "embargo_days": 2,
     "calendar": {
@@ -153,9 +153,9 @@
     "HYD-0003"
   ],
   "config_hash": "d33cff513c30",
-  "data_hash": "46bb77598ede3d84480c03beb6874a5e53a350134b3d47d7f7d741a84fda4f28",
-  "code_hash": "60057e50a28fb6ab4b63deb09f7d08d89736200c211a322c01bf96b7b641c627",
+  "data_hash": "7e2be3bd5e58841e0e9c976424785be24071a3f26bb032de856f97db93828d46",
+  "code_hash": "4efd60c061e3576295844fe6b3143d666ddb5c9f932b8ee297e16b004a6fea0b",
   "variants": [],
-  "created_ts": 1792499602,
-  "updated_ts": 1792499602
+  "created_ts": 1792503364,
+  "updated_ts": 1792503364
 }

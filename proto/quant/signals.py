@@ -49,20 +49,33 @@ def _label_for(rule_id):
             f"{p.family}/{'fade' if p.policy == 'fade' else 'cont'}")
 
 
+PREREG_RELPATH = os.path.join("docs", "hypotheses", "HYD-0003.json")
+
+
 def load_evidence(root=None):
     """The preregistered evidence summary, or ``None`` when it is absent.
 
     The file is produced by the frozen analysis protocol; it records, per
-    rule, whether the rule passed the preregistered criteria and the
-    denominators behind that verdict.
+    member, whether it passed the preregistered criteria and the
+    denominators behind that verdict.  The preregistration record it names
+    is loaded too and attached under ``_prereg``: the artifact is verified
+    against THAT record (its id and its config hash), so a hand-edited or
+    foreign artifact cannot render a rule as validated.
     """
     root = root or os.getcwd()
     path = os.path.join(root, EVIDENCE_RELPATH)
     try:
         with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
+            evidence = json.load(fh)
     except (OSError, ValueError):
         return None
+    try:
+        with open(os.path.join(root, PREREG_RELPATH), "r",
+                  encoding="utf-8") as fh:
+            evidence["_prereg"] = json.load(fh)
+    except (OSError, ValueError):
+        pass
+    return evidence
 
 
 def _evidence_for(rule_id, evidence, now, feature_id=None):
@@ -87,20 +100,37 @@ def _evidence_for(rule_id, evidence, now, feature_id=None):
             "ci_lo_day": None, "ci_hi_day": None, "family_p": None,
             "source": None,
         }
-    if evidence.get("config_hash") and evidence.get("config_hash")             != evidence.get("expected_config_hash"):
-        return {
-            "status": "insufficient",
-            "reason": f"the analysis artifact was produced under config "
-                      f"{evidence.get('config_hash')}, not the configured "
-                      f"{evidence.get('expected_config_hash')}: it does not "
-                      f"describe this configuration",
-            "n_events": None, "n_coins": None, "n_days": None,
-            "ci_lo_day": None, "ci_hi_day": None, "family_p": None,
-            "source": evidence.get("preregistration_id"),
-        }
+    # The artifact is checked against the PREREGISTRATION RECORD it names
+    # (not against its own fields): a hand-edited artifact, or one from
+    # another preregistration, cannot make a rule look validated.
+    prereg = evidence.get("_prereg")
+    if prereg is not None:
+        if evidence.get("preregistration_id") != prereg.get("id"):
+            return {
+                "status": "insufficient",
+                "reason": f"the analysis artifact names preregistration "
+                          f"{evidence.get('preregistration_id')}, not the one "
+                          f"it is checked against ({prereg.get('id')})",
+                "n_events": None, "n_coins": None, "n_days": None,
+                "ci_lo_day": None, "ci_hi_day": None, "family_p": None,
+                "source": evidence.get("preregistration_id"),
+            }
+        if evidence.get("config_hash") != prereg.get("config_hash"):
+            return {
+                "status": "insufficient",
+                "reason": f"the analysis artifact was produced under config "
+                          f"{evidence.get('config_hash')}, not the "
+                          f"preregistered {prereg.get('config_hash')}: it "
+                          f"does not describe this configuration",
+                "n_events": None, "n_coins": None, "n_days": None,
+                "ci_lo_day": None, "ci_hi_day": None, "family_p": None,
+                "source": evidence.get("preregistration_id"),
+            }
     members = evidence.get("members") or {}
     key = f"{rule_id}|{feature_id}" if feature_id else rule_id
-    rec = members.get(key) or members.get(rule_id)
+    # NO fallback to the bare rule id: two members of the same rule are
+    # different features and must never inherit one another's verdict.
+    rec = members.get(key)
     if rec is None:
         return {
             "status": "insufficient",

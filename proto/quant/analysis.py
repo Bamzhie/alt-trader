@@ -187,7 +187,7 @@ def evaluate_member(events, rule, geom, window, *, cfg=DEFAULT,
                      funding_dir=None, settlements_dir=None,
                      min_events=MIN_EVENTS, min_coins=MIN_COINS,
                      min_days=MIN_DAYS, label=None,
-                     holdout_start_day=None):
+                     holdout_start_day="auto"):
     """Evaluate one family member on one window.
 
     Returns a dict with explicit denominators, the friction-only and
@@ -196,13 +196,19 @@ def evaluate_member(events, rule, geom, window, *, cfg=DEFAULT,
     below the minimum sample sizes is ``insufficient`` and carries NO
     mean.
 
-    THE HOLDOUT WALL IS ENFORCED HERE, not merely offered: when
-    ``holdout_start_day`` is given, a window that reaches into the holdout
-    is REFUSED (ValueError) before a single event is selected.  The
-    one-shot holdout may only be spent once, on a configuration frozen
-    from dev+validation, through the separate spend path.
+    THE HOLDOUT WALL IS ENFORCED HERE, not merely offered: the holdout
+    boundary comes from the configured splits (or from an explicit
+    ``holdout_start_day``), and a window that reaches into the holdout is
+    REFUSED (ValueError) before a single event is selected.  The one-shot
+    holdout may only be spent once, on a configuration frozen from
+    dev+validation, through the separate spend path.
     """
     label = label or getattr(rule, "name", None) or "member"
+    # The wall is ON BY DEFAULT (fail closed): the holdout boundary comes
+    # from the configured splits.  Only the one-shot spend path may pass an
+    # explicit holdout_start_day=None, and it does so deliberately.
+    if holdout_start_day == "auto":
+        holdout_start_day = globals()["holdout_start_day"](cfg)
     if holdout_start_day is not None:
         refused, why = refuse_holdout_window(window, holdout_start_day, None)
         if refused:
@@ -333,6 +339,16 @@ def evaluate_with_baselines(events, rule, geom, window, **kw):
 
 
 # ------------------------------------------------------- the holdout wall
+def holdout_start_day(cfg=DEFAULT):
+    """The configured holdout boundary (in archive day coordinates).
+
+    Derived from the configured splits, so it is a CONSTANT of the
+    configuration and not a number that moves with the archive.
+    """
+    sp = cfg.splits
+    return float(sp.dev_end_day + 2 * sp.embargo_days + sp.val_len_days)
+
+
 def refuse_holdout_window(window, holdout_start_day, splits):
     """Refuse a window that reaches into the holdout.
 

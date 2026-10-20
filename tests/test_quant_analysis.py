@@ -69,6 +69,17 @@ except ValueError as exc:
     _holdout_raised = "holdout-sealed" in str(exc)
 check("evaluating a holdout window RAISES (the wall is enforced)",
       _holdout_raised)
+# the wall must be ON BY DEFAULT: the boundary comes from the configured
+# splits, so a caller cannot forget to pass it.
+_default_raised = False
+try:
+    AN.evaluate_member([], _rule, _geom, (79.0, 99.0), cfg=DEFAULT)
+except ValueError as exc:
+    _default_raised = "holdout-sealed" in str(exc)
+check("the wall is ON by default (the configured holdout boundary)",
+      _default_raised)
+check("the configured holdout boundary is day 79",
+      AN.holdout_start_day(DEFAULT) == 79.0, str(AN.holdout_start_day(DEFAULT)))
 _ok = AN.evaluate_member([], _rule, _geom, (63.0, 77.0), cfg=DEFAULT,
                           holdout_start_day=79.0)
 check("evaluating a validation window still works",
@@ -124,20 +135,23 @@ print("\n=== the funding-adjusted cell uses ITS OWN cluster labels ===")
 # friction-only events span 20 days: a slice of the friction labels would
 # report 20 day-clusters for a 1-day sample and publish an interval for it.
 _outcomes = []
-for i in range(240):
-    day = 10 if i < 200 else (11 + i % 20)    # 200 on one day, 40 spread
+for i in range(400):
+    # The funding-attributable events are INTERLEAVED (every other one), so
+    # a slice of the friction-only labels cannot coincide with them.
+    attributed = (i % 2 == 0)
+    day = 10 if attributed else (11 + (i // 2) % 20)
     _outcomes.append(CO.Outcome(
         event_id=f"e{i}", coin=f"C{i % 20:02d}", ts=1_700_000_000 + day * 86400,
         side=1, cause="TP", exit_ts=1_700_000_000 + day * 86400 + 300,
         gross_log=0.01, friction=0.0009,
-        funding=(0.0001 if i < 200 else None),
-        net_r=(0.01 if i < 200 else None), dd=0.01,
-        reason=(None if i < 200 else "funding:incomplete:x")))
+        funding=(0.0001 if attributed else None),
+        net_r=(0.01 if attributed else None), dd=0.01,
+        reason=(None if attributed else "funding:incomplete:x")))
 
 
 def _fake_resolve(*a, **kw):
-    return {"n_selected": 240, "n_resolved": 240, "n_censored": 0,
-            "n_invalidated": 0, "causes": {"TP": 240}, "outcomes": _outcomes,
+    return {"n_selected": 400, "n_resolved": 400, "n_censored": 0,
+            "n_invalidated": 0, "causes": {"TP": 400}, "outcomes": _outcomes,
             "coverage": 1.0}
 
 
@@ -156,11 +170,11 @@ check("a one-day funding sample publishes no interval (it is degenerate)",
       and fa.get("ci_hi_day") is None and fa.get("t_day") is None,
       str(fa))
 check("the unattributable events are counted, not dropped",
-      res3["denominators"]["n_funding_unattributed"] == 40
+      res3["denominators"]["n_funding_unattributed"] == 200
       and res3["denominators"]["n_funding_evaluable"] == 200,
       str(res3["denominators"]))
 check("the funding coverage is reported",
-      abs(res3["denominators"]["funding_coverage"] - 200 / 240) < 1e-9,
+      abs(res3["denominators"]["funding_coverage"] - 0.5) < 1e-9,
       str(res3["denominators"]["funding_coverage"]))
 check("the friction-only cell still spans every day",
       res3["friction_only"]["clusters"]["day"] == 21,

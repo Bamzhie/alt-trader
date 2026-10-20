@@ -154,6 +154,37 @@ names the cause.
   (lower–upper)` with the caption `range of measured outcomes, not a
   prediction`.
 
+## Signals, evidence and execution (three separate things)
+
+The 2026-10-20 work adds a **signal display** path. It does not change the
+shadow-only contract above; it makes the three concepts explicit:
+
+1. **A rule-generated candidate** — a rule fired on a closed bar. It is
+   something the owner may consider BY HAND. `GET /quant-signals` (read-only,
+   behind the bearer gate, `mode=ro`) returns these with coin, direction,
+   rule + version, signal timestamp, data freshness, entry (and its basis),
+   stop/target/horizon with the assumptions behind them, the cost basis
+   (labelled as an assumption), the rule's evidence status and the
+   execution note.
+2. **The evidence status of that rule** — `exploratory`, `insufficient` or
+   `validated` — carried as DATA with its denominators, its interval
+   endpoints and the reason when it is insufficient. It comes from the
+   preregistered analysis artifact, which is checked against the
+   preregistration record it names (id + config hash) and is keyed by
+   (rule, feature identity), so a hand-edited or foreign artifact cannot
+   render a rule as validated. **A promotion or a validation result never
+   authorises an order.**
+3. **Execution** — never. There is no order path, no credential, no account
+   or broker endpoint anywhere in the signal surface. The store's own
+   `SHADOW` mode is reported unchanged, `actionable` is always `false`, and
+   the view says "manual review only — the app does not execute these".
+   Only `SHADOW` rows are surfaced; a legacy `ACTIONABLE` row is skipped.
+
+The Research view shows the candidates in a list (never a table, never
+through setup-table components), with the measured range as interval
+endpoints only and the caption `range of measured outcomes, not a
+prediction`.
+
 ## Registry relationship (no code merge)
 
 Two registries, two jobs, linked by id pairs in future decision-log

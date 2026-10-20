@@ -386,31 +386,33 @@ function ManualReview({ signals }: { signals: QuantSignals | null }) {
               <span className="text-xs text-muted">{signal.role}</span>
             </div>
             <p className="mt-1 text-muted">
-              {signal.rule_label} · {signal.rule_version}
+              {signal.rule_label} · {signal.rule_version ?? "unavailable"}
             </p>
             <p className="mt-1 text-muted">
               {signal.signal_ts_utc} · data age{" "}
               {signal.data_freshness.signal_age_min} min
             </p>
             <p className="mt-1 text-muted">
-              reference price {orUnavailable(signal.entry.reference_price)} ·
-              entry: {signal.entry.basis}
+              reference price {orUnavailable(signal.entry?.reference_price ?? null)} ·
+              entry: {signal.entry?.basis ?? "unavailable"}
             </p>
             <p className="mt-1 text-muted">
-              stop {orUnavailable(signal.risk.stop)} · target{" "}
-              {orUnavailable(signal.risk.target)} · horizon{" "}
-              {orUnavailable(signal.risk.horizon_bars)} bars
+              stop {orUnavailable(signal.risk?.stop ?? null)} · target{" "}
+              {orUnavailable(signal.risk?.target ?? null)} · horizon{" "}
+              {orUnavailable(signal.risk?.horizon_bars ?? null)} bars
             </p>
             <p className="mt-1 text-muted">
-              {String(signal.risk.assumptions.stop)} ·{" "}
-              {String(signal.risk.assumptions.target)} ·{" "}
-              {String(signal.risk.assumptions.tie_break)}
+              {String(signal.risk.assumptions?.stop ?? "unavailable")} ·{" "}
+              {String(signal.risk.assumptions?.target ?? "unavailable")} ·{" "}
+              {String(signal.risk.assumptions?.tie_break ?? "unavailable")}
             </p>
             <p className="mt-1 text-muted">{signal.costs.basis}</p>
             <p className="mt-1 text-fg">
-              {signal.evidence.status} ·{" "}
-              {signal.evidence.ci_lo_day !== null &&
-              signal.evidence.ci_hi_day !== null
+              {signal.evidence?.status ?? "insufficient"} ·{" "}
+              {signal.evidence?.ci_lo_day !== null &&
+              signal.evidence?.ci_lo_day !== undefined &&
+              signal.evidence?.ci_hi_day !== null &&
+              signal.evidence?.ci_hi_day !== undefined
                 ? formatRange(signal.evidence.ci_lo_day, signal.evidence.ci_hi_day)
                 : "measured range unavailable"}
             </p>
@@ -418,16 +420,18 @@ function ManualReview({ signals }: { signals: QuantSignals | null }) {
               range of measured outcomes, not a prediction
             </p>
             <p className="mt-1 text-xs text-muted">
-              evidence: {signal.evidence.n_events ?? "unavailable"} events ·{" "}
-              {signal.evidence.n_coins ?? "unavailable"} coins ·{" "}
-              {signal.evidence.n_days ?? "unavailable"} days
+              evidence: {signal.evidence?.n_events ?? "unavailable"} events ·{" "}
+              {signal.evidence?.n_coins ?? "unavailable"} coins ·{" "}
+              {signal.evidence?.n_days ?? "unavailable"} days
             </p>
-            {signal.evidence.reason ? (
+            {signal.evidence?.reason ? (
               <p className="mt-1 text-xs text-muted">
                 {signal.evidence.reason}
               </p>
             ) : null}
-            <p className="mt-1 text-xs text-muted">{signal.execution.note}</p>
+            <p className="mt-1 text-xs text-muted">
+              {signal.execution?.note ?? "manual review only"}
+            </p>
           </li>
         ))}
       </ul>
