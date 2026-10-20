@@ -94,19 +94,22 @@ stay deterministic and idempotent.
 c8647b5  fix(quant): make the feature store's identity configuration-aware
 ```
 
-`git rev-parse HEAD` == `git rev-parse origin/main` == `c8647b5` at the
-time of the fix push; working tree clean. A documentation-only commit
-(`7afb386`, the deployment report) was pushed afterwards, so the current
-tip is `7afb386` and `git diff c8647b5..HEAD` touches **only** files under
-`docs/`.
+**Deployed code commit: `c8647b5`.** `git rev-parse HEAD` ==
+`git rev-parse origin/main` == `c8647b5` at the time of the fix push;
+working tree clean. Every commit after it is **documentation only** — the
+deployment report (`7afb386`), the code-revision correction (`51c577f`),
+the second-sweep measurement (`e8973c3`) and the source archive
+(`d5097cb`) — so `git diff c8647b5..HEAD` touches **only** files under
+`docs/` and the running code is byte-identical to HEAD's code. The tip
+moves with every documentation commit; the **deployed code** does not.
 
 **What the running service reports, and what it does not prove.**
 `GET /quant-research` returns `provenance.code_rev`, which
 `research_surface.code_rev()` reads from git **at request time** (cached
-for a short TTL). It showed `c8647b5` right after the restart and shows
-`7afb386` now, because HEAD moved. It is provenance of the *working tree*,
-**not** a pin of the revision the process loaded — so it is not, on its
-own, proof of what is executing.
+for a short TTL). It showed `c8647b5` right after the restart and tracks
+whatever HEAD is now, because HEAD moved with the documentation commits. It
+is provenance of the *working tree*, **not** a pin of the revision the
+process loaded — so it is not, on its own, proof of what is executing.
 
 The evidence that the **new** code is executing is behavioural, and it is
 unambiguous: the `first_sweep` block and the per-stage `stages` map on
@@ -161,7 +164,7 @@ New process: MainPID **732289**, started 2026-10-20 11:32:58, cwd
 | `GET /readyz` | **200** `{"ready":true,"ts":…}` (5.7 ms) — API-serving readiness, **1 s after the start**, no longer gated on the first sweep |
 | `GET /scanner-health` | **200**; at that moment `first_sweep = {"state":"in_progress","started_ts":…,"completed_ts":null,"duration_s":null,"stages":{}}` — **the first sweep had NOT completed, and the route said so** |
 | `GET /quant-status` | **200**; `mode:"shadow"`, `status:"paused"`, `pause_reason:"BTC bars stale"`, `event_counts {total:0, emitted:0, resolved:0}`, **`actionable_events: 0`**, `promotions: []` |
-| `GET /quant-research` | **200**; `status:"insufficient"`, `reasons:["no shadow events recorded yet"]`, `provenance.code_rev:"c8647b5"`, feature versions listed |
+| `GET /quant-research` | **200**; `status:"insufficient"`, `reasons:["no shadow events recorded yet"]`, `provenance.code_rev` = the git HEAD at request time (`c8647b5` when first checked; it tracks HEAD, not the loaded revision), feature versions listed |
 | `GET /readyz` / `/quant-research` **without** a token | **401** — the auth gate is intact |
 
 ### 5.4 First sweep and the new per-stage timings (the first production measurement)
@@ -182,7 +185,7 @@ stages: scan=449.7(partial) collect=438.4 funding=9.0 settlements=0.0(not_due)
 | funding | 9.024 s | ok | 556 coins |
 | settlements | 0.0 s | **not_due** | the persisted daily throttle from the previous run (19 h old) |
 | prices | 0.0 s | **not_due** | same |
-| resolve | 0.0 s | skipped | background resolver, not blocking |
+| resolve | 0.0 s | skipped | background resolver — **not part of the foreground wall time** (it overlaps the following sweep) |
 | measure | 450.133 s | **partial** | 556 attempted, 13 failed |
 | quant | 611.759 s | ok | 580 coins, 0 emitted / 0 resolved (the watcher was auto-paused) |
 | **total** | **1 959.06 s** | | vs **3 951 s** for the pre-deploy first sweep → **~50 % faster** |
@@ -200,7 +203,7 @@ steady state (warm index, warm quant state, persisted cadence):
 | funding | 9.0 | 19.0 |
 | settlements | 0.0 (not_due) | 0.0 (not_due) |
 | prices | 0.0 (not_due) | 0.0 (not_due) |
-| resolve | 0.0 (skipped) | 1 471.9 (ok, background) |
+| resolve | 0.0 (skipped) | 1 471.9 (ok, **background — overlaps the sweep; NOT additive**) |
 | measure | 450.1 | 178.7 |
 | **quant** | 611.8 | **77.2** |
 | **whole sweep** | **1 959.1 s** | **660.8 s** |
@@ -209,6 +212,17 @@ steady state (warm index, warm quant state, persisted cadence):
 `stages: scan=321.6(partial) collect=64.3(partial) funding=19.0
 settlements=0.0(not_due) prices=0.0(not_due) resolve=1471.9 measure=178.7
 quant=77.2`.
+
+**The `resolve` stage is a BACKGROUND stage and its duration is NOT part of
+the sweep's wall time.** The outcome resolver is submitted to a
+single-worker pool and runs concurrently with the next iteration; the
+1 471.9 s it reported is the time that background job took (it was still
+running when the second sweep's foreground stages finished), and it
+**overlaps** the 660.8 s foreground sweep. The foreground stages of the
+second sweep sum to 321.6 + 64.3 + 19.0 + 0.0 + 0.0 + 178.7 + 77.2 =
+**660.8 s**, which is the wall time the sweep actually took. Adding the
+resolve duration to it would double-count work that was happening in
+parallel (and would be wrong by ~1 471 s).
 
 **What is attributable to the code, and what is not.**
 - **collect 438.4 s → 64.3 s** is the bar index: the first sweep had to

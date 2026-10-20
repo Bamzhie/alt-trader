@@ -149,7 +149,7 @@ statements below are unchanged, and the deployment evidence lives in
 
 - The code is merged into `main` and pushed, and the **local user systemd
   service was restarted on 2026-10-20** with a clean tree at the deployed
-  commit **`c8647b5`** (the only later commit is documentation). The
+  commit **`c8647b5`** (every later commit is documentation only). The
   running service's `provenance.code_rev` reads the *current* git HEAD at
   request time, so it tracks HEAD rather than the loaded revision; the
   proof that the new code is executing is behavioural (the `first_sweep`
@@ -169,7 +169,9 @@ statements below are unchanged, and the deployment evidence lives in
   sweep — the steady state, with a warm bar index and warm quant state —
   took **660.8 s (11 min)**: `scan=321.6(partial) collect=64.3(partial)
   funding=19.0 settlements=0.0(not_due) prices=0.0(not_due) resolve=1471.9
-  measure=178.7(partial) quant=77.2`. The collect phase drops from 438 s to
+  measure=178.7(partial) quant=77.2`. The `resolve` stage is a **background**
+  stage whose duration is **not additive** to the sweep's wall time (it
+  overlaps the sweep); the foreground stages sum to the 660.8 s. The collect phase drops from 438 s to
   64 s (the bar index removes the dedupe read) and the quant step from
   612 s to 77 s (the bounded rebuild and the file-signature fast path);
   the scan and measure differences are venue-side variance and are not

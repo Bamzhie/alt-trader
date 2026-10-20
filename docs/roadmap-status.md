@@ -78,7 +78,9 @@ VERIFIED by direct archive read (2026-10-18):
   read) and `quant=77.2` (the bounded rebuild and the file-signature fast
   path); `settlements`/`prices` were **not_due** (the persisted daily
   throttle), which is the first production observation of the resumed
-  cadence.
+  cadence. The `resolve` stage is a **background** stage: its 1 471.9 s
+  **overlaps** the sweep and is **not additive** to the 660.8 s wall
+  time (the foreground stages sum to it).
 - **Boundaries intact after the deploy:** `mode:"shadow"`,
   `actionable_events: 0`, `promotions: []`, `docs/decisions/log.jsonl`
   still 0 bytes, no `docs/decisions/chain.jsonl`, **no
