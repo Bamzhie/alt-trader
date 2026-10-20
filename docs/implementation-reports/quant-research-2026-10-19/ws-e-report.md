@@ -98,7 +98,9 @@ Behaviour:
     `stats.day_cluster_t(diffs, days)`.  A **coin-cluster interval** is
     reported too (WS-B's `inference.uncertainty`: a coin-block bootstrap).
     An interval whose cluster count is below three is `None` with a reason
-    (and the statistic is suppressed with it).
+    (and the statistic is suppressed with it), and so is a **degenerate**
+    interval (the bootstrap collapses, `lo >= hi`) — the same suppression
+    rule applies to the per-side blocks and to the paired difference.
   - *no silent zeros*: when a side has no evaluable outcome the result is
     **refused with a reason** and carries no numbers.
   - *every number carries its denominator*: `n_events` (the paired,

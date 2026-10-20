@@ -141,7 +141,10 @@ Also public (helpers the other modules and the reviewer may use):
   * `days` supplied, aligned, **≥ 3 distinct days** → the interval is
     `stats.day_cluster_mean` (day-block bootstrap) and the statistic is
     `stats.day_cluster_t`; the reported `se` is the matching analytic
-    cluster standard error (`mean / t`). `cluster="day"`.
+    cluster standard error (`mean / t`). `cluster="day"`. A **degenerate**
+    result (the interval collapses, `lo >= hi`) is suppressed like a
+    sub-threshold cluster count: `ci_lo`/`ci_hi` are `None` with a reason
+    and the statistic is suppressed with it.
   * `days` supplied, aligned, **< 3 distinct days** → **no interval**
     (`ci_lo`/`ci_hi` are `None`) and a reason naming the cluster count;
     `cluster="row"` (the se/t are row-level) and the row-level interval is
