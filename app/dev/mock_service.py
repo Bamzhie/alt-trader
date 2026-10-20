@@ -17,6 +17,10 @@ HARD RULES (enforced here, mirroring the real service):
   * Binds 127.0.0.1 only. The bearer token is printed once to stdout and never
     written to the request log.
 
+The shadow research routes (/quant-status, /quant-research) are READ-ONLY:
+counts with their denominators, interval endpoints only, and an explicit
+"insufficient" with a reason when the store is empty.
+
 Dev-only affordances (clearly labelled, exempt from auth):
   GET /dev/toggle-ready      flip the readiness flag (exercises the
                              alive-but-not-ready "first sweep" state)
@@ -90,6 +94,52 @@ HEARTBEAT_SECONDS = 15
 
 UNAUTH_MESSAGE = "missing or invalid bearer token"
 NOT_READY_MESSAGE = "not ready — first sweep in progress"
+
+# The shadow research surface, as an empty store answers it: an explicit
+# "insufficient" with a reason and null/zero denominators — never a guess
+# and never a figure the store cannot back.
+EMPTY_QUANT_STATUS = {
+    "mode": "shadow",
+    "status": "unseen",
+    "paused": False,
+    "pause_reason": None,
+    "config_hash": None,
+    "event_counts": {"total": 0, "emitted": 0, "resolved": 0},
+    "actionable_events": 0,
+    "suppression_top": [],
+    "promotions": [],
+    "reason": "insufficient-evidence",
+}
+
+EMPTY_QUANT_RESEARCH = {
+    "version": "research-surface-v1",
+    "status": "insufficient",
+    "reasons": ["no shadow events recorded yet"],
+    "generated_ts": 0,
+    "provenance": {
+        "config_hash": None,
+        "code_rev": None,
+        "rule_ids": [],
+        "feature_versions": [],
+    },
+    "sample": {
+        "events": 0, "resolved": 0, "open": 0,
+        "days": 0, "coins": 0, "rules": 0,
+    },
+    "rules": [],
+    "calibration": {
+        "available": False,
+        "buckets": [],
+        "count": 0,
+        "reason": ("the shadow store records outcomes, not predicted outcomes "
+                   "- calibration is not computed"),
+    },
+    "coverage": {
+        "attributed": 0, "eligible": 0, "ratio": None,
+        "reason": "no recorded opportunities yet - coverage is not computable",
+    },
+    "validation": {"validated": 0, "rules": 0},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +414,12 @@ class MockHandler(BaseHTTPRequestHandler):
         if path.startswith("/tradeplan/"):
             self._tradeplan_route(path[len("/tradeplan/"):])
             return
+        if path == "/quant-status":
+            self._quant_status_route()
+            return
+        if path == "/quant-research":
+            self._quant_research_route()
+            return
         self.fail(404, NOT_FOUND, f"no route for {path}")
 
     def do_POST(self):
@@ -621,6 +677,21 @@ class MockHandler(BaseHTTPRequestHandler):
         for forbidden in ("leverage", "max_leverage", "liquidation", "liq_price"):
             row.pop(forbidden, None)
         self.respond(200, row)
+
+    def _quant_status_route(self):
+        """The shadow-watcher status (read-only, counts only)."""
+        data = self.svc.fixtures.get("quant_status")
+        if not isinstance(data, dict):
+            data = EMPTY_QUANT_STATUS
+        self.respond(200, dict(data))
+
+    def _quant_research_route(self):
+        """The research surface: counts with denominators, interval
+        endpoints only, status and provenance. Read-only."""
+        data = self.svc.fixtures.get("quant_research")
+        if not isinstance(data, dict):
+            data = EMPTY_QUANT_RESEARCH
+        self.respond(200, dict(data))
 
     def _command_route(self, name):
         if name not in COMMANDS:

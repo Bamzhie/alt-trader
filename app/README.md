@@ -116,6 +116,8 @@ Every authed route needs `Authorization: Bearer <token>`.
 | `GET /bars?coin=&tf=&limit=` | closed OHLCV bars (default 1000, max 5000); `tf` ∈ 5m/15m/1H/4H/1D; `1m` → `BAD_REQUEST` |
 | `GET /metrics?coin=` | `rsi`, `macd`, `ema50`, `ema200`, `volume_pct`; explicit `null` when unavailable |
 | `GET /tradeplan/:id` | `entry_zone`, `stop`, `tp1`, `tp2`, `reference_notional_usdt: 100` — reference size, not a position; no leverage key |
+| `GET /quant-status` | shadow watcher state: counts, suppression reasons, promotion records (read-only) |
+| `GET /quant-research` | `research-surface-v1`: sample counts with denominators, interval endpoints only, calibration/coverage/validation status, provenance (read-only) |
 | `GET /events` | SSE, monotonic zero-padded ids, ring buffer 500 events / 30 min, 15s keepalive; honors `Last-Event-ID`; below-floor cursor → `resync` event; kinds `setup.emitted`, `setup.invalidated`, `setup.expired`, `setup.resolved`, `monitoring.unavailable`, `monitoring.ok`, `sweep.completed` |
 | `POST /commands/{pause,resume,disable-trigger,enable-trigger}` | idempotent; `BAD_REQUEST` on unknown rule |
 | `GET /dev/toggle-ready` | DEV ONLY — flips readiness (exercises the alive-but-not-ready state) |

@@ -547,6 +547,52 @@ class TestSSE(unittest.TestCase):
         for e in svc.events:
             self.assertGreaterEqual(e["ts"], newest - window)
 
+    def test_quant_status_route(self):
+        status, body = get("/quant-status")
+        self.assertEqual(status, 200)
+        data = body["data"]
+        self.assertEqual(data["mode"], "shadow")
+        counts = data["event_counts"]
+        self.assertEqual(set(counts), {"total", "emitted", "resolved"})
+        # `emitted` counts the rows that are STILL OPEN, so the triple is
+        # always consistent: emitted + resolved == total.
+        self.assertEqual(counts["emitted"] + counts["resolved"], counts["total"])
+        # Shadow counts never include an actionable row.
+        self.assertEqual(data["actionable_events"], 0)
+
+    def test_quant_research_route(self):
+        status, body = get("/quant-research")
+        self.assertEqual(status, 200)
+        data = body["data"]
+        self.assertEqual(data["version"], "research-surface-v1")
+        self.assertEqual(
+            set(data),
+            {"version", "status", "reasons", "generated_ts", "provenance",
+             "sample", "rules", "calibration", "coverage", "validation"},
+        )
+        # Uncertainty is interval endpoints only - no mean, no point reading.
+        blob = json.dumps(data)
+        self.assertNotIn("mean_r", blob)
+        self.assertNotIn("net_r", blob)
+        for rule in data["rules"]:
+            if rule["interval"] is not None:
+                self.assertEqual(set(rule["interval"]), {"lo", "hi"})
+        # A value that cannot be computed is an explicit null, never a zero.
+        self.assertEqual(data["calibration"]["buckets"], [])
+        self.assertEqual(data["calibration"]["count"], 0)
+        self.assertFalse(data["calibration"]["available"])
+        self.assertTrue(data["calibration"]["reason"])
+        for rule in data["rules"]:
+            if rule["resolved"] == 0:
+                self.assertIsNone(rule["days"])
+                self.assertIsNone(rule["coins"])
+
+    def test_quant_routes_require_auth(self):
+        for path in ("/quant-status", "/quant-research"):
+            status, body = get(path, token=None)
+            self.assertEqual(status, 401, path)
+            self.assertEqual(body["error"]["code"], "UNAUTH")
+
     def test_non_ascii_authorization_401_connection_alive(self):
         # Regression: hmac.compare_digest raises TypeError on non-ASCII input,
         # which escaped the handler and dropped the connection with no response.

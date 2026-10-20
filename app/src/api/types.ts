@@ -264,10 +264,23 @@ export interface QuantSuppressionRow {
   n: number;
 }
 
-/** Holdout interval behind a promotion record (endpoints only). */
+/** Holdout interval behind a promotion record (endpoints only).
+ *
+ * The backend stores the whole holdout summary (research.summarize): the
+ * sample counts, the day-cluster interval and the outcome shares. The
+ * Research view reads ONLY `ci_lo` / `ci_hi` from it — a point reading of
+ * the result is never rendered. */
 export interface QuantHoldout {
+  n: number;
+  days: number;
+  coins: number;
+  mean_r: number;
   ci_lo: number;
   ci_hi: number;
+  tp: number;
+  sl: number;
+  time: number;
+  t: number;
 }
 
 /** A passed gate record — the only promotion shape the view renders. */
@@ -310,4 +323,149 @@ export interface QuantShadowState {
 export interface QuantEvent extends Event {
   kind: "quant.shadow";
   state?: QuantShadowState;
+}
+
+/* -------------------------------------------------------------------------
+ * GET /quant-research — the read-only research surface (research-surface-v1)
+ *
+ * HARD RULES of this contract:
+ *   * Uncertainty is INTERVAL ENDPOINTS ONLY. There is no mean, no point
+ *     reading of the result, anywhere in this shape.
+ *   * Every denominator is explicit; a value that cannot be computed is an
+ *     explicit null (rendered "unavailable"), never a zero and never a
+ *     guess.
+ *   * A rule is `validated` only when a PASSED promotion record exists for
+ *     it; a validated rule is still research, never an action.
+ * ---------------------------------------------------------------------- */
+
+/** Interval endpoints only — the pair, never a mean. */
+export interface QuantResearchInterval {
+  lo: number | null;
+  hi: number | null;
+}
+
+/** The share of the resolved rows that ended TP / SL / TIME (or null). */
+export interface QuantResearchOutcomeShares {
+  tp: number | null;
+  sl: number | null;
+  time: number | null;
+}
+
+/** Whether a passed gate record exists for this rule id + config hash. */
+export interface QuantResearchValidation {
+  status: "not_validated" | "validated";
+  /** The gate's own reasons — why it did not pass, or what it recorded. */
+  reasons: string[];
+}
+
+/** One recorded suppression reason and how often it happened. */
+export interface QuantResearchSuppression {
+  reason: string;
+  n: number;
+}
+
+/** One rule's row of the research surface. */
+export interface QuantResearchRule {
+  rule_id: string;
+  role: "candidate" | "control" | "?";
+  events: number;
+  resolved: number;
+  open: number;
+  /**
+   * Distinct days with a resolved outcome — the interval's denominator.
+   * null when the rule has no resolved row (nothing to measure).
+   */
+  days: number | null;
+  /**
+   * Distinct coins with a resolved outcome. null when the rule has no
+   * resolved row.
+   */
+  coins: number | null;
+  /** The measured range's endpoints, or null when it cannot be computed. */
+  interval: QuantResearchInterval | null;
+  outcome_shares: QuantResearchOutcomeShares;
+  /** What the costs are (an assumption, not a measurement). */
+  cost_note: string;
+  suppression: QuantResearchSuppression[];
+  validation: QuantResearchValidation;
+}
+
+/** The sample the whole surface describes, with its denominators. */
+export interface QuantResearchSample {
+  events: number;
+  resolved: number;
+  open: number;
+  days: number;
+  coins: number;
+  rules: number;
+}
+
+/** One measured feature/measure version behind the numbers. */
+export interface QuantResearchFeatureVersion {
+  name: string;
+  version: string;
+}
+
+/** Where the numbers came from. */
+export interface QuantResearchProvenance {
+  config_hash: string | null;
+  code_rev: string | null;
+  /** The rule ids the registered config defines. */
+  rule_ids: string[];
+  feature_versions: QuantResearchFeatureVersion[];
+}
+
+/** One calibration bucket (a measured-outcome range and its rows). */
+export interface QuantResearchCalibrationBucket {
+  label: string;
+  /** Rows in the bucket — the denominator. */
+  n: number;
+  /** The measured outcome share in the bucket, or null. */
+  measured: number | null;
+  /** The reference share the bucket is compared against, or null. */
+  expected: number | null;
+}
+
+/** Calibration status: a table with denominators, or a reason. */
+export interface QuantResearchCalibration {
+  available: boolean;
+  buckets: QuantResearchCalibrationBucket[];
+  /** How many buckets the payload carries — the view never counts. */
+  count: number;
+  reason: string | null;
+}
+
+/** Coverage: attributed events over the recorded opportunities. */
+export interface QuantResearchCoverage {
+  attributed: number;
+  eligible: number;
+  ratio: number | null;
+  reason: string | null;
+}
+
+/** The validation summary — the counts come from the API, never the view. */
+export interface QuantResearchValidationSummary {
+  /** Rules with a passed gate record. */
+  validated: number;
+  /** Rules the surface reports. */
+  rules: number;
+}
+
+/**
+ * GET /quant-research body (proto/quant/research_surface.py).
+ * 200 whenever the quant store is readable. `status` is "insufficient"
+ * when there are no shadow events yet, and `reasons` says why.
+ */
+export interface QuantResearch {
+  version: string;
+  status: "ok" | "insufficient";
+  reasons: string[];
+  /** UTC-seconds integer. */
+  generated_ts: number;
+  provenance: QuantResearchProvenance;
+  sample: QuantResearchSample;
+  rules: QuantResearchRule[];
+  calibration: QuantResearchCalibration;
+  coverage: QuantResearchCoverage;
+  validation: QuantResearchValidationSummary;
 }
