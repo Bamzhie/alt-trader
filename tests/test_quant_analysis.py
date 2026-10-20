@@ -166,6 +166,70 @@ check("the friction-only cell still spans every day",
       res3["friction_only"]["clusters"]["day"] == 21,
       str(res3["friction_only"]["clusters"]))
 
+print("\n=== the matched placebo compares the MEAN ===")
+# The placebo is a DATE PERMUTATION: the donor for an event is another
+# event of the same coin, time-of-day bucket and liquidity tier on a
+# DIFFERENT date.  It therefore tests whether the observed mean is
+# concentrated in a way the date mix would not produce.
+def _mk_events(spec):
+    """spec: list of (day, r) per (coin, tod) key."""
+    out = []
+    for k, (coin, tod) in enumerate([(f"C{i // 6:02d}", i % 6)
+                                      for i in range(36)]):
+        for day, r in spec:
+            ev = R.Event()
+            ev.coin = coin
+            ev.ts = 1_700_000_000 + day * 86400 + tod * 3600
+            ev.day = float(day)
+            ev.fam = "B"
+            ev.param = 4.0
+            ev.side = 1
+            ev.qv24 = 5e7
+            ev.sigma = 0.002
+            ev.rvol = 4.0
+            ev.z1h = 0.0
+            ev.z4h = 0.0
+            ev.btc7d = 0.0
+            ev.gross = [0.01] * 72
+            ev.kind = [0] * 72
+            ev.exit_offset = [287] * 72
+            out.append((ev, r))
+    return out
+
+
+def _placebo_for(pairs):
+    evs = [e for e, _ in pairs]
+    outs = [CO.Outcome(event_id=f"e{i}", coin=e.coin, ts=e.ts, side=1,
+                        cause="TP", exit_ts=e.ts + 300, gross_log=0.01,
+                        friction=0.0009, funding=0.0001, net_r=0.01, dd=0.01,
+                        reason=None) for i, e in enumerate(evs)]
+    vals = [r for _, r in pairs]
+    return AN.mean_r_placebo(evs, outs, vals, placebos=100, seed=7)
+
+
+# a date-SPECIFIC edge: nine of every ten events sit on one date
+_conc = _mk_events([(10, 0.10)] * 9 + [(20, 0.001)])
+_placebo = _placebo_for(_conc)
+check("the placebo reports the observed mean",
+      _placebo["observed_mean"] is not None
+      and abs(_placebo["observed_mean"]
+              - (9 * 0.10 + 0.001) / 10) < 1e-9,
+      str(_placebo["observed_mean"]))
+check("a date-specific edge gets a small placebo p-value",
+      _placebo["p_value"] is not None and _placebo["p_value"] <= 0.05,
+      str(_placebo))
+check("the placebo used donors on a different date",
+      _placebo["n_donors"] == len(_conc), str(_placebo))
+# a LEVEL edge (every date carries the same value) is NOT date-specific: the
+# date-permutation null reproduces the mean, so the p-value stays high.  That
+# is the documented semantics of this placebo, and the criterion is
+# deliberately strict about it.
+_level = _mk_events([(10, 0.10), (20, 0.10)])
+_p_flat = _placebo_for(_level)
+check("a level edge is not date-specific (the placebo p-value stays high)",
+      _p_flat["p_value"] is not None and _p_flat["p_value"] > 0.5,
+      str(_p_flat))
+
 print("\n=== the point-in-time structure feature ===")
 bars = []
 for i in range(400):

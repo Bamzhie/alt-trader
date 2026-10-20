@@ -137,7 +137,12 @@ on validation).**
 3. the member meets the minimum sample sizes on both splits;
 4. the family-corrected p-value (SPA max-t over the 5 members) <= 0.10;
 5. the matched-placebo comparison: the observed **mean net R** exceeds at
-   least 95% of the placebo means (p <= 0.05).  A missing placebo
+   least 95% of the placebo means (p <= 0.05).  The placebo is a **date
+   permutation**: the donor for an event is another event of the same coin,
+   in the same time-of-day bucket and liquidity tier, on a **different
+   date** — so the criterion asks whether the observed mean is concentrated
+   in a way the date mix would not produce (a rule whose edge is a level
+   effect on every date does not pass it, by design).  A missing placebo
    comparison **refuses** the freeze; it is never skipped;
 6. the funding-adjusted mean is not materially worse than the friction-only
    mean (funding delta >= -0.002 R per trade);

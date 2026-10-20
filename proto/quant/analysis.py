@@ -221,6 +221,7 @@ def evaluate_member(events, rule, geom, window, *, cfg=DEFAULT,
     fric, net = [], []
     days, coins = [], []
     net_days, net_coins = [], []
+    outcomes_fric = []
     n_unattributed = 0
     unattributed_reasons = {}
     for o in outcomes:
@@ -228,6 +229,7 @@ def evaluate_member(events, rule, geom, window, *, cfg=DEFAULT,
             fr = _friction_only_r(o, o.dd)
             if fr is not None:
                 fric.append(fr)
+                outcomes_fric.append(o)
                 days.append(int(o.ts) // 86400)
                 coins.append(o.coin)
                 if o.net_r is not None:
@@ -308,6 +310,11 @@ def evaluate_member(events, rule, geom, window, *, cfg=DEFAULT,
         }
         out["funding_adjusted"]["p_one_sided"] = one_sided_p(u_n.get("t_day"))
     out["status"] = "evaluated"
+    # The matched placebo for the MEAN net R (a date permutation: the
+    # donor for an event is another event of the same coin, time-of-day
+    # bucket and liquidity tier on a different date).
+    out["placebo"] = mean_r_placebo(events, outcomes_fric, fric,
+                                    placebos=PLACEBO_COUNT, seed=7)
     out["_values"] = fric
     out["_days"] = days
     return out
@@ -385,7 +392,7 @@ def family_report(members, *, method="bootstrap", alpha=FAMILY_ALPHA):
 
 
 def freeze_criteria(member, family, val_member, placebo=None,
-                    control=None, control_val=None):
+                    control=None, control_val=None, control_label=None):
     """Apply the seven preregistered criteria for freezing a configuration.
 
     Returns ``(frozen: bool, checks: list)``.  Every check states what it
@@ -445,13 +452,99 @@ def freeze_criteria(member, family, val_member, placebo=None,
         return ((m or {}).get("friction_only") or {}).get("mean_r")
     c_dev, c_val = _mean(control), _mean(control_val)
     m_dev, m_val = _mean(member), _mean(val_member)
-    add("beats its own mirror-image control on dev and validation",
+    add(f"beats {control_label or 'its own mirror-image control'} on dev "
+        f"and validation",
         c_dev is not None and c_val is not None
         and m_dev is not None and m_val is not None
         and m_dev > c_dev and m_val > c_val,
         f"dev {m_dev} vs control {c_dev}; val {m_val} vs control {c_val}")
     return all(c["passed"] for c in checks), checks
 
+
+def _liq_tier(qv24, cfg=DEFAULT):
+    """The liquidity tier of an event (the cost model's own slippage tiers)."""
+    if qv24 is None:
+        return -1
+    for i, (floor, _s) in enumerate(sorted(cfg.cost.slip_tiers,
+                                          key=lambda t: -t[0])):
+        if qv24 >= floor:
+            return i
+    return -1
+
+
+def mean_r_placebo(events, outcomes, values, *, placebos=PLACEBO_COUNT, seed=7,
+                   tod_buckets=24, cfg=DEFAULT):
+    """The matched placebo for the MEAN net R.
+
+    For every observed event the donor is another event of the SAME coin,
+    in the same time-of-day bucket and the same liquidity tier, but on a
+    DIFFERENT date.  The placebo therefore keeps the rule's marginal
+    distribution of events and breaks only the temporal alignment: it
+    measures whether the observed mean exceeds what the same rule's events
+    produce at a different time.
+
+    ``values`` are the per-outcome R values in the same order as
+    ``outcomes``.  Returns the observed mean, the placebo distribution and
+    the one-sided p-value (the fraction of placebo means at least as large
+    as the observed one, with the ``(cnt+1)/(n+1)`` correction).
+    """
+    import random
+    meta = {}
+    for ev in events:
+        meta[(getattr(ev, "coin", "?"), int(getattr(ev, "ts", 0)))] = ev
+    recs = []
+    for o, v in zip(outcomes, values):
+        ev = meta.get((o.coin, int(o.ts)))
+        if ev is None:
+            continue
+        recs.append({
+            "coin": o.coin,
+            "day": int(o.ts) // 86400,
+            "tod": (int(o.ts) % 86400) // (86400 // tod_buckets),
+            "liq": _liq_tier(getattr(ev, "qv24", None), cfg),
+            "r": float(v),
+        })
+    if not recs:
+        return {"placebos": 0, "observed_mean": None, "p_value": None,
+                "mean": None, "sd": None, "n_donors": 0,
+                "reason": "no evaluable outcomes"}
+    # the donor pool per record: same coin, same time-of-day, same
+    # liquidity tier, a DIFFERENT date
+    pools = []
+    by_key = {}
+    for r in recs:
+        by_key.setdefault((r["coin"], r["tod"], r["liq"]), []).append(r)
+    for r in recs:
+        pool = [d for d in by_key.get((r["coin"], r["tod"], r["liq"]), [])
+                if d["day"] != r["day"]]
+        pools.append(pool)
+    usable = [i for i, pool in enumerate(pools) if pool]
+    if not usable:
+        return {"placebos": 0, "observed_mean": sum(r["r"] for r in recs) / len(recs),
+                "p_value": None, "mean": None, "sd": None, "n_donors": 0,
+                "reason": "no matched donor on a different date"}
+    observed = sum(r["r"] for r in recs) / len(recs)
+    rng = random.Random(seed)
+    means = []
+    for _ in range(int(placebos)):
+        total = 0.0
+        for i in usable:
+            pool = pools[i]
+            total += pool[rng.randrange(len(pool))]["r"]
+        means.append(total / len(usable))
+    n = len(means)
+    # A placebo mean EQUAL to the observed one counts as "at least as
+    # extreme" (the comparison is tolerant of floating-point noise, so a
+    # rule with no date-specific edge is not credited with one).
+    tol = abs(observed) * 1e-9 + 1e-12
+    cnt = sum(1 for m in means if m >= observed - tol)
+    mean = sum(means) / n
+    var = sum((m - mean) ** 2 for m in means) / (n - 1) if n > 1 else 0.0
+    return {"placebos": n, "observed_mean": observed,
+            "p_value": (cnt + 1) / (n + 1),
+            "mean": mean, "sd": var ** 0.5,
+            "n_donors": len(usable),
+            "reason": None}
 
 def describe(result):
     """A one-line human summary of a member result (denominators included)."""
