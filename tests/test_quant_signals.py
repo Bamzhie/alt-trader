@@ -94,7 +94,9 @@ check("the insufficiency carries a reason",
       and rep["signals"][0]["evidence"]["reason"], str(rep["signals"][0]["evidence"]))
 evidence = {
     "preregistration_id": "HYD-0003",
-    "rules": {
+    "config_hash": "cfgA",
+    "expected_config_hash": "cfgA",
+    "members": {
         RULE: {"status": "exploratory", "reason": "previously examined",
                "n_events": 300, "n_coins": 20, "n_days": 30,
                "ci_lo_day": -0.01, "ci_hi_day": 0.02, "family_p": 0.4,
@@ -154,8 +156,8 @@ port = server.server_address[1]
 time.sleep(0.2)
 
 
-def get(path, token=TOKEN):
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+def get(path, token=TOKEN, on_port=None):
+    conn = http.client.HTTPConnection("127.0.0.1", on_port or port, timeout=10)
     headers = {}
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
@@ -193,6 +195,92 @@ try:
 finally:
     server.shutdown()
     server.server_close()
+
+print("\n=== the route never writes to the store ===")
+import hashlib
+
+qdb2 = os.path.join(tempfile.mkdtemp(prefix="sig-ro-"), "quant.db")
+st2 = QS.QuantStore(qdb2)
+st2.insert_event(ev_row(21, "RO", 1, int(time.time()) - 300))
+st2.close()
+before_hash = hashlib.sha256(open(qdb2, "rb").read()).hexdigest()
+before_mtime = os.stat(qdb2).st_mtime
+server2 = svc.serve(0, TOKEN, lambda: {}, store_path=os.path.join(tmp, "s2.db"),
+                     data_dir=tmp, quant_db=qdb2)
+port2 = server2.server_address[1]
+time.sleep(0.2)
+try:
+    st_code4, body4 = get("/quant-signals", on_port=port2)
+    check("the read-only route answers 200", st_code4 == 200, f"got {st_code4}")
+    after_hash = hashlib.sha256(open(qdb2, "rb").read()).hexdigest()
+    check("the route did not modify the quant store", after_hash == before_hash)
+    check("the route did not touch the store's mtime",
+          os.stat(qdb2).st_mtime == before_mtime)
+finally:
+    server2.shutdown()
+    server2.server_close()
+
+missing_db = os.path.join(tempfile.mkdtemp(prefix="sig-missing-"), "quant.db")
+server3 = svc.serve(0, TOKEN, lambda: {}, store_path=os.path.join(tmp, "s3.db"),
+                     data_dir=tmp, quant_db=missing_db)
+port3 = server3.server_address[1]
+time.sleep(0.2)
+try:
+    st_code5, _ = get("/quant-signals", on_port=port3)
+    check("a missing quant store -> 503 (it is not created)", st_code5 == 503,
+          f"got {st_code5}")
+    check("the missing quant store was NOT created", not os.path.exists(missing_db))
+finally:
+    server3.shutdown()
+    server3.server_close()
+
+print("\n=== only SHADOW rows are surfaced ===")
+st3 = QS.QuantStore(os.path.join(tempfile.mkdtemp(prefix="sig-mode-"), "q.db"))
+row = ev_row(31, "MD", 1, int(time.time()) - 200)
+st3.insert_event(row)
+st3.insert_event({**ev_row(32, "AC", 1, int(time.time()) - 200), "mode": "ACTIONABLE"})
+st3.close()
+rows = SG.build_signals([dict(row)], {}, now=int(time.time()), evidence=None)
+check("an ACTIONABLE row is not surfaced as a manual-review candidate",
+      all(r["coin"] != "AC" for r in rows), str([r["coin"] for r in rows]))
+check("the surfaced candidate keeps the SHADOW mode",
+      rows and rows[0]["execution"]["mode"] == "SHADOW",
+      str(rows[0]["execution"] if rows else None))
+
+print("\n=== the evidence is keyed by member, not by rule alone ===")
+ev_by_member = {
+    "preregistration_id": "HYD-0003",
+    "config_hash": "cfgA",
+    "expected_config_hash": "cfgA",
+    "members": {
+        f"{RULE}|pivot_low": {
+            "status": "exploratory", "reason": "the filtered member",
+            "n_events": 42, "n_coins": 7, "n_days": 9,
+            "ci_lo_day": -0.02, "ci_hi_day": 0.03, "family_p": 0.3,
+        },
+    },
+}
+r_with = SG.build_signals([{**dict(ev_row(41, "MB", 1, int(time.time()) - 100)),
+                            "feature_id": "pivot_low"}],
+                          {}, now=int(time.time()), evidence=ev_by_member)
+check("the member's own verdict is used",
+      r_with and r_with[0]["evidence"]["status"] == "exploratory"
+      and r_with[0]["evidence"]["n_events"] == 42,
+      str(r_with[0]["evidence"] if r_with else None))
+r_without = SG.build_signals([{**dict(ev_row(42, "MB", 1, int(time.time()) - 100)),
+                               "feature_id": "other"}],
+                             {}, now=int(time.time()), evidence=ev_by_member)
+check("another member of the same rule does NOT inherit the verdict",
+      r_without and r_without[0]["evidence"]["status"] == "insufficient",
+      str(r_without[0]["evidence"] if r_without else None))
+ev_wrong = dict(ev_by_member, config_hash="cfgB")
+r_wrong = SG.build_signals([{**dict(ev_row(43, "MB", 1, int(time.time()) - 100)),
+                              "feature_id": "pivot_low"}],
+                            {}, now=int(time.time()), evidence=ev_wrong)
+check("an artifact produced under another config is refused",
+      r_wrong and r_wrong[0]["evidence"]["status"] == "insufficient"
+      and "config" in (r_wrong[0]["evidence"]["reason"] or ""),
+      str(r_wrong[0]["evidence"] if r_wrong else None))
 
 print()
 if FAILURES:

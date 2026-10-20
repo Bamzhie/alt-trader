@@ -49,7 +49,7 @@ def make_event(coin, ts, day, side=1, gross=0.01, kind=0, qv24=5e7, sigma=0.002)
     return ev
 
 
-print("=== the holdout wall ===")
+print("=== the holdout wall (enforced on the evaluation path) ===")
 refused, reason = AN.refuse_holdout_window((79.0, 99.0), 79.0, {})
 check("a window reaching into the holdout is refused", refused, str(reason))
 check("the refusal says why", "holdout-sealed" in (reason or ""), str(reason))
@@ -57,6 +57,22 @@ refused2, reason2 = AN.refuse_holdout_window((63.0, 77.0), 79.0, {})
 check("a validation window is allowed", not refused2, str(reason2))
 refused3, reason3 = AN.refuse_holdout_window((6.0, 61.0), 79.0, {})
 check("a dev window is allowed", not refused3, str(reason3))
+# The refusal must be ENFORCED by the evaluation itself, not only offered
+# by a helper: an evaluation of a holdout window has to raise.
+_rule = RuleParams("breakout_start", "fade", rvol_min=4.0)
+_geom = Geometry(288, 1.5, 1.0)
+_holdout_raised = False
+try:
+    AN.evaluate_member([], _rule, _geom, (79.0, 99.0), cfg=DEFAULT,
+                       holdout_start_day=79.0)
+except ValueError as exc:
+    _holdout_raised = "holdout-sealed" in str(exc)
+check("evaluating a holdout window RAISES (the wall is enforced)",
+      _holdout_raised)
+_ok = AN.evaluate_member([], _rule, _geom, (63.0, 77.0), cfg=DEFAULT,
+                          holdout_start_day=79.0)
+check("evaluating a validation window still works",
+      _ok["status"] == "insufficient", str(_ok.get("reason")))
 
 print("\n=== denominators and honest labelling ===")
 rule = RuleParams("breakout_start", "fade", rvol_min=4.0)
@@ -101,6 +117,55 @@ check("the funding coverage is reported as a number, not a silent zero",
 check("friction-only and funding-adjusted are separate fields",
       "friction_only" in res2 and "funding_adjusted" in res2)
 
+print("\n=== the funding-adjusted cell uses ITS OWN cluster labels ===")
+# The funding-adjusted numbers must carry the day/coin labels of the
+# events they were computed from.  Here 30 of 40 events are
+# funding-attributable and all of them sit on ONE day, while the
+# friction-only events span 20 days: a slice of the friction labels would
+# report 20 day-clusters for a 1-day sample and publish an interval for it.
+_outcomes = []
+for i in range(240):
+    day = 10 if i < 200 else (11 + i % 20)    # 200 on one day, 40 spread
+    _outcomes.append(CO.Outcome(
+        event_id=f"e{i}", coin=f"C{i % 20:02d}", ts=1_700_000_000 + day * 86400,
+        side=1, cause="TP", exit_ts=1_700_000_000 + day * 86400 + 300,
+        gross_log=0.01, friction=0.0009,
+        funding=(0.0001 if i < 200 else None),
+        net_r=(0.01 if i < 200 else None), dd=0.01,
+        reason=(None if i < 200 else "funding:incomplete:x")))
+
+
+def _fake_resolve(*a, **kw):
+    return {"n_selected": 240, "n_resolved": 240, "n_censored": 0,
+            "n_invalidated": 0, "causes": {"TP": 240}, "outcomes": _outcomes,
+            "coverage": 1.0}
+
+
+_real_resolve = AN.CO.resolve_competing
+AN.CO.resolve_competing = _fake_resolve
+try:
+    res3 = AN.evaluate_member([], _rule, _geom, (6.0, 61.0), cfg=DEFAULT)
+finally:
+    AN.CO.resolve_competing = _real_resolve
+fa = res3.get("funding_adjusted")
+check("the funding-adjusted cell reports its OWN day count",
+      fa is not None and fa.get("clusters", {}).get("day") == 1,
+      str(fa.get("clusters") if fa else None))
+check("a one-day funding sample publishes no interval (it is degenerate)",
+      fa is not None and fa.get("ci_lo_day") is None
+      and fa.get("ci_hi_day") is None and fa.get("t_day") is None,
+      str(fa))
+check("the unattributable events are counted, not dropped",
+      res3["denominators"]["n_funding_unattributed"] == 40
+      and res3["denominators"]["n_funding_evaluable"] == 200,
+      str(res3["denominators"]))
+check("the funding coverage is reported",
+      abs(res3["denominators"]["funding_coverage"] - 200 / 240) < 1e-9,
+      str(res3["denominators"]["funding_coverage"]))
+check("the friction-only cell still spans every day",
+      res3["friction_only"]["clusters"]["day"] == 21,
+      str(res3["friction_only"]["clusters"]))
+
 print("\n=== the point-in-time structure feature ===")
 bars = []
 for i in range(400):
@@ -118,8 +183,7 @@ check("every bar has a state (possibly None)",
 pivot_ts = bars[200]["ts"]
 conf = pivot_ts + 3 * 300
 check("the state before the confirmation is not the new pivot's",
-      states.get(pivot_ts) != "low" or pivot_ts + 300 >= conf,
-      f"{states.get(pivot_ts)}")
+      states.get(pivot_ts) != "low", f"{states.get(pivot_ts)}")
 check("the state after the confirmation is the new pivot's",
       states.get(conf) == "low", f"{states.get(conf)}")
 states2 = AN.pivot_states_for(bars, [pivot_ts, conf])
@@ -171,30 +235,55 @@ good_val = {
     "denominators": {"n_friction_evaluable": 260, "n_coins": 18, "n_days": 25},
 }
 fam_ok = {"family_p": 0.02}
+CTRL = {"friction_only": {"mean_r": 0.001, "ci_lo_day": -0.01,
+                          "ci_hi_day": 0.01, "p_one_sided": 0.8}}
+CTRL_VAL = {"friction_only": {"mean_r": 0.0005, "ci_lo_day": -0.02,
+                              "ci_hi_day": 0.02, "p_one_sided": 0.9}}
 frozen, checks = AN.freeze_criteria(good, fam_ok, good_val,
-                                     placebo={"p_value": 0.01})
+                                     placebo={"p_value": 0.01},
+                                     control=CTRL, control_val=CTRL_VAL)
 check("a member passing every criterion freezes", frozen,
       str([c for c in checks if not c["passed"]]))
-# 8 checks: the preregistered 7 criteria, with criteria 1 and 2 each
-# split into their mean and interval halves.  Criterion 7 (a fade member
-# must beat its own cont control) is a FAMILY comparison, checked by the
-# caller, not inside a single member's criteria.
-check("every criterion is reported", len(checks) == 8, str(len(checks)))
+frozen_nc, checks_nc = AN.freeze_criteria(good, fam_ok, good_val,
+                                          placebo={"p_value": 0.01})
+check("without the mirror-image control the freeze is REFUSED", not frozen_nc)
+check("the missing control is named",
+      any("mirror-image" in c["criterion"] and not c["passed"]
+          for c in checks_nc), str(checks_nc))
+frozen_np, checks_np = AN.freeze_criteria(good, fam_ok, good_val, placebo=None,
+                                          control=CTRL, control_val=CTRL_VAL)
+check("without a placebo comparison the freeze is REFUSED", not frozen_np)
+check("the missing placebo is named",
+      any("placebo" in c["criterion"] and not c["passed"]
+          for c in checks_np), str(checks_np))
+# 9 checks: the preregistered 7 criteria, with criteria 1 and 2 each
+# split into their mean and interval halves.
+check("every criterion is reported", len(checks) == 9, str(len(checks)))
 bad = dict(good)
 bad["friction_only"] = dict(good["friction_only"], ci_lo_day=-0.001)
 frozen_bad, checks_bad = AN.freeze_criteria(bad, fam_ok, good_val,
-                                            placebo={"p_value": 0.01})
+                                            placebo={"p_value": 0.01},
+                                            control=CTRL, control_val=CTRL_VAL)
 check("a member failing a criterion does NOT freeze", not frozen_bad)
 check("the failing criterion is named",
       any(c["criterion"].startswith("dev day-cluster") and not c["passed"]
           for c in checks_bad), str(checks_bad))
 fam_bad = {"family_p": 0.4}
 frozen_bad2, _ = AN.freeze_criteria(good, fam_bad, good_val,
-                                     placebo={"p_value": 0.01})
+                                     placebo={"p_value": 0.01},
+                                     control=CTRL, control_val=CTRL_VAL)
 check("a family p above the threshold blocks the freeze", not frozen_bad2)
 frozen_bad3, _ = AN.freeze_criteria(good, fam_ok, good_val,
-                                     placebo={"p_value": 0.2})
+                                     placebo={"p_value": 0.2},
+                                     control=CTRL, control_val=CTRL_VAL)
 check("a placebo p above the threshold blocks the freeze", not frozen_bad3)
+BEAT = {"friction_only": {"mean_r": 0.5, "ci_lo_day": 0.4, "ci_hi_day": 0.6,
+                          "p_one_sided": 0.001}}
+frozen_bad4, _ = AN.freeze_criteria(good, fam_ok, good_val,
+                                     placebo={"p_value": 0.01},
+                                     control=BEAT, control_val=BEAT)
+check("a member that does not beat its mirror image does not freeze",
+      not frozen_bad4)
 
 print("\n=== coverage rule ===")
 ok, why = AN.coverage_rule({"days_covered": 90.0, "malformed": 0, "gaps": 0})

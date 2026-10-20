@@ -25,16 +25,38 @@ it carries the data and code hashes of the run. Anything changed after the
 run is visible in the git history, and a changed result under an unchanged
 hash is a protocol violation.
 
+> **AMENDED 2026-10-20, BEFORE ANY RESULT WAS EXAMINED.** A review of the
+> protocol (not of any result) found three wording problems, and they are
+> corrected here, in the open, before the run produced a single member
+> number:
+> 1. the universe rule said ">= 60 complete days ... **covering the dev
+>    window**", but the dev window is only 55 days long, so NO coin could
+>    have satisfied it.  The rule is now the implemented one: >= 60 days
+>    of bars, no malformed rows, and no gap **in the sorted series** (the
+>    files on disk are appended, not time-ordered, so a file-order gap
+>    count would have rejected nearly every coin);
+> 2. the placebo criterion compared a **hit rate**; it now compares the
+>    **mean net R** against the placebo means, and a missing placebo
+>    comparison now REFUSES the freeze instead of being skipped;
+> 3. criterion 7 (a fade member must beat its own mirror-image control)
+>    was not implemented in the criteria function; it is now one of the
+>    checks, on both splits.
+> The amendments change no criterion's direction, only its wording and
+> its implementability. The preregistration's own hash and the commit that
+> carries it are recorded in the sidecar.
+
 ## What is frozen
 
 **Universe and point-in-time membership.** Every coin in the archived bar
 universe (`data/bars/*.csv.gz`, MEXC USDT perps, BTC excluded) whose bars
-satisfy the coverage rule **at the time of the run**: at least 60 complete
-days of 5m bars covering the dev window, no malformed rows, and a latest
-bar inside the archive span. Membership is decided by the rule, never by
-performance; a coin that becomes eligible later is not added mid-analysis
-and a coin that falls below the rule is reported, not silently dropped.
-Every selected coin, every excluded coin and the reason are reported.
+satisfy the coverage rule **at the time of the run**: at least **60 days**
+of 5m bars, **no malformed rows**, and **no gap in the sorted series**
+(the files on disk are appended, not time-ordered; the rule is applied to
+the sorted series, as the data audit measured it). Membership is decided by
+the rule, never by performance; a coin that becomes eligible later is not
+added mid-analysis and a coin that falls below the rule is reported, not
+silently dropped. Every selected coin, every excluded coin and the reason
+are reported.
 
 **Splits (chronological, from the archive start 2026-07-13 02:35 UTC).**
 dev = days [6, 61) = 2026-07-19 .. 2026-09-12; validation = days
@@ -114,12 +136,14 @@ on validation).**
    day-cluster lower bound > 0;
 3. the member meets the minimum sample sizes on both splits;
 4. the family-corrected p-value (SPA max-t over the 5 members) <= 0.10;
-5. the matched-placebo comparison: the observed mean exceeds at least 95%
-   of the placebo means (p <= 0.05);
+5. the matched-placebo comparison: the observed **mean net R** exceeds at
+   least 95% of the placebo means (p <= 0.05).  A missing placebo
+   comparison **refuses** the freeze; it is never skipped;
 6. the funding-adjusted mean is not materially worse than the friction-only
    mean (funding delta >= -0.002 R per trade);
 7. the member is not merely its own mirror image: a `fade` member must
-   beat its paired `cont` control on both splits.
+   beat its paired `cont` control **on both splits** (a missing control
+   comparison refuses the criterion).
 
 **Decision criteria to SPEND the one-shot holdout.** All seven criteria
 above must hold on dev **and** validation. The winning configuration is
@@ -128,6 +152,13 @@ once**. If no member satisfies the criteria, **the holdout is not spent**,
 and the reason and the missing evidence are reported instead. The holdout
 is never used to select, tune, threshold or modify a configuration, and no
 result is reported as "validated" unless it passes the criteria above.
+
+**How a member is identified in the evidence.** A member is a (rule id,
+**feature identity**) pair, not a rule id alone: member 5 is the same rule
+as member 1 with a point-in-time filter, so the two are different features
+and must never share a verdict. The evidence artifact is keyed that way and
+is refused unless it matches the preregistration id and the config hash it
+was run under.
 
 **Multiple testing.** The 5 members form the declared family; the
 correction is applied to the family, not per member. Members 1-4 were

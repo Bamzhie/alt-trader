@@ -1652,34 +1652,24 @@ def _make_handler(token, ready=None, store_path=None, data_dir=None,
             """
             try:
                 from .quant import signals as _signals
-                from .quant import qstore as _qstore
             except Exception:
                 self._deny(503, "UNAVAILABLE",
                            "signal surface unavailable", origin=origin)
                 return
             try:
-                store = _qstore.QuantStore(quant_db)
-            except Exception as exc:
-                LOG.warning("signal surface unavailable: %s: %s",
-                            type(exc).__name__, exc)
-                self._deny(503, "UNAVAILABLE",
-                           "quant database unavailable", origin=origin)
-                return
-            try:
+                # READ-ONLY: the store is opened with mode=ro, so the
+                # surface can never create the database, run DDL or
+                # commit anything.
+                rows = _signals.read_store(quant_db)
                 evidence = _signals.load_evidence()
-                data = _signals.signals_report(store, evidence=evidence)
+                data = _signals.signals_report(rows, evidence=evidence)
             except Exception as exc:
                 # Never answer with a figure the surface could not read.
                 LOG.warning("signal surface unavailable: %s: %s",
                             type(exc).__name__, exc)
                 self._deny(503, "UNAVAILABLE",
-                           "signal surface unavailable", origin=origin)
+                           "quant database unavailable", origin=origin)
                 return
-            finally:
-                try:
-                    store.close()
-                except Exception:
-                    pass
             self._send_json(200, envelope(True, data), origin=origin)
 
         def _handle_metrics(self, origin, qs, data_dir):

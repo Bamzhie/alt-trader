@@ -31,13 +31,11 @@ claimed: a futures return needs a position-sizing and liquidation model,
 which this study does not provide.
 """
 import math
-import os
-import time
 
 from . import inference as INF
 from . import family_test as FT
 from . import competing_outcomes as CO
-from .config import BAR_S, DEFAULT, Geometry, RuleParams
+from .config import BAR_S, DEFAULT
 from .structure import confirmed_pivots
 
 ANALYSIS_VERSION = "analysis-v1"
@@ -71,9 +69,17 @@ def one_sided_p(t):
 def coverage_rule(stats):
     """The preregistered universe rule.
 
-    ``stats`` is the per-coin inventory entry: ``days_covered``,
-    ``malformed``, ``first_ts``, ``last_ts``, ``gaps``.  Returns
-    ``(eligible, reason)``.
+    ``stats`` is the per-coin inventory entry computed over the SORTED
+    series: ``days_covered`` (the span in days), ``malformed``,
+    ``first_ts``, ``last_ts``, ``gaps`` (steps other than 300 s between
+    consecutive bars).  Returns ``(eligible, reason)``.
+
+    The rule is the one frozen in ``HYD-0003``: at least
+    ``MIN_COVERAGE_DAYS`` days of bars, no malformed rows and no gap in
+    the sorted series.  A coin's file order on disk is irrelevant (the
+    archives are appended, not time-ordered) — the rule is applied to the
+    sorted series, and the inventory must therefore report the gap count
+    of the SORTED series.
     """
     if not stats:
         return False, "no-inventory"
@@ -180,7 +186,8 @@ def _friction_only_r(outcome, dd):
 def evaluate_member(events, rule, geom, window, *, cfg=DEFAULT,
                      funding_dir=None, settlements_dir=None,
                      min_events=MIN_EVENTS, min_coins=MIN_COINS,
-                     min_days=MIN_DAYS, label=None):
+                     min_days=MIN_DAYS, label=None,
+                     holdout_start_day=None):
     """Evaluate one family member on one window.
 
     Returns a dict with explicit denominators, the friction-only and
@@ -188,8 +195,18 @@ def evaluate_member(events, rule, geom, window, *, cfg=DEFAULT,
     day- and coin-cluster intervals and the baseline comparison.  A cell
     below the minimum sample sizes is ``insufficient`` and carries NO
     mean.
+
+    THE HOLDOUT WALL IS ENFORCED HERE, not merely offered: when
+    ``holdout_start_day`` is given, a window that reaches into the holdout
+    is REFUSED (ValueError) before a single event is selected.  The
+    one-shot holdout may only be spent once, on a configuration frozen
+    from dev+validation, through the separate spend path.
     """
     label = label or getattr(rule, "name", None) or "member"
+    if holdout_start_day is not None:
+        refused, why = refuse_holdout_window(window, holdout_start_day, None)
+        if refused:
+            raise ValueError(why)
     res = CO.resolve_competing(events, rule, geom, window, cfg,
                                 funding_dir=funding_dir,
                                 settlements_dir=settlements_dir)
@@ -197,7 +214,15 @@ def evaluate_member(events, rule, geom, window, *, cfg=DEFAULT,
     n_selected = int(res.get("n_selected") or 0)
     n_resolved = int(res.get("n_resolved") or 0)
 
-    fric, net, days, coins = [], [], [], []
+    # The three lists stay PARALLEL: the funding-adjusted numbers carry the
+    # day and coin labels of the events they were computed from (a slice of
+    # the friction labels would pair the wrong events with the wrong
+    # clusters).
+    fric, net = [], []
+    days, coins = [], []
+    net_days, net_coins = [], []
+    n_unattributed = 0
+    unattributed_reasons = {}
     for o in outcomes:
         if o.dd:
             fr = _friction_only_r(o, o.dd)
@@ -207,6 +232,12 @@ def evaluate_member(events, rule, geom, window, *, cfg=DEFAULT,
                 coins.append(o.coin)
                 if o.net_r is not None:
                     net.append(o.net_r)
+                    net_days.append(int(o.ts) // 86400)
+                    net_coins.append(o.coin)
+                else:
+                    n_unattributed += 1
+                    key = (o.reason or "unknown").split(":")[0]
+                    unattributed_reasons[key] =                         unattributed_reasons.get(key, 0) + 1
     n_friction = len(fric)
     n_net = len(net)
     distinct_coins = len(set(coins))
@@ -228,6 +259,8 @@ def evaluate_member(events, rule, geom, window, *, cfg=DEFAULT,
             "n_invalidated": int(res.get("n_invalidated") or 0),
             "n_coins": distinct_coins,
             "n_days": distinct_days,
+            "n_funding_unattributed": n_unattributed,
+            "funding_unattributed_reasons": unattributed_reasons,
             "funding_coverage": (n_net / n_friction) if n_friction else None,
         },
         "causes": res.get("causes") or {},
@@ -259,7 +292,7 @@ def evaluate_member(events, rule, geom, window, *, cfg=DEFAULT,
     p_f = one_sided_p(u_f.get("t_day"))
     out["friction_only"]["p_one_sided"] = p_f
     if n_net >= min_events:
-        u_n = INF.uncertainty(net, days=days[:n_net], coins=coins[:n_net])
+        u_n = INF.uncertainty(net, days=net_days, coins=net_coins)
         out["funding_adjusted"] = {
             "mean_r": u_n.get("mean"),
             "ci_lo_day": u_n.get("ci_lo_day"),
@@ -351,7 +384,8 @@ def family_report(members, *, method="bootstrap", alpha=FAMILY_ALPHA):
     }
 
 
-def freeze_criteria(member, family, val_member, placebo=None):
+def freeze_criteria(member, family, val_member, placebo=None,
+                    control=None, control_val=None):
     """Apply the seven preregistered criteria for freezing a configuration.
 
     Returns ``(frozen: bool, checks: list)``.  Every check states what it
@@ -392,16 +426,30 @@ def freeze_criteria(member, family, val_member, placebo=None):
         (family or {}).get("family_p") is not None
         and family["family_p"] <= FAMILY_ALPHA,
         f"family_p={(family or {}).get('family_p')}")
-    if placebo is not None:
-        add(f"matched placebo p <= {PLACEBO_ALPHA}",
-            placebo.get("p_value") is not None
-            and placebo["p_value"] <= PLACEBO_ALPHA,
-            f"placebo p={placebo.get('p_value')}")
+    # The placebo criterion is MANDATORY: without it the freeze is refused
+    # (a missing comparison must never read as a passed one).
+    p_val = (placebo or {}).get("p_value")
+    add(f"matched placebo p <= {PLACEBO_ALPHA}",
+        p_val is not None and p_val <= PLACEBO_ALPHA,
+        f"placebo p={p_val}"
+        + ("" if placebo is not None else " (no placebo comparison available)"))
     fa = (member or {}).get("funding_adjusted") or {}
     add("funding delta >= -0.002 R per trade",
         (fa.get("delta_vs_friction_only") is not None)
         and fa["delta_vs_friction_only"] >= FUNDING_DELTA_FLOOR,
         f"funding delta={fa.get('delta_vs_friction_only')}")
+    # Criterion 7: a fade member must beat its own mirror-image control
+    # on BOTH splits (a result that does not beat its own mirror is not an
+    # edge).  A missing control comparison fails the criterion.
+    def _mean(m):
+        return ((m or {}).get("friction_only") or {}).get("mean_r")
+    c_dev, c_val = _mean(control), _mean(control_val)
+    m_dev, m_val = _mean(member), _mean(val_member)
+    add("beats its own mirror-image control on dev and validation",
+        c_dev is not None and c_val is not None
+        and m_dev is not None and m_val is not None
+        and m_dev > c_dev and m_val > c_val,
+        f"dev {m_dev} vs control {c_dev}; val {m_val} vs control {c_val}")
     return all(c["passed"] for c in checks), checks
 
 

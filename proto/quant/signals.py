@@ -65,8 +65,18 @@ def load_evidence(root=None):
         return None
 
 
-def _evidence_for(rule_id, evidence, now):
-    """The evidence status of a rule, with its denominators and reason."""
+def _evidence_for(rule_id, evidence, now, feature_id=None):
+    """The evidence status of a rule (or of one MEMBER of it), with its
+    denominators and its reason.
+
+    The lookup key is the rule id **plus** the feature identity: two
+    members of the same rule (for example the same rule with and without a
+    point-in-time filter) are different features and must not share a
+    verdict.  The artifact must also match the preregistration it claims
+    (by id and by the config hash it was run under), or it is refused: a
+    stale or hand-edited artifact must never be able to render a rule as
+    validated.
+    """
     if not evidence:
         return {
             "status": "insufficient",
@@ -77,13 +87,25 @@ def _evidence_for(rule_id, evidence, now):
             "ci_lo_day": None, "ci_hi_day": None, "family_p": None,
             "source": None,
         }
-    rules = evidence.get("rules") or {}
-    rec = rules.get(rule_id)
+    if evidence.get("config_hash") and evidence.get("config_hash")             != evidence.get("expected_config_hash"):
+        return {
+            "status": "insufficient",
+            "reason": f"the analysis artifact was produced under config "
+                      f"{evidence.get('config_hash')}, not the configured "
+                      f"{evidence.get('expected_config_hash')}: it does not "
+                      f"describe this configuration",
+            "n_events": None, "n_coins": None, "n_days": None,
+            "ci_lo_day": None, "ci_hi_day": None, "family_p": None,
+            "source": evidence.get("preregistration_id"),
+        }
+    members = evidence.get("members") or {}
+    key = f"{rule_id}|{feature_id}" if feature_id else rule_id
+    rec = members.get(key) or members.get(rule_id)
     if rec is None:
         return {
             "status": "insufficient",
-            "reason": f"this rule is not in the preregistered analysis "
-                      f"({len(rules)} rules are)",
+            "reason": f"this rule/feature is not in the preregistered "
+                      f"analysis ({len(members)} members are)",
             "n_events": None, "n_coins": None, "n_days": None,
             "ci_lo_day": None, "ci_hi_day": None, "family_p": None,
             "source": evidence.get("preregistration_id"),
@@ -139,6 +161,12 @@ def build_signals(events, outcomes=None, *, now=None, evidence=None,
         spec = reg.get(rule_id)
         if spec is None:
             continue
+        # Only SHADOW rows are surfaced. A legacy ACTIONABLE row in the
+        # store is skipped: this surface shows candidates for manual
+        # review, and an ACTIONABLE row is a different thing entirely.
+        mode = (ev.get("mode") or "SHADOW").upper()
+        if mode != "SHADOW":
+            continue
         ts = int(ev.get("bar_ts") or 0)
         age = now - ts
         if age > max_age_s:
@@ -163,7 +191,8 @@ def build_signals(events, outcomes=None, *, now=None, evidence=None,
                 "signal_age_s": age,
                 "signal_age_min": round(age / 60.0, 1),
                 "fresh": age <= max_age_s,
-                "basis": "the age of the signal bar's close",
+                "basis": "the age of the signal bar (measured from its "
+                         "open timestamp)",
             },
             "entry": {
                 "price": (res or {}).get("entry_price"),
@@ -196,9 +225,11 @@ def build_signals(events, outcomes=None, *, now=None, evidence=None,
                          "both assumptions, not measurements",
                 "funding_coverage": None,
             },
-            "evidence": _evidence_for(rule_id, evidence, now),
+            "feature_id": ev.get("features_hash") or ev.get("feature_id"),
+            "evidence": _evidence_for(rule_id, evidence, now,
+                                      feature_id=ev.get("feature_id")),
             "execution": {
-                "mode": ev.get("mode"),
+                "mode": mode,
                 "actionable": False,
                 "note": "MANUAL REVIEW ONLY - the app does not execute "
                         "this signal, and no promotion or validation result "
@@ -210,11 +241,45 @@ def build_signals(events, outcomes=None, *, now=None, evidence=None,
     return out
 
 
+def read_store(quant_db):
+    """Open the quant store READ-ONLY and return (events, outcomes).
+
+    The store is opened with ``mode=ro``: the signal surface must never
+    create the database, run DDL, change the journal mode, or commit
+    anything.  A missing or unreadable store raises.
+    """
+    import sqlite3
+    conn = sqlite3.connect(
+        f"file:{os.path.abspath(quant_db)}?mode=ro", uri=True, timeout=5)
+    conn.row_factory = sqlite3.Row
+    try:
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "quant_event" not in tables:
+            raise sqlite3.OperationalError("quant_event table missing")
+        events = [dict(r) for r in conn.execute(
+            "SELECT * FROM quant_event ORDER BY bar_ts DESC")]
+        outcomes = {}
+        if "quant_outcome" in tables:
+            outcomes = {r["event_id"]: dict(r) for r in conn.execute(
+                "SELECT * FROM quant_outcome")}
+    finally:
+        conn.close()
+    return events, outcomes
+
+
 def signals_report(store, *, now=None, evidence=None,
                    max_age_s=MAX_SIGNAL_AGE_S):
-    """The full payload for the manual-review route."""
-    events = store.all_events()
-    outcomes = {r["event_id"]: r for r in store.resolved_rows()}
+    """The full payload for the manual-review route.
+
+    ``store`` is either an object with ``all_events()``/``resolved_rows()``
+    or a ``(events, outcomes)`` pair as returned by :func:`read_store`.
+    """
+    if isinstance(store, tuple):
+        events, outcomes = store
+    else:
+        events = store.all_events()
+        outcomes = {r["event_id"]: r for r in store.resolved_rows()}
     sigs = build_signals(events, outcomes, now=now, evidence=evidence,
                           max_age_s=max_age_s)
     counts = {"long": 0, "short": 0}
