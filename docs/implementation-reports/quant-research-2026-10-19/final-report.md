@@ -148,9 +148,13 @@ statements below are unchanged, and the deployment evidence lives in
 **`deployment-report.md`**.*
 
 - The code is merged into `main` and pushed, and the **local user systemd
-  service was restarted on 2026-10-20**; it is running the deployed commit
-  **`c8647b5`**. The running service proves it itself:
-  `GET /quant-research` → `provenance.code_rev = "c8647b5"`.
+  service was restarted on 2026-10-20** with a clean tree at the deployed
+  commit **`c8647b5`** (the only later commit is documentation). The
+  running service's `provenance.code_rev` reads the *current* git HEAD at
+  request time, so it tracks HEAD rather than the loaded revision; the
+  proof that the new code is executing is behavioural (the `first_sweep`
+  block, the per-stage `stages`, the research route and the three new
+  runtime artifacts).
 - The unit file and the operator's drop-in (`--quant-shadow`,
   `TimeoutStopSec=600s`) are **byte-identical** to before; the stop grace
   was not shortened, extended or overwritten.

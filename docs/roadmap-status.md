@@ -54,9 +54,13 @@ VERIFIED by direct archive read (2026-10-18):
 ## Current deployment state (verified live 2026-10-20)
 
 - **Deployed 2026-10-20 (owner-authorized).** The local user systemd
-  service was restarted and now runs the merged `main` at commit
-  **`c8647b5`** — the running service proves it itself:
-  `GET /quant-research` → `provenance.code_rev = "c8647b5"`. New pid
+  service was restarted with a clean tree at the deployed commit
+  **`c8647b5`** (the only later commit is documentation). The running
+  service's `provenance.code_rev` reads the *current* git HEAD at request
+  time, so it tracks HEAD rather than the loaded revision; the proof that
+  the new code is executing is behavioural (the `first_sweep` block, the
+  per-stage `stages`, the research route, the three new runtime
+  artifacts). New pid
   **732289**, started 2026-10-20 11:32:58 WAT, one loopback listener on
   127.0.0.1:18741. The unit file and the operator's drop-in
   (`--quant-shadow`, `TimeoutStopSec=600s`) are **byte-identical** to

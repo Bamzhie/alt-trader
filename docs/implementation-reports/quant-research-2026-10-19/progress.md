@@ -187,8 +187,8 @@ Rulings made in this wave:
   `tests/run_all.py` → ALL SUITES PASS (87 files). No frontend change, so
   the frontend gates were not re-run.
 - **Deployment (owner-authorized).** The local user systemd service was
-  restarted and now runs `c8647b5` (new pid 732289, up 2026-10-20
-  11:32:58 WAT). `/healthz` and `/readyz` answered 1 s after the start;
+  restarted with a clean tree at `c8647b5` (new pid 732289, up 2026-10-20
+  11:32:58 WAT; only a documentation commit followed). `/healthz` and `/readyz` answered 1 s after the start;
   `/scanner-health` reported `first_sweep: in_progress` (completed_ts null)
   until the sweep finished at **1 959 s** with the new per-stage
   attribution. SHADOW-only, no promotion, no holdout artifact, no archive

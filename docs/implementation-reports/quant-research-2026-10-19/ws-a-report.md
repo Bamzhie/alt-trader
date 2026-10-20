@@ -1437,6 +1437,10 @@ merged, never overwritten) rather than stored side by side; a caller that
 needs both must use a distinct feature `name`. The estimator's own
 `inputs_hash` already differs between them, so the refusal is precise.
 
-**Deployment.** The fix is deployed: the service runs `c8647b5` (the
-running service reports it through `GET /quant-research` →
-`provenance.code_rev`). See `deployment-report.md`.
+**Deployment.** The fix is deployed: the service was restarted on
+2026-10-20 with a clean tree at `c8647b5` (the only later commit is
+documentation). Note that `provenance.code_rev` reads the *current* git
+HEAD at request time, so it tracks HEAD rather than the loaded revision;
+the behavioural evidence (the `first_sweep` block, the per-stage `stages`,
+the research route) is what shows the new code is running. See
+`deployment-report.md`.

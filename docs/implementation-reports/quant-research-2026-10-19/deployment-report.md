@@ -94,11 +94,27 @@ stay deterministic and idempotent.
 c8647b5  fix(quant): make the feature store's identity configuration-aware
 ```
 
-`git rev-parse HEAD` == `git rev-parse origin/main` == `c8647b5`;
-working tree clean. The running service independently reports the same
-commit through the new route (`GET /quant-research` →
-`provenance.code_rev = "c8647b5"`), which is a direct proof of what is
-executing.
+`git rev-parse HEAD` == `git rev-parse origin/main` == `c8647b5` at the
+time of the fix push; working tree clean. A documentation-only commit
+(`7afb386`, the deployment report) was pushed afterwards, so the current
+tip is `7afb386` and `git diff c8647b5..HEAD` touches **only** files under
+`docs/`.
+
+**What the running service reports, and what it does not prove.**
+`GET /quant-research` returns `provenance.code_rev`, which
+`research_surface.code_rev()` reads from git **at request time** (cached
+for a short TTL). It showed `c8647b5` right after the restart and shows
+`7afb386` now, because HEAD moved. It is provenance of the *working tree*,
+**not** a pin of the revision the process loaded — so it is not, on its
+own, proof of what is executing.
+
+The evidence that the **new** code is executing is behavioural, and it is
+unambiguous: the `first_sweep` block and the per-stage `stages` map on
+`/scanner-health`, the `research-surface-v1` payload on `/quant-research`,
+and the three new runtime artifacts (`data/.cadence.json`,
+`data/.timing.json`, `data/bars/.bar_index.json`) — none of which exists
+in the pre-deploy code. The process was started at 11:32:58 with a clean
+tree at `c8647b5`, and the only later commit is documentation.
 
 ## 5. Deployment
 
