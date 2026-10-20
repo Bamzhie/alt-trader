@@ -198,7 +198,8 @@ file was written.
 | Running revision | `code_rev 94bdf49` (reported by `/quant-research` — the live git HEAD) |
 | Routes | `/healthz` 200 · `/readyz` 200 · `/scanner-health` 200 · `/quant-status` 200 · `/quant-research` 200 · **`/quant-signals` 200** |
 | Auth gate | 401 without a token on `/readyz`, `/quant-research`, `/quant-signals` |
-| First sweep | `state: in_progress`, `completed_ts: null` — **API readiness does not mean the sweep has completed** |
+| First sweep | completed in **1 545.4 s (25.8 min)**: scan 513.1 s (ok, 150 evaluated) · collect **72.1 s** (ok, 557 coins) · funding 35.2 s (ok) · settlements 0.0 (**not_due**) · prices 0.0 (**not_due**) · resolve 0.0 (skipped — background) · measure 416.8 s (partial, 12 failed coins of 557) · quant 508.1 s (ok, 581 coins, 0 emitted — the watcher was auto-paused) |
+| First-sweep comparison | 2026-10-19 deployment: 1 959.1 s, collect 438.4 s. 2026-10-20 deployment: **1 545.4 s**, collect **72.1 s** — the warm bar index cut the collect phase by ~84 %. **API readiness does not mean the sweep has completed.** |
 
 The drain is 2 s because the new code observes the stop flag **between
 per-coin units**: the interrupted iteration is recorded honestly
@@ -257,10 +258,11 @@ in the history.
    ("BTC bars stale"): the venue's klines lag the collect, and the guard
    (20 min) then refuses to emit from stale data. The guard was **not**
    weakened; the watcher resumed by itself when the lag fell back.
-7. The first sweep's per-stage timings for the **new** deployment were not
-   captured before this report was written (the first sweep was still
-   running); the stage breakdown that exists in the 2026-10-19 deployment
-   report belongs to the previous deployment.
+7. The first sweep of the new deployment still takes **25.8 min** (the
+   scan 8.6 min and the quant step 8.5 min dominate; the collect is now
+   72 s). The API is usable after ~2 s, but the **data** is only fresh when
+   a sweep completes, and the quant step emitted **0** candidates because
+   the watcher was auto-paused on stale BTC bars.
 
 ## 9. The candid conclusion
 

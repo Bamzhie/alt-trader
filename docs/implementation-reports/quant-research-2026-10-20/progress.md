@@ -72,6 +72,8 @@
 | Frontend | `npm run test` / `typecheck` / `lint` / `build` | 200 passed / clean / 0 warnings / built |
 | Live routes | curl 127.0.0.1:18741 | all 200 with the token, 401 without |
 | Safety | decision log / holdout dir / promotions.json | 0 bytes / absent / absent |
+| Deployment | `systemctl --user restart altradar.service` | drain **2 s**; MainPID 759227; running revision `94bdf49`; all routes 200 (401 without a token) |
+| First sweep (new deployment) | `/scanner-health` | complete in **1 545.4 s**: scan 513.1 (ok) · collect **72.1** (ok) · funding 35.2 (ok) · settlements/prices 0.0 (not_due) · resolve 0.0 (skipped, background) · measure 416.8 (partial) · quant 508.1 (ok, 0 emitted) |
 
 ## 4. Findings log
 
