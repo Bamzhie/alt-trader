@@ -55,12 +55,12 @@ never read; the quant step's `seconds` return is discarded).
 
 | WS | Scope | State |
 |---|---|---|
-| A | measurement & structure engine | implementing (worktree `/tmp/opencode/wt-a`) |
-| B | outcomes & inference | implementing (worktree `/tmp/opencode/wt-b`) |
-| C | preregistered research workflow | briefed; starts after A+B merge |
+| A | measurement & structure engine | fix round 2 done, re-review in flight |
+| B | outcomes & inference | **approved**, merged (`280e41c`) |
+| C | preregistered research workflow | briefed; starts after A merges |
 | D | Research UI expansion | briefed; starts after the API contracts land |
-| E | champion/candidate tracking | briefed; starts after B merges |
-| F | startup & first-sweep optimization | implemented, under review |
+| E | champion/candidate tracking | implementing (worktree `/tmp/opencode/wt-e`) |
+| F | startup & first-sweep optimization | **approved**, merged (`dacf7e7`) |
 
 ## 4. Owner decisions taken (2026-10-19)
 
