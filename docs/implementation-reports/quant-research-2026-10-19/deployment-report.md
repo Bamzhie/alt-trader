@@ -99,8 +99,14 @@ c8647b5  fix(quant): make the feature store's identity configuration-aware
 working tree clean. Every commit after it is **documentation only** — the
 deployment report (`7afb386`), the code-revision correction (`51c577f`),
 the second-sweep measurement (`e8973c3`) and the source archive
-(`d5097cb`) — so `git diff c8647b5..HEAD` touches **only** files under
-`docs/` and the running code is byte-identical to HEAD's code. The tip
+(`d5097cb`) — so `git diff c8647b5..HEAD` touched **only** files under
+`docs/` at that moment.
+
+> **SUPERSEDED 2026-10-20.** The service was restarted again on 2026-10-20
+> (owner-authorized) and now runs the 2026-10-20 code, so the running code
+> is **not** `c8647b5` any more.  The measurements below are the 2026-10-19
+> deployment's and remain accurate for it.  See
+> `docs/implementation-reports/quant-research-2026-10-20/final-report.md`. The tip
 moves with every documentation commit; the **deployed code** does not.
 
 **What the running service reports, and what it does not prove.**
