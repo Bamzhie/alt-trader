@@ -598,16 +598,30 @@ fresh = store.as_of("BTC", "hurst_rs", ES.HURST_VERSION, 1000 + 10_000, max_age_
 check("a fresh-enough feature is still returned", fresh is not None and fresh.value == 0.5)
 
 store2 = FS.FeatureStore(db)
-store2.put(FS.FeatureRecord(coin="BTC", name="hurst_rs", version=ES.HURST_VERSION,
-                             bar_ts=1000, available_ts=1000, value=0.9, reason=None,
-                             inputs_hash="ffffffffffffffff", meta={}))
-check("put is idempotent: the first write wins",
+# The SAME key with DIFFERENT content is a provenance conflict, not a
+# silent no-op: the caller reused a feature identity for a different
+# computation and must be told, instead of believing its record was
+# stored while the earlier row (and its available_ts) stays in place.
+conflict_raised = False
+try:
+    store2.put(FS.FeatureRecord(coin="BTC", name="hurst_rs",
+                                 version=ES.HURST_VERSION,
+                                 bar_ts=1000, available_ts=1000, value=0.9,
+                                 reason=None, inputs_hash="ffffffffffffffff",
+                                 meta={}))
+except ValueError:
+    conflict_raised = True
+check("a same-key write with different content is refused as a conflict",
+      conflict_raised)
+check("the refused conflict did not rewrite the stored record",
       store2.as_of("BTC", "hurst_rs", ES.HURST_VERSION, 1000).value == 0.5)
 check("put does not duplicate rows",
       len(store2.history("BTC", "hurst_rs", ES.HURST_VERSION)) == 1)
 check("the store keeps the original inputs hash",
       store2.as_of("BTC", "hurst_rs", ES.HURST_VERSION, 1000).inputs_hash
       == "0123456789abcdef")
+check("re-storing the IDENTICAL record is idempotent, not a conflict",
+      store2.put(rec) is False)
 check("latest is diagnostic-only and returns the newest record",
       store2.latest("BTC", "hurst_rs", ES.HURST_VERSION).bar_ts == 1000)
 check("a future-dated record is invisible to an as-of query",
@@ -665,34 +679,141 @@ check("from_estimate keeps the estimator's own reason in the meta",
 
 piv = ST.confirmed_pivots(bars_from_hl([5.0] * 8 + [9.0] + [5.0] * 8, [1.0] * 17),
                            left=2, right=2)
-piv_recs = FS.from_pivots("BTC", "pivot_high", piv)
-check("from_pivots stores the pivots under the pivot version",
-      piv_recs and all(r.version == ST.PIVOT_VERSION for r in piv_recs)
+piv_recs = FS.from_pivots("BTC", "pivot_high", piv, left=2, right=2,
+                           frame_bars=1)
+piv_version = FS.pivot_feature_version(2, 2, 1)
+check("from_pivots stores the pivots under the pivot+config identity",
+      piv_recs and all(r.version == piv_version for r in piv_recs)
+      and piv_version == f"{ST.PIVOT_VERSION}+L2R2F1"
       and piv_recs[0].value == 9.0, str(piv_recs[:1]))
 check("from_pivots defaults available_ts to the pivot's confirmed_ts",
       piv_recs and all(r.available_ts == p.confirmed_ts
                        for r, p in zip(piv_recs, piv)),
       str([(r.available_ts, p.confirmed_ts) for r, p in zip(piv_recs, piv)]))
+check("from_pivots records the pivot configuration in the meta",
+      piv_recs and piv_recs[0].meta.get("pivot_config_id") == "L2R2F1"
+      and piv_recs[0].meta.get("left") == 2
+      and piv_recs[0].meta.get("right") == 2
+      and piv_recs[0].meta.get("frame_bars") == 1, str(piv_recs[0].meta))
 try:
-    FS.from_pivots("BTC", "pivot_high", piv, available_ts=piv[0].ts)
+    FS.from_pivots("BTC", "pivot_high", piv, left=2, right=2, frame_bars=1,
+                   available_ts=piv[0].ts)
     ok = False
 except ValueError:
     ok = True
 check("from_pivots refuses a pivot before it was knowable", ok)
 try:
-    FS.from_pivots("BTC", "pivot_high", piv,
-                    available_ts=piv[0].confirmed_ts - 1)
+    FS.from_pivots("BTC", "pivot_high", piv, left=2, right=2, frame_bars=1,
+                   available_ts=piv[0].confirmed_ts - 1)
     ok = False
 except ValueError:
     ok = True
 check("from_pivots refuses an available_ts before the confirmation", ok)
 store2.put(piv_recs[0])
 check("a stored pivot is invisible before its confirmed_ts",
-      store2.as_of("BTC", "pivot_high", ST.PIVOT_VERSION,
+      store2.as_of("BTC", "pivot_high", piv_version,
                    piv_recs[0].available_ts - 1) is None)
 check("a stored pivot is visible at its confirmed_ts",
-      store2.as_of("BTC", "pivot_high", ST.PIVOT_VERSION,
+      store2.as_of("BTC", "pivot_high", piv_version,
                    piv_recs[0].available_ts) is not None)
+
+# --- pivot provenance: the configuration is part of the feature identity --
+# A pivot's configuration decides WHICH bars are pivots and WHEN each
+# becomes knowable, so it must be part of the identity and the hash.
+piv_store = FS.FeatureStore(os.path.join(tempfile.mkdtemp(), "pivots.db"))
+bars_a = bars_from_hl([5.0] * 8 + [9.0] + [5.0] * 8, [1.0] * 17)
+piv_a = ST.confirmed_pivots(bars_a, left=2, right=2)
+piv_a12 = ST.confirmed_pivots(bars_a, left=2, right=2, frame_bars=12)
+piv_c = ST.confirmed_pivots(bars_a, left=3, right=3)
+rec_a = FS.from_pivots("BTC", "pivot_high", piv_a, left=2, right=2, frame_bars=1)
+rec_a12 = FS.from_pivots("BTC", "pivot_high", piv_a12, left=2, right=2,
+                         frame_bars=12)
+rec_c = FS.from_pivots("BTC", "pivot_high", piv_c, left=3, right=3, frame_bars=1)
+check("the same configuration gives the same identity and hash",
+      rec_a and FS.from_pivots("BTC", "pivot_high", piv_a, left=2, right=2,
+                               frame_bars=1)[0].inputs_hash == rec_a[0].inputs_hash,
+      str(rec_a[0].inputs_hash if rec_a else None))
+check("changing right changes the feature identity",
+      rec_c and rec_c[0].version != rec_a[0].version
+      and rec_c[0].version == FS.pivot_feature_version(3, 3, 1),
+      f"{rec_c[0].version if rec_c else None} vs {rec_a[0].version}")
+check("changing right changes the provenance hash",
+      rec_c and rec_c[0].inputs_hash != rec_a[0].inputs_hash,
+      f"{rec_c[0].inputs_hash if rec_c else None}")
+check("changing left changes the feature identity",
+      FS.pivot_feature_version(2, 2, 1) != FS.pivot_feature_version(2, 3, 1)
+      and FS.pivot_feature_version(2, 2, 1) != FS.pivot_feature_version(3, 2, 1))
+check("changing frame_bars changes the feature identity",
+      FS.pivot_feature_version(2, 2, 1) != FS.pivot_feature_version(2, 2, 12))
+
+# The SAME pivot bar under two frame_bars is the aliasing case: the two
+# records describe the same bar but become knowable at different instants.
+check("the two frame_bars configurations describe the same bar",
+      rec_a and rec_a12 and rec_a[0].bar_ts == rec_a12[0].bar_ts,
+      f"{rec_a[0].bar_ts if rec_a else None} vs "
+      f"{rec_a12[0].bar_ts if rec_a12 else None}")
+check("the two frame_bars configurations have different identities",
+      rec_a and rec_a12 and rec_a[0].version != rec_a12[0].version)
+check("the two frame_bars configurations have different hashes",
+      rec_a and rec_a12 and rec_a[0].inputs_hash != rec_a12[0].inputs_hash)
+check("the frame_bars configuration becomes knowable later",
+      rec_a and rec_a12 and rec_a12[0].available_ts > rec_a[0].available_ts,
+      f"{rec_a12[0].available_ts if rec_a12 else None} vs "
+      f"{rec_a[0].available_ts if rec_a else None}")
+
+piv_store.put(rec_a[0])
+piv_store.put(rec_a12[0])
+check("the two configurations are stored as two features, not one",
+      len(piv_store.history("BTC", "pivot_high", rec_a[0].version)) == 1
+      and len(piv_store.history("BTC", "pivot_high", rec_a12[0].version)) == 1)
+check("the first configuration keeps its own available_ts",
+      piv_store.as_of("BTC", "pivot_high", rec_a[0].version,
+                      rec_a[0].available_ts) is not None
+      and piv_store.as_of("BTC", "pivot_high", rec_a[0].version,
+                          rec_a[0].available_ts - 1) is None)
+check("the second configuration is invisible before its own confirmation",
+      piv_store.as_of("BTC", "pivot_high", rec_a12[0].version,
+                      rec_a12[0].available_ts - 1) is None
+      and piv_store.as_of("BTC", "pivot_high", rec_a12[0].version,
+                          rec_a12[0].available_ts) is not None)
+check("the two configurations report different provenance hashes",
+      piv_store.as_of("BTC", "pivot_high", rec_a[0].version,
+                      rec_a[0].available_ts).inputs_hash
+      != piv_store.as_of("BTC", "pivot_high", rec_a12[0].version,
+                         rec_a12[0].available_ts).inputs_hash)
+
+# the declared configuration must match the pivots themselves
+mismatch_raised = False
+try:
+    FS.from_pivots("BTC", "pivot_high", piv_a, left=2, right=5, frame_bars=1)
+except ValueError:
+    mismatch_raised = True
+check("a configuration that does not match the pivots is refused",
+      mismatch_raised)
+frame_mismatch_raised = False
+try:
+    FS.from_pivots("BTC", "pivot_high", piv_a, left=2, right=2, frame_bars=12)
+except ValueError:
+    frame_mismatch_raised = True
+check("a frame_bars that contradicts the pivots is refused",
+      frame_mismatch_raised)
+bad_cfg_raised = False
+try:
+    FS.from_pivots("BTC", "pivot_high", piv_a, left=0, right=2, frame_bars=1)
+except ValueError:
+    bad_cfg_raised = True
+check("an invalid configuration is refused", bad_cfg_raised)
+
+# identical inputs stay deterministic and idempotent
+again = FS.from_pivots("BTC", "pivot_high", piv_a, left=2, right=2, frame_bars=1)
+check("identical inputs give identical identity and hash",
+      again and again[0].version == rec_a[0].version
+      and again[0].inputs_hash == rec_a[0].inputs_hash
+      and again[0].available_ts == rec_a[0].available_ts)
+check("re-storing the identical pivot record is idempotent",
+      piv_store.put(again[0]) is False)
+check("the store still holds one row for that identity",
+      len(piv_store.history("BTC", "pivot_high", rec_a[0].version)) == 1)
 
 # the store must be usable from a worker thread (the service is threaded)
 import threading
