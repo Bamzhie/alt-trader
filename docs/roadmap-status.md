@@ -4,12 +4,15 @@ Product goal: quantitative research and analysis for MEXC altcoin perpetual
 futures. Rules support quant analysis; heuristic scores are not evidence of
 edge. Read-only; no order execution. BTC is labeled market context only.
 
-Last updated: 2026-10-20 (six research/startup workstreams implemented and
-reviewed, the pivot feature-provenance fix merged, and the merged `main`
-**DEPLOYED** to the local user systemd service under owner authorization —
-service now runs `c8647b5`; reports in
-`docs/implementation-reports/quant-research-2026-10-19/`, deployment in
-`deployment-report.md`).
+Last updated: 2026-10-20 (the six research/startup workstreams are
+implemented and reviewed; the pivot feature-provenance fix is merged; a
+preregistered analysis (HYD-0003) ran on dev + validation and **the
+one-shot holdout was not spent**; the Research view now shows manual-review
+candidates; and `main` is **DEPLOYED** to the local user systemd service —
+the service runs `94bdf49` with a 2 s restart drain. Reports:
+`docs/implementation-reports/quant-research-2026-10-19/` (the six
+workstreams) and `docs/implementation-reports/quant-research-2026-10-20/`
+(this effort).
 Earlier (2026-10-19): dev-only investigation of the all-negative WS5 result —
 friction, not a signal defect; three independent audits; four pipeline and
 five funding-path fixes (including a transition-aware settlement schedule)
@@ -65,6 +68,37 @@ VERIFIED by direct archive read (2026-10-18):
   127.0.0.1:18741. The unit file and the operator's drop-in
   (`--quant-shadow`, `TimeoutStopSec=600s`) are **byte-identical** to
   before; the stop grace was not modified.
+- **Deployed again on 2026-10-20** (owner-authorized, together with the
+  2026-10-20 quant-research work): MainPID **759227**, started 2026-10-20
+  14:51:48 WAT, running revision `94bdf49`. The **drain took 2 s** (the
+  previous restart took 601 s and ended in a SIGKILL) because the daemon now
+  observes the stop flag between per-coin units, and the interrupted
+  iteration is journalled honestly (`resolve skipped: the iteration is
+  interrupted`). Every route answers 200 with the bearer token and 401
+  without it, including the new read-only `GET /quant-signals` (24
+  manual-review candidates). The unit file and the operator's drop-in are
+  byte-identical (md5 unchanged): `--quant-shadow` and
+  `TimeoutStopSec=600s` are preserved.
+- **A preregistered analysis (HYD-0003) was run on dev + validation and
+  the one-shot holdout was NOT spent.** All five declared members are
+  **negative** on dev (friction-only mean −0.0280 R to −0.0477 R; the
+  funding-adjusted means are within ~0.001 R of them, on > 99.9 % funding
+  coverage) and the family-level correction gives **p = 1.0**. Every member
+  is `insufficient` on validation because the validation window is 14 days
+  while the preregistered minimum is 20 distinct days — a protocol defect
+  that is reported, not amended after the fact. No configuration was
+  frozen, so the holdout was never evaluated and `data/quant_research/`
+  does not exist. Report:
+  `docs/implementation-reports/quant-research-2026-10-20/final-report.md`.
+- **The Research view now shows rule-generated candidates for manual
+  review** (coin, direction, rule + version, timestamp, freshness, entry,
+  stop/target/horizon with their assumptions, the cost basis, the evidence
+  status with its denominators, and the reason when it is insufficient).
+  There is **no execution path**: nothing in the diff places, routes or
+  prepares an order, no credential or account endpoint exists, `actionable`
+  is always false, and a promotion or validation result never authorises
+  an order. See `docs/quant-integration.md` for the signal / evidence /
+  execution separation.
 - **API readiness is now decoupled from the first sweep.** `/healthz` and
   `/readyz` answered **1 second** after the start; `/scanner-health`
   reported `first_sweep.state = "in_progress"` with `completed_ts: null`
