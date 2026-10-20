@@ -53,6 +53,20 @@ The id rule and the hypothesis-id vocabulary are reused from
 ``proto.decisions`` (the human log's validator) and
 ``proto.hypothesis_registry``; neither module is modified.
 
+**The hypothesis linkage is ADVISORY.**  ``append`` has no ``known_ids``
+parameter (the published signature has none), so a supplied
+``hypothesis_id`` is checked for FORMAT only (``HYD-####``) and may be
+``null``: whether the hypothesis actually exists is the caller's business
+(the human log's ``proto.decisions.validate_log`` is the existence check
+for the human log).  A chain entry therefore says "this decision claims to
+be about HYD-0007", not "this decision is provably about HYD-0007".
+
+**Where the file lives.**  ``CHAIN_RELPATH`` names the canonical location
+the owner chooses (``docs/decisions/chain.jsonl``).  ``append`` takes an
+EXPLICIT path -- the caller decides where the chain lives, and nothing
+here creates the file until the first append (this module never creates
+it by itself).
+
 Stdlib only.  This module never promotes a rule, never enables ACTIONABLE
 output and never touches the holdout.
 """
@@ -305,9 +319,18 @@ def append(path: str, *, kind: str, subject: str, reasons: list[str],
         matches the recorded sha256;
       * a chain file that is already invalid (an out-of-band edit is
         caught here instead of being silently extended);
+      * a ``ts`` that is not STRICTLY AFTER the tail's ``ts``, or an
+        explicit ``ts`` in the future.  A timestamp that goes backwards
+        would make the chain invalid (and every later append impossible),
+        so it is refused at write time instead of poisoning the chain;
       * a concurrent writer: the tail is re-checked under an exclusive lock
         immediately before the write;
       * a path whose file name is the human-owned ``log.jsonl``.
+
+    The default ``ts`` is the current second, raised to ``tail_ts + 1``
+    when the clock has not moved past the previous decision: two decisions
+    in the same second still produce a strictly increasing chain (the
+    raised second is at most one second ahead of the clock).
     """
     if os.path.basename(path) == HUMAN_LOG_BASENAME:
         raise DecisionError(
@@ -340,10 +363,25 @@ def append(path: str, *, kind: str, subject: str, reasons: list[str],
 
     entries = load(path)
     prev_hash = entries[-1].get("hash") if entries else None
+    tail_ts = entries[-1].get("ts") if entries else None
+    now = int(time.time())
     if ts is None:
-        ts = int(time.time())
-    if isinstance(ts, bool) or not isinstance(ts, int):
-        raise DecisionError(f"ts must be an epoch integer: {ts!r}")
+        ts = now
+        if isinstance(tail_ts, int) and ts <= tail_ts:
+            # The clock has not moved past the previous decision: keep the
+            # chain strictly increasing in time.
+            ts = tail_ts + 1
+    else:
+        if isinstance(ts, bool) or not isinstance(ts, int):
+            raise DecisionError(f"ts must be an epoch integer: {ts!r}")
+        if ts > now:
+            raise DecisionError(f"the ts is in the future: {ts} > {now}")
+        if isinstance(tail_ts, int) and ts <= tail_ts:
+            raise DecisionError(
+                f"the ts must be strictly after the previous decision's ts "
+                f"({tail_ts}); a ts that goes backwards (or repeats it) "
+                "would make the chain invalid and every later append "
+                "impossible")
 
     entry = {
         "id": next_id(path),

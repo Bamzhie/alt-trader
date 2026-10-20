@@ -162,7 +162,7 @@ def settlements_dir():
 
 
 def mk_version(vid, geom, *, config_hash=None, role="candidate",
-               status="candidate", params=None):
+               status="candidate", params=None, geometry=None):
     return ConfigVersion(
         id=vid,
         rule_id="quant-v1:breakout_start:rvol4:fade:" + geom.key(),
@@ -171,7 +171,7 @@ def mk_version(vid, geom, *, config_hash=None, role="candidate",
         params=params if params is not None else {
             "family": "breakout_start", "policy": "fade", "rvol_min": 4.0,
             "cusum_h": 5.0},
-        geometry=geom_dict(geom),
+        geometry=geometry if geometry is not None else geom_dict(geom),
         role=role,
         status=status,
         data_hash="d" * 16,
@@ -217,7 +217,20 @@ except Exception as exc:
 
 check("there is no champion before one is set", reg.champion() is None)
 
-reg.set_champion("cfg-0001")
+# set_champion is a PROMOTION: it needs the explicit opt-in
+try:
+    reg.set_champion("cfg-0001")
+    check("set_champion refuses without the explicit opt-in", False,
+          "no error raised")
+except Exception as exc:
+    check("set_champion refuses without the explicit opt-in",
+          "allow_promote" in str(exc), str(exc))
+    check("the refusal names the risk (a promotion)",
+          "promotion" in str(exc).lower(), str(exc))
+check("the refused promotion wrote nothing", len(reg.list()) == 1,
+      str(len(reg.list())))
+
+reg.set_champion("cfg-0001", allow_promote=True)
 champ = reg.champion()
 check("the champion is discoverable", champ is not None)
 check("the champion is a NEW version (the old row is never mutated)",
@@ -230,9 +243,20 @@ check("the superseded version stays retrievable",
 check("the history keeps both versions",
       len(reg.list()) == 2, str(len(reg.list())))
 
+# promoting the same configuration again is a NO-OP (the lineage, not the id)
+reg.set_champion("cfg-0001", allow_promote=True)
+check("promoting the current champion again is a no-op",
+      len(reg.list()) == 2, str(len(reg.list())))
+reg.set_champion(champ.id, allow_promote=True)
+check("promoting the champion version itself is a no-op",
+      len(reg.list()) == 2, str(len(reg.list())))
+check("the champion is unchanged after the no-op promotions",
+      reg.champion() is not None and reg.champion().id == champ.id,
+      str(reg.champion()))
+
 v2 = mk_version("cfg-0100", GEOM_CA)
 reg.add(v2)
-reg.set_champion("cfg-0100")
+reg.set_champion("cfg-0100", allow_promote=True)
 champ2 = reg.champion()
 check("the new champion is the candidate's new version",
       champ2 is not None and champ2.status == "champion"
@@ -282,6 +306,20 @@ check("the comparison is not refused", res.get("refused") is False,
       str(res.get("reason")))
 check("the same events were used", res["same_events"] is True)
 check("the same cost model was used", res["same_cost_model"] is True)
+check("the applied cost model is reported under its explicit name",
+      res["same_applied_cost_model"] is True)
+check("the provenance is reported separately",
+      res["same_config_hash"] is True)
+check("the two sides read different label slots (different geometries)",
+      res["same_label_slot"] is False, str(res.get("same_label_slot")))
+check("each side records the label slots it reads",
+      res["champion"]["label_slots"] == [GI_CH * 2, GI_CH * 2 + 1]
+      and res["candidate"]["label_slots"] == [GI_CA * 2, GI_CA * 2 + 1],
+      f"{res['champion'].get('label_slots')} {res['candidate'].get('label_slots')}")
+check("each side records its geometry",
+      res["champion"]["geometry"] == GEOM_CH.key()
+      and res["candidate"]["geometry"] == GEOM_CA.key(),
+      f"{res['champion'].get('geometry')} {res['candidate'].get('geometry')}")
 check("both sides report the same n_events",
       res["n_events"] == res["n_champion"] == res["n_candidate"],
       f"{res['n_events']} {res['n_champion']} {res['n_candidate']}")
@@ -386,15 +424,73 @@ check("the refusal reports no interval",
       res_diff["ci_lo"] is None and res_diff["ci_hi"] is None)
 check("the refusal reports same_events = False",
       res_diff["same_events"] is False)
+check("the refusal reports what WAS verified (the applied cost model)",
+      res_diff["same_applied_cost_model"] is True
+      and res_diff["same_config_hash"] is True,
+      f"{res_diff.get('same_applied_cost_model')} "
+      f"{res_diff.get('same_config_hash')}")
 
 res_cost = compare(mk_version("cfg-0001", GEOM_CH, config_hash="hash-a"),
                     mk_version("cfg-0002", GEOM_CA, config_hash="hash-b"),
                     events, WINDOW)
-check("different cost models are refused", res_cost.get("refused") is True,
+check("different config hashes are refused", res_cost.get("refused") is True,
       str(res_cost.get("reason")))
-check("the cost-model refusal states a reason", bool(res_cost.get("reason")))
-check("the cost-model refusal reports no numbers",
-      res_cost["difference"] is None and res_cost["same_cost_model"] is False)
+check("the refusal says 'config hashes', not 'priced with different cost models'",
+      "config hash" in res_cost.get("reason", "").lower()
+      and "priced with different cost models" not in
+      res_cost.get("reason", "").lower(),
+      str(res_cost.get("reason")))
+check("the refusal reports no numbers",
+      res_cost["difference"] is None and res_cost["ci_lo"] is None)
+check("the refusal reports the provenance mismatch",
+      res_cost["same_config_hash"] is False, str(res_cost.get("same_config_hash")))
+check("the refusal reports the applied cost model as shared",
+      res_cost["same_applied_cost_model"] is True
+      and res_cost["same_cost_model"] is True)
+
+# --- a version that does not resolve to exactly one rule is refused (M5) ---
+res_bad_params = compare(mk_version("cfg-0001", GEOM_CH, params={}),
+                          cand_v, events, WINDOW)
+check("an empty params dict is refused (not silently defaulted)",
+      res_bad_params.get("refused") is True, str(res_bad_params.get("reason")))
+check("the empty-params refusal names the missing params",
+      "params" in res_bad_params.get("reason", ""),
+      str(res_bad_params.get("reason")))
+res_unknown_params = compare(
+    mk_version("cfg-0001", GEOM_CH, params={
+        "family": "breakout_start", "policy": "fade", "rvol_min": 4.0,
+        "cusum_h": 5.0, "mystery": 1}),
+    cand_v, events, WINDOW)
+check("an unknown params key is refused",
+      res_unknown_params.get("refused") is True,
+      str(res_unknown_params.get("reason")))
+check("the unknown-params refusal names the key",
+      "mystery" in res_unknown_params.get("reason", ""),
+      str(res_unknown_params.get("reason")))
+res_bad_type = compare(
+    mk_version("cfg-0001", GEOM_CH, params={
+        "family": "breakout_start", "policy": "fade", "rvol_min": "4.0",
+        "cusum_h": 5.0}),
+    cand_v, events, WINDOW)
+check("a wrong params type is refused (no uncaught TypeError)",
+      res_bad_type.get("refused") is True, str(res_bad_type.get("reason")))
+check("the wrong-type refusal names the field",
+      "rvol_min" in res_bad_type.get("reason", ""),
+      str(res_bad_type.get("reason")))
+res_bad_geom = compare(
+    mk_version("cfg-0001", GEOM_CH,
+               geometry={"horizon_bars": 100, "k_stop": 2.0, "r_tp": 1.0}),
+    cand_v, events, WINDOW)
+check("an off-grid geometry is refused",
+      res_bad_geom.get("refused") is True, str(res_bad_geom.get("reason")))
+check("the off-grid refusal names the grid",
+      "grid" in res_bad_geom.get("reason", ""),
+      str(res_bad_geom.get("reason")))
+check("a refusal before the event check does not claim same_events = False",
+      res_bad_params["same_events"] is None
+      and res_bad_params["same_applied_cost_model"] is True,
+      f"{res_bad_params.get('same_events')} "
+      f"{res_bad_params.get('same_applied_cost_model')}")
 
 untradeable = [mk_event(ev.coin, ev.ts, ev.side, ev.gross, kind=0, qv24=1e5)
                 for ev in events]
@@ -405,6 +501,10 @@ check("the no-outcome refusal states a reason", bool(res_none.get("reason")))
 check("the no-outcome refusal is not a zero",
       res_none["difference"] is None and res_none["n_events"] == 0,
       str(res_none["difference"]))
+check("the no-outcome refusal reports the verified facts",
+      res_none["same_events"] is True
+      and res_none["same_config_hash"] is True,
+      f"{res_none.get('same_events')} {res_none.get('same_config_hash')}")
 
 # ---------------------------------------------------------------------------
 # 5. the decision chain
@@ -482,6 +582,42 @@ try:
     check("an empty decided_by is refused", False, "no error raised")
 except Exception:
     check("an empty decided_by is refused", True)
+
+# --- the timestamp rules: a bad ts is refused BEFORE it poisons the chain ---
+try:
+    DL.append(chain, kind="continue", subject="cfg-0009",
+              reasons=["back in time"], evidence=[], decided_by="tester",
+              ts=1_699_999_999)
+    check("a ts that goes backwards is refused", False, "no error raised")
+except Exception as exc:
+    check("a ts that goes backwards is refused",
+          "strictly after" in str(exc), str(exc))
+try:
+    DL.append(chain, kind="continue", subject="cfg-0009",
+              reasons=["same second"], evidence=[], decided_by="tester",
+              ts=1_700_000_200)
+    check("a ts that repeats the tail's ts is refused", False,
+          "no error raised")
+except Exception as exc:
+    check("a ts that repeats the tail's ts is refused",
+          "strictly after" in str(exc), str(exc))
+try:
+    DL.append(chain, kind="continue", subject="cfg-0009",
+              reasons=["in the future"], evidence=[], decided_by="tester",
+              ts=int(time.time()) + 3600)
+    check("a ts in the future is refused", False, "no error raised")
+except Exception as exc:
+    check("a ts in the future is refused", "future" in str(exc), str(exc))
+check("the refused timestamps did not extend the chain",
+      len(open(chain).read().splitlines()) == 3,
+      str(len(open(chain).read().splitlines())))
+check("the chain is still valid after the refused timestamps",
+      DL.validate_chain(chain) == [], str(DL.validate_chain(chain)))
+e4 = DL.append(chain, kind="continue", subject="cfg-0009",
+               reasons=["after the refusals"], evidence=[], decided_by="tester",
+               ts=1_700_000_300)
+check("the chain still accepts a later decision", e4["id"] == "DEC-0004",
+      e4["id"])
 
 section("6. decision chain: tampering is detected")
 
@@ -620,6 +756,40 @@ check("an empty chain validates clean",
 # ---------------------------------------------------------------------------
 section("9. the repository is untouched")
 
+# The check scans ONLY the artifacts this task could have created.  A
+# blanket "no *.db anywhere" scan would fail in the real checkout, where
+# data/quant.db and data/signals.db belong to the running platform.
+REPO_ARTIFACT_FILES = (
+    os.path.join("data", "promotions.json"),        # the flat promotion file
+    os.path.join("data", "champions.db"),           # the champion registry
+    os.path.join("data", "champion_registry.db"),
+    os.path.join("data", "quant_champions.db"),
+)
+
+
+def repo_artifacts(root):
+    """The artifacts THIS TASK could have created inside ``root``.
+
+    Scoped on purpose: an unrelated ``data/*.db`` of the running platform
+    is not an artifact of this task and must never fail the check.
+    """
+    found = []
+    decisions = os.path.join(root, "docs", "decisions")
+    if os.path.isdir(decisions):
+        for name in sorted(os.listdir(decisions)):
+            if name != "log.jsonl":
+                found.append(os.path.join("docs", "decisions", name))
+    for rel in REPO_ARTIFACT_FILES:
+        if os.path.exists(os.path.join(root, rel)):
+            found.append(rel)
+    data = os.path.join(root, "data")
+    if os.path.isdir(data):
+        for name in sorted(os.listdir(data)):
+            if "champion" in name.lower():
+                found.append(os.path.join("data", name))
+    return found
+
+
 decisions_dir = os.path.join(ROOT, "docs", "decisions")
 check("the human-owned log still exists",
       os.path.isfile(os.path.join(decisions_dir, "log.jsonl")))
@@ -633,14 +803,33 @@ check("docs/decisions holds only the human-owned log",
       str(sorted(os.listdir(decisions_dir))))
 check("data/promotions.json was not created or modified",
       not os.path.exists(os.path.join(ROOT, "data", "promotions.json")))
-stray = []
-for base, dirs, files in os.walk(ROOT):
-    dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", ".venv-qt")]
-    for f in files:
-        if f.endswith(".db") or f == "chain.jsonl" or f == "promotions.json":
-            stray.append(os.path.join(base, f))
-check("no registry database or chain file was created in the repository",
-      not stray, str(stray))
+check("no decision/registry artifact was created in the repository",
+      repo_artifacts(ROOT) == [], str(repo_artifacts(ROOT)))
+
+# --- the check itself: it must catch a would-be artifact and ignore the
+# --- unrelated databases of the running platform
+fake = temp_dir("wse-tree-")
+os.makedirs(os.path.join(fake, "docs", "decisions"))
+os.makedirs(os.path.join(fake, "data"))
+open(os.path.join(fake, "docs", "decisions", "log.jsonl"), "w").close()
+open(os.path.join(fake, "data", "quant.db"), "w").close()
+open(os.path.join(fake, "data", "signals.db"), "w").close()
+check("an unrelated data/*.db does NOT trip the repository check",
+      repo_artifacts(fake) == [], str(repo_artifacts(fake)))
+open(os.path.join(fake, "docs", "decisions", "chain.jsonl"), "w").close()
+check("a chain file in the tree DOES trip the repository check",
+      any("chain.jsonl" in a for a in repo_artifacts(fake)),
+      str(repo_artifacts(fake)))
+os.unlink(os.path.join(fake, "docs", "decisions", "chain.jsonl"))
+open(os.path.join(fake, "data", "champions.db"), "w").close()
+check("a champion registry in the tree DOES trip the repository check",
+      any("champions.db" in a for a in repo_artifacts(fake)),
+      str(repo_artifacts(fake)))
+os.unlink(os.path.join(fake, "data", "champions.db"))
+open(os.path.join(fake, "data", "promotions.json"), "w").close()
+check("a promotions.json in the tree DOES trip the repository check",
+      any("promotions.json" in a for a in repo_artifacts(fake)),
+      str(repo_artifacts(fake)))
 
 # ---------------------------------------------------------------------------
 # 10. the CLI

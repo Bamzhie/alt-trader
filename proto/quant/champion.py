@@ -22,11 +22,22 @@ The rules the comparison obeys (they are the point, not decoration):
     must cover the same event ids.  If they do not, the comparison is
     REFUSED with a reason: a comparison across two different event sets
     is not a comparison.
-  * **The same cost model is verified the same way.**  Each side's cost
-    model is described and hashed on its own (its config hash -- the
-    config that produced its evidence -- plus the effective fee/slippage
-    model, the multipliers and the funding inputs).  The two hashes must
-    match, otherwise the comparison is refused.
+  * **The applied cost model is verified, and the provenance is reported
+    separately.**  Both sides are evaluated with ONE applied cost model
+    (the multipliers are folded into the cost model itself), so
+    ``same_applied_cost_model`` is a real check that happens to be true by
+    construction.  What can differ is the PROVENANCE: the two versions
+    may have been registered under different ``config_hash`` values, i.e.
+    their evidence was produced under different cost models.  That is
+    reported as ``same_config_hash`` and it is a refusal -- with a reason
+    that says exactly that, instead of pretending the applied cost models
+    differed.
+  * **The two sides may read different label slots.**  The same event
+    carries one barrier label per (geometry, side); two configurations
+    with different geometries read different slots of the same event.
+    That is the intended comparison, so it is RECORDED: every side block
+    carries its ``label_slots`` and the result carries
+    ``same_label_slot``.
   * **No silent zeros.**  When a side has no evaluable outcome the result
     is refused with a reason, never a zero difference.
   * **Every number carries its denominator.**  The result says what the
@@ -40,8 +51,15 @@ The rules the comparison obeys (they are the point, not decoration):
     (``metric = "friction_net_r"``), which is never presented as a net
     number.  Both sides always use the SAME metric.
 
-Stdlib only.  This module never promotes a rule, never enables ACTIONABLE
-output, never writes a decision and never touches the holdout.
+**Promotion is a conscious act.**  ``Registry.set_champion`` records a
+PROMOTION: it makes a configuration the champion and retires the previous
+one.  It therefore refuses unless the caller passes the explicit opt-in
+``allow_promote=True``, and the refusal names the risk.  Nothing in the
+production path calls it, the CLI has no ``promote`` sub-command, and no
+promotion happened while this module was written.
+
+Stdlib only.  This module never promotes a rule on its own, never enables
+ACTIONABLE output, never writes a decision and never touches the holdout.
 """
 import hashlib
 import json
@@ -53,7 +71,7 @@ from dataclasses import dataclass, field, replace
 from . import competing_outcomes as CO
 from . import inference as INF
 from . import stats as S
-from .config import DEFAULT, Geometry, RuleParams
+from .config import DEFAULT, Geometry, RuleParams, grid_geometries
 
 CHAMPION_VERSION = "champion-v1"
 
@@ -66,6 +84,13 @@ MIN_CLUSTERS = 3
 #: Bootstrap size of the reported intervals (the house default of
 #: ``stats.day_cluster_mean``), so a reader can recompute them exactly.
 BOOTSTRAP_B = 2000
+
+#: The fields of a ``RuleParams`` and of a ``Geometry`` a config version
+#: must carry.  A version that does not resolve to exactly ONE rule is
+#: refused: silently dropping an unknown key or filling in a default
+#: would evaluate a configuration nobody described.
+RULE_PARAM_FIELDS = ("family", "policy", "rvol_min", "cusum_h")
+GEOMETRY_FIELDS = ("horizon_bars", "k_stop", "r_tp")
 
 _ID_RE = re.compile(r"^cfg-(\d+)$")
 
@@ -102,7 +127,8 @@ class ConfigVersion:
     ``config_hash`` the ``QuantConfig.config_hash()`` the evidence of this
                     version was produced under.  Results are only
                     comparable within one hash.
-    ``params``      the resolved ``RuleParams`` as a dict.
+    ``params``      the resolved ``RuleParams`` as a dict -- all of
+                    ``family``, ``policy``, ``rvol_min``, ``cusum_h``.
     ``geometry``    ``{"horizon_bars", "k_stop", "r_tp", "key"}``.
     ``role``        "candidate" | "champion" | "control" | "retired".
     ``status``      "candidate" | "champion" | "retired".
@@ -154,6 +180,9 @@ class Registry:
     new "champion" version of the promoted configuration and a new
     "retired" version of the champion it replaces, so every earlier
     version stays exactly as it was written.
+
+    ``set_champion`` is a PROMOTION and needs the explicit opt-in
+    ``allow_promote=True`` (see the module docstring).
     """
 
     def __init__(self, path: str):
@@ -205,20 +234,38 @@ class Registry:
             raise ValueError(f"duplicate config id: {version.id}") from None
         self._conn.commit()
 
-    def set_champion(self, id: str) -> None:
+    def set_champion(self, id: str, *, allow_promote: bool = False) -> None:
         """Make ``id`` the champion -- by APPENDING, never by editing.
+
+        **This is a promotion and it needs the explicit opt-in**
+        ``allow_promote=True``.  Without it the call is refused with a
+        reason: a champion is the operator's live configuration, and
+        recording one changes what the platform believes is current, so
+        it must be a conscious act with the promotion gate's evidence
+        (``proto.quant.gates``) in hand -- never a side effect of a
+        measurement.
 
         The previous champion is retired by appending a "retired" version
         of it; the new champion is appended as a new "champion" version of
         the promoted configuration.  The superseded rows keep their
-        history.  Setting the current champion again is a no-op.
+        history.  Promoting the current champion again is a NO-OP: the
+        call compares the champion's LINEAGE with the target, so asking
+        twice does not append four rows.
         """
+        if not allow_promote:
+            raise ValueError(
+                "set_champion records a PROMOTION (it makes a configuration "
+                "the champion and retires the previous one), so it needs the "
+                "explicit opt-in allow_promote=True. Promote only with the "
+                "promotion gate's evidence recorded (proto.quant.gates); a "
+                "measurement must never promote anything by accident.")
         target = self.get(id)
         if target is None:
             raise ValueError(f"unknown config id: {id}")
         current = self.champion()
-        if current is not None and current.id == target.id:
-            return                      # already the champion
+        if current is not None and (target.id == current.id
+                                    or target.id in self._lineage(current.id)):
+            return                      # already the champion (same lineage)
         now = int(time.time())
         if current is not None:
             retired = replace(current, id=self._next_id(), role="retired",
@@ -256,6 +303,25 @@ class Registry:
         row = self._conn.execute(
             "SELECT * FROM config_versions WHERE id = ?", (id,)).fetchone()
         return _from_row(row) if row else None
+
+    def _lineage(self, id: str) -> set:
+        """The ids the given version descends from (its supersedes chain).
+
+        A promoted configuration is a NEW version of an earlier one, so
+        "is this already the champion?" is a question about the LINEAGE,
+        not about the raw ids.
+        """
+        seen = set()
+        current = id
+        while current and current not in seen:
+            seen.add(current)
+            row = self._conn.execute(
+                "SELECT supersedes FROM config_versions WHERE id = ?",
+                (current,)).fetchone()
+            if row is None:
+                break
+            current = row["supersedes"]
+        return seen
 
     def list(self, status: str | None = None) -> list[ConfigVersion]:
         """Every version in insertion order, optionally filtered by status.
@@ -309,18 +375,21 @@ def _effective_cfg(cfg, slip_mult, fee_mult):
     return replace(cfg, cost=cost)
 
 
-def _cost_model(version, cfg, slip_mult, fee_mult, funding_dir,
-                settlements_dir):
+def _applied_cost_model(cfg, slip_mult, fee_mult, funding_dir,
+                        settlements_dir):
     """The cost model ONE side is evaluated with, described and hashed.
 
-    The hash covers the config the side's evidence was produced under
-    (``config_hash``) and the effective cost model with its multipliers
-    and funding inputs -- so two sides with different cost models have
-    different hashes and the comparison refuses.
+    Both sides of a comparison are evaluated with the SAME applied cost
+    model (the multipliers are folded into the cost model), so the
+    descriptor is still computed per side and compared: the check is a
+    real check, and it is reported as ``same_applied_cost_model``.
+
+    The PROVENANCE of a side (the ``config_hash`` its evidence was
+    produced under) is a different fact and is reported separately as
+    ``same_config_hash``.
     """
     eff = _effective_cfg(cfg, slip_mult, fee_mult)
     payload = {
-        "config_hash": version.config_hash,
         "fee_per_side": eff.cost.fee_per_side,
         "slip_tiers": [list(t) for t in eff.cost.slip_tiers],
         "min_qv24": eff.cost.min_qv24,
@@ -336,22 +405,74 @@ def _cost_model(version, cfg, slip_mult, fee_mult, funding_dir,
 
 
 def _resolve(version):
-    """(rule, geometry, error): the rule and geometry of a config version."""
-    params = version.params or {}
-    geometry = version.geometry or {}
+    """(rule, geometry, error): the rule and geometry of a config version.
+
+    A version that does not resolve to exactly ONE rule is REFUSED with a
+    reason: dropping an unknown param key or filling in a dataclass
+    default would silently evaluate a configuration the caller never
+    described (a missing ``params`` must not become "breakout_start /
+    fade / rvol_min=4.0" by accident).
+    """
+    params = version.params
+    if not isinstance(params, dict) or not params:
+        return None, None, ("the params are missing: a rule needs "
+                            + ", ".join(RULE_PARAM_FIELDS))
+    unknown = sorted(set(params) - set(RULE_PARAM_FIELDS))
+    if unknown:
+        return None, None, f"the params have unknown keys: {unknown}"
+    missing = [f for f in RULE_PARAM_FIELDS if f not in params]
+    if missing:
+        return None, None, f"the params are missing: {missing}"
+    for field in ("family", "policy"):
+        if not isinstance(params[field], str) or not params[field]:
+            return None, None, (f"the params' {field} must be a non-empty "
+                                f"string, got {params[field]!r}")
+    for field in ("rvol_min", "cusum_h"):
+        value = params[field]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None, None, (f"the params' {field} must be a number, got "
+                                f"{value!r}")
     try:
-        rule = RuleParams(**{k: v for k, v in params.items()
-                             if k in ("family", "policy", "rvol_min",
-                                      "cusum_h")})
+        rule = RuleParams(**params)
     except (TypeError, ValueError) as exc:
         return None, None, f"the params are not a RuleParams: {exc}"
+
+    geometry = version.geometry
+    if not isinstance(geometry, dict) or not geometry:
+        return None, None, ("the geometry is missing: a geometry needs "
+                            + ", ".join(GEOMETRY_FIELDS))
+    unknown = sorted(set(geometry) - set(GEOMETRY_FIELDS) - {"key"})
+    if unknown:
+        return None, None, f"the geometry has unknown keys: {unknown}"
+    missing = [f for f in GEOMETRY_FIELDS if f not in geometry]
+    if missing:
+        return None, None, f"the geometry is missing: {missing}"
+    for field in GEOMETRY_FIELDS:
+        value = geometry[field]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None, None, (f"the geometry's {field} must be a number, "
+                                f"got {value!r}")
     try:
         geom = Geometry(int(geometry["horizon_bars"]),
                         float(geometry["k_stop"]),
                         float(geometry["r_tp"]))
-    except (KeyError, TypeError, ValueError) as exc:
+    except (TypeError, ValueError) as exc:
         return None, None, f"the geometry is not a Geometry: {exc}"
+    if not any(g.horizon_bars == geom.horizon_bars
+               and g.k_stop == geom.k_stop and g.r_tp == geom.r_tp
+               for g in grid_geometries()):
+        return None, None, (f"the geometry {geom.key()} is not in the "
+                            "pre-declared grid, so the events' label slots "
+                            "cannot be addressed")
     return rule, geom, None
+
+
+def _label_slots(geom):
+    """The two label slots (long and short) a geometry reads per event."""
+    try:
+        return sorted((CO.slot_index(geom, 1), CO.slot_index(geom, -1)))
+    except ValueError:
+        return None
 
 
 def _value(outcome, metric):
@@ -361,7 +482,7 @@ def _value(outcome, metric):
 
 
 def _side_block(version, values, days, coins, causes, n_selected, n_evaluable,
-                metric, seed=1):
+                metric, seed=1, geometry=None, label_slots=None):
     """The per-side report: the mean over the PAIRED events, its interval
     and its denominators."""
     n = len(values)
@@ -382,6 +503,8 @@ def _side_block(version, values, days, coins, causes, n_selected, n_evaluable,
         "coins": len(set(coins)),
         "causes": causes,
         "metric": metric,
+        "geometry": (geometry.key() if geometry is not None else None),
+        "label_slots": list(label_slots) if label_slots else None,
         "denominator": ("the paired events: the events BOTH configurations "
                         "were evaluated on, in the window, with the "
                         f"'{metric}' metric"),
@@ -394,11 +517,18 @@ def _side_block(version, values, days, coins, causes, n_selected, n_evaluable,
     return block
 
 
-def _refusal(reason, **extra):
-    """The result shape of a refused comparison: no numbers, one reason."""
+def _refusal(reason, verified=None, **extra):
+    """The result shape of a refused comparison: no numbers, one reason.
+
+    The verification flags report what was ACTUALLY verified before the
+    refusal -- ``None`` means "not established" (not "false").
+    """
     out = {
         "n_events": 0, "n_champion": 0, "n_candidate": 0,
-        "same_events": False, "same_cost_model": False,
+        "same_events": None,
+        "same_applied_cost_model": None,
+        "same_config_hash": None,
+        "same_label_slot": None,
         "cost_model": {},
         "champion": {}, "candidate": {},
         "difference": None, "ci_lo": None, "ci_hi": None, "t": None,
@@ -411,7 +541,12 @@ def _refusal(reason, **extra):
         "metric": None,
         "ci_lo_coin": None, "ci_hi_coin": None, "t_coin": None,
     }
+    if verified:
+        out.update(verified)
     out.update(extra)
+    # The brief's key: the two sides were priced with the same APPLIED
+    # cost model.  The provenance equality is reported separately.
+    out["same_cost_model"] = out["same_applied_cost_model"]
     return out
 
 
@@ -421,10 +556,10 @@ def compare(champion: ConfigVersion, candidate: ConfigVersion, events, window,
     """Compare a champion and a candidate on the SAME events with MATCHED costs.
 
     Both configurations are evaluated on the same event set, in the same
-    window, with the same cost model, the same slippage/fee multipliers
-    and the same funding attribution.  The result is the PAIRED difference
-    (per event: candidate minus champion) with a day-cluster interval and a
-    coin-cluster interval.
+    window, with the same applied cost model, the same slippage/fee
+    multipliers and the same funding attribution.  The result is the
+    PAIRED difference (per event: candidate minus champion) with a
+    day-cluster interval and a coin-cluster interval.
 
     Returns a dict with::
 
@@ -434,10 +569,20 @@ def compare(champion: ConfigVersion, candidate: ConfigVersion, events, window,
         n_candidate     the candidate's evaluable count on those events
         same_events     True when both evaluations covered the same event
                         ids (VERIFIED, not assumed)
-        same_cost_model True when both sides were priced with the same cost
-                        model (VERIFIED by hash)
-        cost_model      the cost model the comparison ran under
-        champion        the champion's per-side report
+        same_cost_model True when both sides were priced with the same
+                        APPLIED cost model (the brief's key; the applied
+                        model is shared, so this is True by construction
+                        and is verified per side)
+        same_applied_cost_model  the same fact under its explicit name
+        same_config_hash True when the two versions were registered under
+                        the same config hash (their PROVENANCE)
+        same_label_slot True when the two sides read the SAME label slot
+                        of each event; False when they read different
+                        ones (different geometries -- the intended
+                        comparison), None when not established
+        cost_model      the applied cost model the comparison ran under
+        champion        the champion's per-side report (with its
+                        ``label_slots`` and ``geometry``)
         candidate       the candidate's per-side report
         difference      the mean paired difference (candidate - champion)
         ci_lo / ci_hi   the day-cluster interval of the paired differences
@@ -450,44 +595,64 @@ def compare(champion: ConfigVersion, candidate: ConfigVersion, events, window,
     plus ``refused`` / ``reason`` / ``reasons``, ``metric`` (which metric
     the numbers use) and ``ci_lo_coin`` / ``ci_hi_coin`` / ``t_coin``.
 
-    Refusals (the result carries a reason and NO numbers):
+    Refusals (the result carries a reason and NO numbers; the verification
+    flags report what WAS verified before the refusal):
 
       * the two evaluations covered different event sets;
-      * the two sides were priced with different cost models;
+      * the two versions were registered under different config hashes
+        (their evidence was produced under different cost models);
       * a side has no evaluable outcome;
-      * a version's params or geometry cannot be resolved, or its geometry
-        is not in the pre-declared grid (the label slots of the events are
-        addressed by that grid, so there is nothing to read).
+      * a version's params or geometry do not resolve to exactly one rule,
+        or its geometry is not in the pre-declared grid (the label slots
+        of the events are addressed by that grid, so there is nothing to
+        read).
 
     The metric is "net_r" when the venue funding cost can be attributed,
     and "friction_net_r" (explicitly friction-only, never a net number)
     when it cannot.  Both sides always use the same metric.
     """
-    reasons = []
+    # -- what has been VERIFIED so far (a refusal reports exactly this) --
+    verified = {
+        "same_applied_cost_model": None,
+        "same_config_hash": None,
+        "same_events": None,
+        "same_label_slot": None,
+    }
+
+    cm_ch = _applied_cost_model(cfg, slip_mult, fee_mult, funding_dir,
+                                settlements_dir)
+    cm_ca = _applied_cost_model(cfg, slip_mult, fee_mult, funding_dir,
+                                settlements_dir)
+    verified["same_applied_cost_model"] = cm_ch["hash"] == cm_ca["hash"]
+    verified["same_config_hash"] = (champion.config_hash
+                                     == candidate.config_hash)
 
     ch_rule, ch_geom, ch_err = _resolve(champion)
     if ch_err:
         return _refusal(f"the champion cannot be resolved: {ch_err}",
+                        verified, cost_model=cm_ch,
                         champion_id=champion.id, candidate_id=candidate.id,
                         window=[window[0], window[1]])
     ca_rule, ca_geom, ca_err = _resolve(candidate)
     if ca_err:
         return _refusal(f"the candidate cannot be resolved: {ca_err}",
+                        verified, cost_model=cm_ch,
                         champion_id=champion.id, candidate_id=candidate.id,
                         window=[window[0], window[1]])
 
-    cm_ch = _cost_model(champion, cfg, slip_mult, fee_mult, funding_dir,
-                        settlements_dir)
-    cm_ca = _cost_model(candidate, cfg, slip_mult, fee_mult, funding_dir,
-                        settlements_dir)
-    same_cost_model = cm_ch["hash"] == cm_ca["hash"]
-    if not same_cost_model:
+    slots_ch = _label_slots(ch_geom)
+    slots_ca = _label_slots(ca_geom)
+    verified["same_label_slot"] = (slots_ch is not None and slots_ca is not None
+                                   and slots_ch == slots_ca)
+
+    if not verified["same_config_hash"]:
         return _refusal(
-            "the two configurations were priced with different cost models "
-            f"(champion {champion.config_hash}, candidate "
-            f"{candidate.config_hash}); a comparison across cost models is "
-            "not a comparison",
-            same_cost_model=False, cost_model=cm_ch,
+            "the two configurations were registered under DIFFERENT config "
+            f"hashes (champion {champion.config_hash}, candidate "
+            f"{candidate.config_hash}), so their evidence was produced under "
+            "different cost models; the comparison is refused. Register both "
+            "under one config hash (or supersede) before comparing.",
+            verified, cost_model=cm_ch,
             champion_id=champion.id, candidate_id=candidate.id,
             window=[window[0], window[1]])
 
@@ -501,7 +666,7 @@ def compare(champion: ConfigVersion, candidate: ConfigVersion, events, window,
                                       settlements_dir=settlements_dir)
     except ValueError as exc:
         return _refusal(f"the configurations cannot be evaluated: {exc}",
-                        same_cost_model=True, cost_model=cm_ch,
+                        verified, cost_model=cm_ch,
                         champion_id=champion.id, candidate_id=candidate.id,
                         window=[window[0], window[1]])
 
@@ -512,22 +677,22 @@ def compare(champion: ConfigVersion, candidate: ConfigVersion, events, window,
     if len(map_ch) != len(pairs_ch) or len(map_ca) != len(pairs_ca):
         return _refusal("the event ids are not unique; the comparison would "
                         "pair an event with itself",
-                        same_cost_model=True, same_events=False,
-                        cost_model=cm_ch,
+                        verified, cost_model=cm_ch,
                         champion_id=champion.id, candidate_id=candidate.id,
                         window=[window[0], window[1]])
 
     ids_ch = [o.event_id for _ev, o in pairs_ch]
     ids_ca = [o.event_id for _ev, o in pairs_ca]
-    same_events = (set(ids_ch) == set(ids_ca) and len(ids_ch) == len(ids_ca))
-    if not same_events:
+    verified["same_events"] = (set(ids_ch) == set(ids_ca)
+                               and len(ids_ch) == len(ids_ca))
+    if not verified["same_events"]:
         only_ch = sorted(set(ids_ch) - set(ids_ca))[:3]
         only_ca = sorted(set(ids_ca) - set(ids_ch))[:3]
         return _refusal(
             f"the two configurations were evaluated on different event sets "
             f"(champion {len(ids_ch)} events, candidate {len(ids_ca)} events); "
             f"champion-only: {only_ch}, candidate-only: {only_ca}",
-            same_cost_model=True, same_events=False, cost_model=cm_ch,
+            verified, cost_model=cm_ch,
             champion_id=champion.id, candidate_id=candidate.id,
             window=[window[0], window[1]])
 
@@ -541,15 +706,17 @@ def compare(champion: ConfigVersion, candidate: ConfigVersion, events, window,
         paired = [(eid, map_ch[eid], map_ca[eid]) for eid in ids_ch
                   if _value(map_ch[eid][1], metric) is not None
                   and _value(map_ca[eid][1], metric) is not None]
-        reasons.append(
+        reasons = [
             "the venue funding cost could not be attributed to these events: "
             "the comparison is on the FRICTION-ONLY net R "
-            "(metric=friction_net_r), which is not a net number")
+            "(metric=friction_net_r), which is not a net number"]
+    else:
+        reasons = []
     if not paired:
         return _refusal(
             "neither side has an evaluable outcome in this window; there is "
             "nothing to compare (no number is reported for an empty sample)",
-            same_cost_model=True, same_events=True, cost_model=cm_ch,
+            verified, cost_model=cm_ch,
             champion_id=champion.id, candidate_id=candidate.id,
             window=[window[0], window[1]])
 
@@ -565,7 +732,7 @@ def compare(champion: ConfigVersion, candidate: ConfigVersion, events, window,
 
     if n_days >= MIN_CLUSTERS:
         mean, ci_lo, ci_hi, _D = S.day_cluster_mean(diffs, days,
-                                                    B=BOOTSTRAP_B, seed=seed)
+                                                     B=BOOTSTRAP_B, seed=seed)
         t = S.day_cluster_t(diffs, days)
     else:
         mean = sum(diffs) / n
@@ -602,17 +769,21 @@ def compare(champion: ConfigVersion, candidate: ConfigVersion, events, window,
                    f"the window {list(window)} (rule-selected, tradeable, "
                    f"and evaluable under the '{metric}' metric)")
 
-    return {
+    out = {
         "n_events": n,
         "n_champion": n,
         "n_candidate": n,
         "same_events": True,
-        "same_cost_model": True,
+        "same_applied_cost_model": True,
+        "same_config_hash": True,
+        "same_label_slot": verified["same_label_slot"],
         "cost_model": cm_ch,
         "champion": _side_block(champion, ch_vals, days, coins, causes_ch,
-                                len(pairs_ch), n_eval_ch, metric, seed),
+                                len(pairs_ch), n_eval_ch, metric, seed,
+                                ch_geom, slots_ch),
         "candidate": _side_block(candidate, ca_vals, days, coins, causes_ca,
-                                 len(pairs_ca), n_eval_ca, metric, seed),
+                                 len(pairs_ca), n_eval_ca, metric, seed,
+                                 ca_geom, slots_ca),
         "difference": mean,
         "ci_lo": ci_lo,
         "ci_hi": ci_hi,
@@ -632,3 +803,5 @@ def compare(champion: ConfigVersion, candidate: ConfigVersion, events, window,
         "candidate_id": candidate.id,
         "version": CHAMPION_VERSION,
     }
+    out["same_cost_model"] = out["same_applied_cost_model"]
+    return out
