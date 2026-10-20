@@ -165,7 +165,15 @@ statements below are unchanged, and the deployment evidence lives in
 - First sweep after the deploy: **1 959 s (32.7 min)** vs 3 951 s before,
   now with per-stage attribution (`scan=449.7(partial) collect=438.4
   funding=9.0 settlements=0.0(not_due) prices=0.0(not_due)
-  resolve=0.0(skipped) measure=450.1(partial) quant=611.8`).
+  resolve=0.0(skipped) measure=450.1(partial) quant=611.8`). The **second**
+  sweep — the steady state, with a warm bar index and warm quant state —
+  took **660.8 s (11 min)**: `scan=321.6(partial) collect=64.3(partial)
+  funding=19.0 settlements=0.0(not_due) prices=0.0(not_due) resolve=1471.9
+  measure=178.7(partial) quant=77.2`. The collect phase drops from 438 s to
+  64 s (the bar index removes the dedupe read) and the quant step from
+  612 s to 77 s (the bounded rebuild and the file-signature fast path);
+  the scan and measure differences are venue-side variance and are not
+  attributed to the code.
 - Quant output is still **SHADOW-only** (`mode:"shadow"`,
   `actionable_events: 0`, `promotions: []`), the **holdout was not spent**
   (`data/quant_research/` absent), the decision log is still 0 bytes, and

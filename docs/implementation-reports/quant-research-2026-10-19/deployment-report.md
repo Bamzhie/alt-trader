@@ -187,16 +187,52 @@ stages: scan=449.7(partial) collect=438.4 funding=9.0 settlements=0.0(not_due)
 | quant | 611.759 s | ok | 580 coins, 0 emitted / 0 resolved (the watcher was auto-paused) |
 | **total** | **1 959.06 s** | | vs **3 951 s** for the pre-deploy first sweep → **~50 % faster** |
 
-**Honest comparison.** The pre-deploy numbers had to be derived from
-journal timestamps (no per-stage instrumentation existed). The **collect
-phase did not measurably shrink**: ~393 s before, 438.4 s after. The dedupe
-I/O the bar index removes (585 ms/coin ≈ 339 s/cycle measured in isolation)
-is not visible end-to-end in this single measurement — the venue fetch
-(556 coins at the shared 20 req/s limiter) dominates the phase. The
-**quant step** did shrink: 611.8 s after vs ~1 012 s before (the bounded
-rebuild). The overall win comes from the readiness split (the API is usable
-after ~1 s instead of 65.8 min) and from the smaller quant rebuild — not
-from the collect phase.
+### 5.4.1 The second sweep — the steady-state numbers (warm index)
+
+The **first** sweep is the cold path: it builds the per-coin bar index and
+rebuilds every coin's quant state from scratch. The **second** sweep is the
+steady state (warm index, warm quant state, persisted cadence):
+
+| Stage | 1st sweep (cold) | 2nd sweep (warm) |
+|---|---:|---:|
+| scan | 449.7 | 321.6 |
+| **collect** | 438.4 | **64.3** |
+| funding | 9.0 | 19.0 |
+| settlements | 0.0 (not_due) | 0.0 (not_due) |
+| prices | 0.0 (not_due) | 0.0 (not_due) |
+| resolve | 0.0 (skipped) | 1 471.9 (ok, background) |
+| measure | 450.1 | 178.7 |
+| **quant** | 611.8 | **77.2** |
+| **whole sweep** | **1 959.1 s** | **660.8 s** |
+
+`last_sweep_duration_s = 660.76`; the journal prints
+`stages: scan=321.6(partial) collect=64.3(partial) funding=19.0
+settlements=0.0(not_due) prices=0.0(not_due) resolve=1471.9 measure=178.7
+quant=77.2`.
+
+**What is attributable to the code, and what is not.**
+- **collect 438.4 s → 64.3 s** is the bar index: the first sweep had to
+  read every archive once to build the index; from the second sweep the
+  dedupe read is gone. This confirms the isolated measurement (585 ms/coin
+  ≈ 339 s/cycle) end-to-end. *Correction to the first draft of this
+  report*: the claim "the collect phase did not measurably shrink" was
+  true only of the **first** (cold) sweep; with a warm index the phase
+  drops by ~374 s.
+- **quant 611.8 s → 77.2 s** is the bounded rebuild plus the file-signature
+  fast path (the pre-deploy figure was ~1 012 s).
+- **scan 449.7 → 321.6 s and measure 450.1 → 178.7 s** are **venue-side
+  variance** (per-coin latency and retries); no code change targets them,
+  so no attribution is claimed.
+- The daily `settlements`/`prices` stages were **not due** in both sweeps
+  (the persisted throttle from the previous day) — the first observation of
+  the resumed cadence in production.
+- The pre-deploy per-stage numbers had to be derived from journal
+  timestamps (no per-stage instrumentation existed). The pre-deploy
+  steady-state iteration was ~2 300 s when settlements/prices were not due
+  (scan 449 + collect 393 + funding 10 + measure 450 + quant ~1 012), and
+  ~3 500 s when they were — so the steady-state improvement is roughly
+  **3.5×**, and the **first-sweep** comparison (1 959 s vs 3 951 s) is
+  **~2×**.
 
 ## 6. Data integrity and the safety boundaries
 
@@ -229,9 +265,11 @@ from the collect phase.
    the next restart.
 4. **`first_sweep` is process-local** — it resets to `pending` on every
    restart and must not be read as "the system ever completed a sweep".
-5. **The collect phase did not shrink end-to-end** (§5.4): the venue fetch
-   dominates it, so the bar index's isolated 339 s/cycle saving is not
-   visible in the phase timing.
+5. **The collect phase only shrinks from the second sweep onward** (§5.4.1):
+   the first sweep builds the bar index, so it still pays the dedupe read
+   once (438 s); with a warm index the phase is 64 s. A restart always
+   starts from a cold index, so the first sweep after any restart pays
+   that cost again.
 6. **Deployment is not evidence of an edge.** The WS5 evaluation still
    found no evidence of a positive edge; the gross-outcome SPA remains
    exploratory; H1 remains a candidate for preregistration whose ~15 bp

@@ -72,7 +72,13 @@ VERIFIED by direct archive read (2026-10-18):
   **1 959 s (32.7 min)** afterwards — with the new per-stage attribution
   (`scan=449.7(partial) collect=438.4 funding=9.0 settlements=0.0(not_due)
   prices=0.0(not_due) resolve=0.0(skipped) measure=450.1(partial)
-  quant=611.8`). The pre-deploy first sweep took 3 951 s.
+  quant=611.8`). The pre-deploy first sweep took 3 951 s. The **second**
+  sweep — the steady state, with a warm bar index and warm quant state —
+  took **660.8 s (11 min)**: `collect=64.3` (the index removes the dedupe
+  read) and `quant=77.2` (the bounded rebuild and the file-signature fast
+  path); `settlements`/`prices` were **not_due** (the persisted daily
+  throttle), which is the first production observation of the resumed
+  cadence.
 - **Boundaries intact after the deploy:** `mode:"shadow"`,
   `actionable_events: 0`, `promotions: []`, `docs/decisions/log.jsonl`
   still 0 bytes, no `docs/decisions/chain.jsonl`, **no
