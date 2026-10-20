@@ -799,10 +799,47 @@ check("a frame_bars that contradicts the pivots is refused",
       frame_mismatch_raised)
 bad_cfg_raised = False
 try:
-    FS.from_pivots("BTC", "pivot_high", piv_a, left=0, right=2, frame_bars=1)
+    # left=0 is VALID (the detector accepts it); a negative setting is not.
+    FS.from_pivots("BTC", "pivot_high", piv_a, left=-1, right=2, frame_bars=1)
 except ValueError:
     bad_cfg_raised = True
 check("an invalid configuration is refused", bad_cfg_raised)
+
+# --- the identity helper must accept what the DETECTOR accepts ---------
+# structure.confirmed_pivots() allows left=0 and right=0 (it only rejects
+# negatives and frame_bars < 1), so the feature-identity helper must not
+# be stricter than the detector whose output it identifies.
+check("pivot_config_id accepts the detector's zero settings",
+      FS.pivot_config_id(0, 0, 1) == "L0R0F1"
+      and FS.pivot_config_id(0, 2, 12) == "L0R2F12"
+      and FS.pivot_config_id(2, 0, 1) == "L2R0F1")
+bad_zero_raised = False
+try:
+    FS.pivot_config_id(-1, 2, 1)
+except ValueError:
+    bad_zero_raised = True
+check("pivot_config_id still rejects a negative setting", bad_zero_raised)
+bad_frame_raised = False
+try:
+    FS.pivot_config_id(0, 0, 0)
+except ValueError:
+    bad_frame_raised = True
+check("pivot_config_id still rejects frame_bars < 1", bad_frame_raised)
+
+piv_zero = ST.confirmed_pivots(bars_from_hl([5.0] * 4 + [9.0] + [5.0] * 4,
+                                              [1.0] * 9), left=0, right=0)
+rec_zero = FS.from_pivots("BTC", "pivot_zero", piv_zero, left=0, right=0,
+                          frame_bars=1)
+check("a detector-produced zero-setting pivot round-trips through the store",
+      bool(piv_zero) and bool(rec_zero)
+      and rec_zero[0].version == FS.pivot_feature_version(0, 0, 1)
+      and rec_zero[0].meta.get("pivot_config_id") == "L0R0F1")
+check("the zero-setting identity and hash differ from the default one",
+      rec_zero and rec_a and rec_zero[0].version != rec_a[0].version
+      and rec_zero[0].inputs_hash != rec_a[0].inputs_hash)
+check("the zero-setting pivot keeps its own confirmation time",
+      rec_zero and all(r.available_ts == p.confirmed_ts
+                       for r, p in zip(rec_zero, piv_zero)))
 
 # identical inputs stay deterministic and idempotent
 again = FS.from_pivots("BTC", "pivot_high", piv_a, left=2, right=2, frame_bars=1)

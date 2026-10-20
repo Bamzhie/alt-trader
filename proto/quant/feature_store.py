@@ -126,12 +126,19 @@ def pivot_config_id(left: int, right: int, frame_bars: int) -> str:
     configuration is therefore part of the feature's identity, not an
     incidental parameter: two configurations can disagree about both the
     set of pivots and the instant each becomes knowable.
+
+    The accepted settings are exactly the ones
+    :func:`proto.quant.structure.confirmed_pivots` accepts: ``left`` and
+    ``right`` are NON-NEGATIVE integers (the detector allows ``left=0`` and
+    ``right=0``) and ``frame_bars`` is a positive integer.  Being stricter
+    than the detector would make a legitimate pivot unstorable.
     """
-    for label, value in (("left", left), ("right", right),
-                         ("frame_bars", frame_bars)):
-        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+    for label, value, minimum in (("left", left, 0), ("right", right, 0),
+                                  ("frame_bars", frame_bars, 1)):
+        if not isinstance(value, int) or isinstance(value, bool) \
+                or value < minimum:
             raise ValueError(
-                f"{label} must be a positive integer, got {value!r}")
+                f"{label} must be an integer >= {minimum}, got {value!r}")
     return f"L{left}R{right}F{frame_bars}"
 
 
