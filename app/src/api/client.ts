@@ -20,6 +20,7 @@ import type {
   Setup,
   Snapshot,
   TradePlan,
+  QuantSignals,
 } from "./types";
 
 /** Thrown for every failure path; `code` is one of ErrorCode. */
@@ -49,6 +50,11 @@ export interface ApiClient {
   quantStatus(): Promise<QuantStatus>;
   /** The read-only research surface (sample, intervals, provenance). */
   research(): Promise<QuantResearch>;
+  /**
+   * Rule-generated candidates for MANUAL REVIEW. The app never executes
+   * them; a promotion or validation result never authorises an order.
+   */
+  signals(): Promise<QuantSignals>;
   setups(query: SetupsQuery): Promise<SetupsPage>;
   setup(id: string): Promise<Setup>;
   bars(coin: string, tf: BarTimeframe): Promise<Bars>;
@@ -205,6 +211,10 @@ export function createClient(opts: CreateClientOptions): ApiClient {
         throw new ApiError("NETWORK", "response was not a research surface");
       }
       return data;
+    },
+
+    async signals(): Promise<QuantSignals> {
+      return (await get("/quant-signals")) as QuantSignals;
     },
 
     async setups(query: SetupsQuery): Promise<SetupsPage> {

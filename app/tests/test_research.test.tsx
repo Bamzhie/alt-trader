@@ -87,6 +87,25 @@ function stubQuantFetch(handler: (url: string) => Response): string[] {
       if (url.endsWith("/events")) {
         return sseStreamResponse(init?.signal ?? null).response;
       }
+      if (url.endsWith("/quant-signals")) {
+        // The manual-review candidate read: an empty candidate list, so the
+        // block renders insufficient evidence rather than a candidate.
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              version: "signals-v1",
+              generated_ts: 1_700_000_000,
+              count: 0,
+              counts: { long: 0, short: 0 },
+              signals: [],
+              note: "no candidates for review",
+            },
+            error: null,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
       return handler(url);
     },
   );

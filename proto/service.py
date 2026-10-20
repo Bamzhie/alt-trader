@@ -874,6 +874,10 @@ def _make_handler(token, ready=None, store_path=None, data_dir=None,
                 self._handle_quant_research(gated, cfg_quant)
                 return
 
+            if self.command == "GET" and path == "/quant-signals":
+                self._handle_quant_signals(gated, cfg_quant)
+                return
+
             if self.command == "GET" and path == "/metrics":
                 self._handle_metrics(gated, qs, cfg_data)
                 return
@@ -1630,6 +1634,52 @@ def _make_handler(token, ready=None, store_path=None, data_dir=None,
                 return
             finally:
                 conn.close()
+            self._send_json(200, envelope(True, data), origin=origin)
+
+        def _handle_quant_signals(self, origin, quant_db):
+            """Read-only manual-review candidates over the quant shadow store.
+
+            200 with the `signals-v1` object whenever the store is
+            readable; 503 UNAVAILABLE only when it is not.
+
+            THIS ROUTE PRODUCES CANDIDATES FOR MANUAL REVIEW.  It never
+            executes anything, never places or routes an order, never
+            writes, and never changes a promotion decision: a candidate
+            carries the evidence status of its rule (exploratory /
+            insufficient / validated) as DATA, and a promotion or
+            validation result never authorises execution.  The store's own
+            SHADOW mode is reported unchanged.
+            """
+            try:
+                from .quant import signals as _signals
+                from .quant import qstore as _qstore
+            except Exception:
+                self._deny(503, "UNAVAILABLE",
+                           "signal surface unavailable", origin=origin)
+                return
+            try:
+                store = _qstore.QuantStore(quant_db)
+            except Exception as exc:
+                LOG.warning("signal surface unavailable: %s: %s",
+                            type(exc).__name__, exc)
+                self._deny(503, "UNAVAILABLE",
+                           "quant database unavailable", origin=origin)
+                return
+            try:
+                evidence = _signals.load_evidence()
+                data = _signals.signals_report(store, evidence=evidence)
+            except Exception as exc:
+                # Never answer with a figure the surface could not read.
+                LOG.warning("signal surface unavailable: %s: %s",
+                            type(exc).__name__, exc)
+                self._deny(503, "UNAVAILABLE",
+                           "signal surface unavailable", origin=origin)
+                return
+            finally:
+                try:
+                    store.close()
+                except Exception:
+                    pass
             self._send_json(200, envelope(True, data), origin=origin)
 
         def _handle_metrics(self, origin, qs, data_dir):

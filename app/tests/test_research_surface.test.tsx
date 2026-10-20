@@ -165,6 +165,21 @@ function stubResearchFetch(opts: StubOptions = {}): string[] {
       if (url.endsWith("/events")) {
         return sseStreamResponse(init?.signal ?? null).response;
       }
+      if (url.endsWith("/quant-signals")) {
+        // The manual-review candidate read: an empty candidate list.
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            version: "signals-v1",
+            generated_ts: 1_700_000_000,
+            count: 0,
+            counts: { long: 0, short: 0 },
+            signals: [],
+            note: "no candidates for review",
+          },
+          error: null,
+        });
+      }
       if (url.endsWith("/quant-research")) {
         if (opts.researchStatus !== undefined) {
           return jsonResponse(opts.researchStatus, {
@@ -341,7 +356,7 @@ describe("Research surface", () => {
     stubResearchFetch({ research: surface });
     render(<Research apiBaseUrl={BASE_URL} serviceToken="dev-token" />);
 
-    expect(await screen.findByText(/insufficient evidence/)).toBeInTheDocument();
+    expect((await screen.findAllByText(/insufficient evidence/)).length).toBeGreaterThan(0);
     expect(
       screen.getByText("insufficient evidence — no shadow events recorded yet"),
     ).toBeInTheDocument();
@@ -442,7 +457,7 @@ describe("Research surface", () => {
     stubResearchFetch({ researchStatus: 503 });
     render(<Research apiBaseUrl={BASE_URL} serviceToken="dev-token" />);
 
-    expect(await screen.findByText(/insufficient evidence/)).toBeInTheDocument();
+    expect((await screen.findAllByText(/insufficient evidence/)).length).toBeGreaterThan(0);
     expect(researchText().trim().length).toBeGreaterThan(0);
   });
 });

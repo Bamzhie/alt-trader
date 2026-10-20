@@ -400,6 +400,85 @@ export interface QuantResearchSample {
   rules: number;
 }
 
+/** The evidence status of the rule behind a candidate. */
+export interface QuantSignalEvidence {
+  status: "exploratory" | "insufficient" | "validated";
+  reason: string | null;
+  n_events: number | null;
+  n_coins: number | null;
+  n_days: number | null;
+  ci_lo_day: number | null;
+  ci_hi_day: number | null;
+  family_p: number | null;
+  funding_coverage: number | null;
+  source: string | null;
+}
+
+/** One rule-generated candidate, for MANUAL REVIEW. */
+export interface QuantSignal {
+  id: number | null;
+  coin: string;
+  direction: "long" | "short" | "flat";
+  side: number;
+  rule_id: string;
+  rule_label: string;
+  rule_version: string | null;
+  role: string | null;
+  signal_ts: number;
+  signal_ts_utc: string;
+  data_freshness: {
+    signal_age_s: number;
+    signal_age_min: number;
+    fresh: boolean;
+    basis: string;
+  };
+  entry: {
+    price: number | null;
+    basis: string;
+    reference_price: number | null;
+  };
+  risk: {
+    stop: number | null;
+    target: number | null;
+    stop_frac: number | null;
+    horizon_bars: number | null;
+    assumptions: Record<string, string | number | null>;
+  };
+  outcome: {
+    state: "open" | "resolved";
+    kind: string | null;
+    exit_ts: number | null;
+    gross_log: number | null;
+    net_r: number | null;
+  };
+  costs: {
+    friction_frac: number | null;
+    fee_per_side: number | null;
+    basis: string;
+    funding_coverage: number | null;
+  };
+  evidence: QuantSignalEvidence;
+  execution: {
+    mode: string | null;
+    actionable: boolean;
+    note: string;
+  };
+}
+
+/**
+ * GET /quant-signals body (proto/service.py _handle_quant_signals).
+ * Rule-generated candidates for MANUAL REVIEW. The app never executes
+ * them; a promotion or validation result never authorises an order.
+ */
+export interface QuantSignals {
+  version: string;
+  generated_ts: number;
+  count: number;
+  counts: { long: number; short: number };
+  signals: QuantSignal[];
+  note: string;
+}
+
 /** One measured feature/measure version behind the numbers. */
 export interface QuantResearchFeatureVersion {
   name: string;

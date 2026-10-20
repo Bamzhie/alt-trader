@@ -34,6 +34,7 @@ import type {
   QuantResearch,
   QuantResearchRule,
   QuantResearchSample,
+  QuantSignals,
   QuantStatus,
 } from "../api/types";
 
@@ -313,6 +314,127 @@ function ProvenanceRows({ research }: { research: QuantResearch }) {
   );
 }
 
+// ManualReview — the rule-generated candidates a person may consider by hand.
+//
+// House rules:
+//   * A candidate is a CANDIDATE: the view says "manual review" and that
+//     the app does not execute it. Nothing here is a recommendation, a
+//     prediction, or an order.
+//   * The three concepts stay separate: the candidate (this block), the
+//     EVIDENCE status of its rule (exploratory / insufficient / validated,
+//     with its denominators and its reason), and execution (never).
+//   * Uncertainty is interval endpoints only: `measured range (lo–hi)` with
+//     the static caption. A mean is never rendered.
+//   * A missing value renders the literal "unavailable" — never a zero.
+//   * No frontend math: every number comes verbatim from the API.
+//   * Colors come from theme tokens only — never raw hexes.
+function ManualReview({ signals }: { signals: QuantSignals | null }) {
+  // A payload that is not the signals-v1 shape renders as no candidates
+  // rather than crashing the page: the view must never be blank.
+  const list = Array.isArray(signals?.signals) ? signals.signals : [];
+  if (signals === null) {
+    return (
+      <div className="rounded-xl border border-border bg-card px-4 py-3">
+        <h2 className="mb-2 text-sm font-semibold text-fg">
+          Manual review candidates
+        </h2>
+        <p
+          role="status"
+          className="rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted"
+        >
+          insufficient evidence — no candidate read
+        </p>
+      </div>
+    );
+  }
+  if (list.length === 0) {
+    return (
+      <div className="rounded-xl border border-border bg-card px-4 py-3">
+        <h2 className="mb-2 text-sm font-semibold text-fg">
+          Manual review candidates
+        </h2>
+        <p
+          role="status"
+          className="rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted"
+        >
+          insufficient evidence — {signals.note}
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-xl border border-border bg-card px-4 py-3">
+      <h2 className="mb-2 text-sm font-semibold text-fg">
+        Manual review candidates
+      </h2>
+      <p className="mb-2 text-xs text-muted">
+        {list.length} candidate{list.length === 1 ? "" : "s"} — manual review
+        only; the app does not execute these
+      </p>
+      <ul className="space-y-3 text-sm">
+        {list.map((signal) => (
+          <li key={String(signal.id)}>
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="font-semibold text-fg">
+                {signal.coin} ·{" "}
+                {signal.direction === "long"
+                  ? "LONG"
+                  : signal.direction === "short"
+                    ? "SHORT"
+                    : "FLAT"}
+              </span>
+              <span className="text-xs text-muted">{signal.role}</span>
+            </div>
+            <p className="mt-1 text-muted">
+              {signal.rule_label} · {signal.rule_version}
+            </p>
+            <p className="mt-1 text-muted">
+              {signal.signal_ts_utc} · data age{" "}
+              {signal.data_freshness.signal_age_min} min
+            </p>
+            <p className="mt-1 text-muted">
+              reference price {orUnavailable(signal.entry.reference_price)} ·
+              entry: {signal.entry.basis}
+            </p>
+            <p className="mt-1 text-muted">
+              stop {orUnavailable(signal.risk.stop)} · target{" "}
+              {orUnavailable(signal.risk.target)} · horizon{" "}
+              {orUnavailable(signal.risk.horizon_bars)} bars
+            </p>
+            <p className="mt-1 text-muted">
+              {String(signal.risk.assumptions.stop)} ·{" "}
+              {String(signal.risk.assumptions.target)} ·{" "}
+              {String(signal.risk.assumptions.tie_break)}
+            </p>
+            <p className="mt-1 text-muted">{signal.costs.basis}</p>
+            <p className="mt-1 text-fg">
+              {signal.evidence.status} ·{" "}
+              {signal.evidence.ci_lo_day !== null &&
+              signal.evidence.ci_hi_day !== null
+                ? formatRange(signal.evidence.ci_lo_day, signal.evidence.ci_hi_day)
+                : "measured range unavailable"}
+            </p>
+            <p className="mt-1 text-xs text-muted">
+              range of measured outcomes, not a prediction
+            </p>
+            <p className="mt-1 text-xs text-muted">
+              evidence: {signal.evidence.n_events ?? "unavailable"} events ·{" "}
+              {signal.evidence.n_coins ?? "unavailable"} coins ·{" "}
+              {signal.evidence.n_days ?? "unavailable"} days
+            </p>
+            {signal.evidence.reason ? (
+              <p className="mt-1 text-xs text-muted">
+                {signal.evidence.reason}
+              </p>
+            ) : null}
+            <p className="mt-1 text-xs text-muted">{signal.execution.note}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export interface ResearchProps {
   apiBaseUrl?: string;
   serviceToken?: string;
@@ -330,6 +452,8 @@ export function Research({
   const [statusError, setStatusError] = useState<string | null>(null);
   const [research, setResearch] = useState<QuantResearch | null>(null);
   const [researchError, setResearchError] = useState<string | null>(null);
+  const [signals, setSignals] = useState<QuantSignals | null>(null);
+  const [signalsError, setSignalsError] = useState<string | null>(null);
 
   const load = useCallback((): void => {
     client
@@ -352,6 +476,17 @@ export function Research({
       .catch((err: unknown) => {
         setResearchError(
           err instanceof Error ? err.message : "research surface read failed",
+        );
+      });
+    client
+      .signals()
+      .then((data) => {
+        setSignals(data);
+        setSignalsError(null);
+      })
+      .catch((err: unknown) => {
+        setSignalsError(
+          err instanceof Error ? err.message : "candidate read failed",
         );
       });
   }, [client]);
@@ -460,6 +595,17 @@ export function Research({
               counts the ones that finished
             </p>
           </div>
+
+          {signalsError !== null ? (
+            <p
+              role="status"
+              className="rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted"
+            >
+              insufficient evidence — {signalsError}
+            </p>
+          ) : (
+            <ManualReview signals={signals} />
+          )}
 
           {status.suppression_top.length > 0 ? (
             <div className="rounded-xl border border-border bg-card px-4 py-3">
