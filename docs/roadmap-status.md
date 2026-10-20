@@ -4,15 +4,19 @@ Product goal: quantitative research and analysis for MEXC altcoin perpetual
 futures. Rules support quant analysis; heuristic scores are not evidence of
 edge. Read-only; no order execution. BTC is labeled market context only.
 
-Last updated: 2026-10-19 (dev-only investigation of the all-negative WS5
-result: friction, not a signal defect; three independent audits; four
-pipeline and five funding-path fixes (including a transition-aware
-settlement schedule) with corrected funding-adjusted numbers; the
-gross-outcome SPA is exploratory; per-coin settlement-backfill manifest
-reconciled against the venue; the WS5 evaluation report records the
-selected strategy's identity).
-The live service (pid 715, 2026-10-16 15:41) predates all 2026-10-17
-commits and has not been restarted — deploy is pending owner approval.
+Last updated: 2026-10-20 (six research/startup workstreams implemented and
+reviewed: measurement & structure engine, outcomes & inference, preregistered
+research workflow, Research UI expansion, champion/candidate tracking, and the
+startup/first-sweep optimization — report in
+`docs/implementation-reports/quant-research-2026-10-19/`).
+Earlier (2026-10-19): dev-only investigation of the all-negative WS5 result —
+friction, not a signal defect; three independent audits; four pipeline and
+five funding-path fixes (including a transition-aware settlement schedule)
+with corrected funding-adjusted numbers; the gross-outcome SPA is
+exploratory; per-coin settlement-backfill manifest reconciled against the
+venue; the WS5 evaluation report records the selected strategy's identity.
+The live service (pid 572048, 2026-10-19 15:46) still runs the pre-2026-10-20
+code and has not been restarted — deploy is pending owner approval.
 Verified against code/data/live probes/tests, not inherited summaries.
 
 ## Research data readiness snapshot (2026-10-18, corrected)
@@ -385,6 +389,35 @@ VERIFIED by direct archive read (2026-10-18):
   `docs/quant-analytics-system-proposal.md` §3–§5 beyond the registry and
   the shadow path (evaluation harness, Hurst/MF-DFA, competing outcomes,
   calibrated probs, clustered uncertainty) is unbuilt.
+  - **Delivered (2026-10-20, WS-A/B/C/D/E):** the research capabilities
+    that section listed are now built and reviewed (report:
+    `docs/implementation-reports/quant-research-2026-10-19/final-report.md`).
+    **WS-A** `proto/quant/{structure,estimators,mfdfa,measures,feature_store}.py` —
+    multi-timeframe structure with **confirmed pivots** (frame-aware
+    `confirmed_ts`), rolling R/S + generalized Hurst and MF-DFA with
+    documented assumptions, an uncertainty band and an `inputs_hash`, and a
+    **point-in-time** feature store whose as-of join returns `None` + a
+    reason rather than an imputed value. **WS-B**
+    `proto/quant/{competing_outcomes,inference,family_test}.py` — competing
+    outcomes (stop / target / time exit / thesis invalidation / true
+    censoring) with friction, funding and net **separately attributable**,
+    chronological probability + calibration, day- **and** coin-cluster
+    uncertainty, three baselines and family-level multiple testing.
+    **WS-C** `proto/quant/{prereg,research_report}.py` — the preregistration
+    record (feature definitions, point-in-time membership, event rules,
+    costs, splits, embargo, statistics, promotion criteria, config/data/code
+    hashes, an append-only variant registry that records failures) and the
+    sliced report; the completed 288-config evaluation is **registered**
+    (truthfully quoted, never re-run) as `HYD-0002`. **WS-D** the read-only
+    `GET /quant-research` route and the expanded Research view. **WS-E** the
+    champion/candidate registry, the matched comparison and the hash-chained
+    decision log. All six workstreams were implemented in isolated worktrees
+    by independent implementers, each reviewed by a fresh reviewer, and
+    integrated in dependency order; the full offline suite is **ALL SUITES
+    PASS (87 files)** and the frontend gates (200 tests, typecheck, lint,
+    build) are clean. Still **unbuilt**: anything that turns a measurement
+    into a trade — the calibration record, the live-data evaluation of the
+    new features, and the 1m/venue design stage.
   - Delivered (2026-10-17, WS5 evaluation harness; corrected same day):
   `proto/quant/cost_attribution.py` — funding cost attribution from the
   WS4 archives at the venue's OWN settle boundaries. Venue-reported
@@ -510,11 +543,18 @@ VERIFIED by direct archive read (2026-10-18):
   insufficient-evidence state, with no setup-table mixing and banned-word
   hygiene. It renders quant shadow counts only; it never labels shadow
   output as actionable.
-- Remaining (still NOT STARTED): sample-n / CI / calibration / coverage /
-  validation-status display beyond the Research view's counts +
-  suppression + measured range; no research-vs-live distinction beyond
-  the SHADOW banner; no representation of the new mark/index or
-  settlement archives. Gated on WS5 producing well-defined result data.
+- Delivered (2026-10-20, WS-D): the Research view now shows **sample counts
+  with denominators**, **interval endpoints only** (never a point reading),
+  calibration / coverage / validation status, feature provenance
+  (`config_hash`, `code_rev`, rule versions) and **insufficient-evidence
+  states with reasons**, fed by a new read-only `GET /quant-research` route
+  (`proto/quant/research_surface.py`) that reuses the existing
+  `report.py` statistics. A gate-passed rule still renders as research, never
+  as actionable; calibration is honestly `unavailable` (the shadow store
+  records outcomes, not predicted outcomes). Frontend gates: 200 tests /
+  14 files, typecheck, lint (0 warnings) and build all clean.
+- Remaining: representation of the new mark/index or settlement archives in
+  the view; anything beyond the Research view itself.
 
 ### 7. Change control (candidate vs validated) — PARTIAL; PROMOTION GATE DELIVERED (evaluation only)
 - Deps: WS5 promotion gates (outcome evidence still unbuilt — the gate
@@ -542,6 +582,22 @@ VERIFIED by direct archive read (2026-10-18):
   `tests/test_hypotheses.py`: registry ids fed into `validate_log`
   accept `HYD-0001` and reject `HYD-9999` with `unknown-hypothesis`.
   Verification: `tests/test_decisions.py` → ALL PASS.
+- Delivered (2026-10-20, WS-E): `proto/quant/champion.py` — a **versioned**
+  champion/candidate registry (insert-only; a status change appends a new
+  version) and a **matched** comparison that evaluates both configurations
+  on the **same events** with a **shared** cost model, reporting the paired
+  day- and coin-cluster intervals of the difference. `same_events` and the
+  cost-model identity are **verified**, not assumed; a mismatch is refused
+  with a reason. `proto/quant/decision_log.py` — an immutable,
+  **hash-chained** decision log (`docs/decisions/chain.jsonl`, a NEW
+  artifact beside the human-owned one) whose `append` re-hashes every cited
+  evidence file at write time and refuses a mismatching or missing one;
+  `validate_chain` detects an edited entry, a broken link, a duplicate id, a
+  non-monotonic timestamp and an unknown kind. **Nothing was promoted:**
+  `docs/decisions/log.jsonl` is still 0 bytes, `chain.jsonl` does not exist
+  in the repository, no registry file exists in the repository, and
+  `set_champion` needs an explicit `allow_promote` opt-in. 138 checks in
+  `tests/test_ws_e_champion.py`.
 
 ## Outstanding (NOT in this plan — kept visible)
 
