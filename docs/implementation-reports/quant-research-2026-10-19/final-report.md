@@ -241,9 +241,70 @@ them:
 
 ## 6. Whole-branch review
 
-See §6 of the ledger at `.superpowers/sdd/2026-10-19-quant-research-and-startup-design/progress.md`
-(the workspace is scratch; the durable record is this report and the
-per-workstream reports beside it).
+A fresh, adversarial reviewer read the **whole** integrated diff (base
+`95d0a56` → HEAD, ≈22 k lines) and re-ran both suites itself.
+
+**Verdict: no ship blockers; the branch is safe to ship as a research-only,
+SHADOW-only change.** All nine binding constraints were verified with hard
+evidence, not asserted:
+
+1. **Holdout sealed** — `data/quant_research/` does not exist; the only
+   writer (`proto/quant/research.py`) is byte-identical to the base and
+   still needs `--holdout` plus the one-shot lock; the research report
+   refuses any window reaching into the holdout (`holdout-sealed:`); the
+   preserved `evaluation.json` is untouched with `holdout: null`.
+2. **SHADOW-only** — the watcher still pins `promo = None`; the selector's
+   ACTIONABLE path is unreachable; the service still reports
+   `"mode": "shadow"`; the research surface filters `mode='SHADOW'`.
+3. **No archive modified or backfilled**, and no `data/` write at import
+   (the reviewer verified this by importing every new module). The three new
+   runtime sidecars (`data/.timing.json`, `data/.cadence.json`,
+   `data/bars/.bar_index.json`) are created only by the deployed daemon.
+4. **Auth, response shapes, archive formats, funding attribution and
+   per-coin failure isolation preserved** — every protected module is
+   byte-identical to the base; `/readyz`'s shape is unchanged (only its
+   meaning), `/quant-research` is additive and behind the same gate.
+5. **Decision log empty** — `docs/decisions/log.jsonl` is 0 bytes;
+   `chain.jsonl` does not exist; no registry file exists.
+6. **Stdlib only**; `app/package.json` untouched, so no new frontend
+   dependency.
+7. **Point-in-time** — the frame-aware `confirmed_ts`, the store's
+   `available_ts` refusal, and the "clean only the slice you read" rule all
+   hold.
+8. **Honesty** — the registered 288-config record reproduces the artifact
+   byte-for-byte and states *failed / no positive edge*; the surface
+   publishes interval endpoints only and returns `status: "insufficient"`
+   with a reason on an empty store.
+9. **The live service was not restarted or altered** (pid 572048, up since
+   2026-10-19 15:46:39) and the operator's drop-in is untouched.
+
+The reviewer also **independently re-ran the bounded-rebuild equivalence**
+on 80 production archives: **0 mismatches**, bit-identical replayed bars.
+
+**Findings and resolutions.** No Critical findings. Two Important items were
+honesty defects and are fixed (§8): a degenerate zero-width interval could
+be presented as a cluster interval, and `uncertainty()` raised an
+unhandled `TypeError` on a `None` day label. A dozen Minor items were
+raised (an unlocked read in `last_stages()`, a mid-flush index record lost,
+a resolve submitted during shutdown, a deprecation warning Python hides by
+default, and nine stale or non-reproducing statements in the reports) — all
+fixed in the same wave, with two adjacent fixes the fix agent made on the
+same defect class (the paired-difference interval in `champion.compare()`
+and a `None` coin label in `uncertainty()`).
+
+The reviewer verified the `__main__.py` merge resolution: both `prereg
+validate|show` and `champions list|compare` work, `--window {dev,val}`
+cannot reach the holdout, and no conflict markers remain anywhere.
+
+Two items were explicitly **deferred with documentation**: an int-keyed
+dict accepted as `q_range` (documented, not changed), and a set of
+available-but-unwired public helpers (`CollectCounts.attempted`,
+`TimingLog.summary()`, `feature_store.latest()`,
+`estimators.level_from_returns()`) — listed in §5.
+
+The durable review record is this report plus the six workstream reports
+filed beside it (`ws-a-report.md` … `ws-f-report.md`); each carries its own
+findings-and-resolutions table.
 
 ---
 
