@@ -1,7 +1,8 @@
 # ALT RADAR — pivot fix, defensible quant analysis, and manual-review signals
 
 **Progress report** · folder: `docs/implementation-reports/quant-research-2026-10-20/`
-**Started:** 2026-10-20 · **Base commit:** `d5097cb` · **Status:** planning
+**Started:** 2026-10-20 · **Base commit:** `d5097cb` · **Status:** COMPLETE
+**Final report:** `final-report.md` (this file is the live status record)
 **Plan:** `docs/superpowers/plans/2026-10-20-pivot-fix-and-quant-analysis.md` (local, gitignored)
 
 > This folder is the live status record. Older reports are preserved; superseded
@@ -68,12 +69,13 @@
 | Analysis protocol | `python3 tests/test_quant_analysis.py` | ALL PASS |
 | Signal surface | `python3 tests/test_quant_signals.py` | ALL PASS |
 | Preregistration | `python3 tests/test_ws_c_prereg.py`, `tests/test_hypotheses.py` | ALL PASS |
-| Full backend suite | `python3 tests/run_all.py` | **ALL SUITES PASS (87 files)** |
-| Frontend | `npm run test` / `typecheck` / `lint` / `build` | 200 passed / clean / 0 warnings / built |
+| Full backend suite | `python3 tests/run_all.py` | **ALL SUITES PASS (89 files)** on the final tree |
+| Frontend | `npm run test` / `typecheck` / `lint` / `build` | 205 passed / 15 files / clean / 0 warnings / built |
 | Live routes | curl 127.0.0.1:18741 | all 200 with the token, 401 without |
 | Safety | decision log / holdout dir / promotions.json | 0 bytes / absent / absent |
-| Deployment | `systemctl --user restart altradar.service` | drain **2 s**; MainPID 759227; running revision `94bdf49`; all routes 200 (401 without a token) |
-| First sweep (new deployment) | `/scanner-health` | complete in **1 545.4 s**: scan 513.1 (ok) · collect **72.1** (ok) · funding 35.2 (ok) · settlements/prices 0.0 (not_due) · resolve 0.0 (skipped, background) · measure 416.8 (partial) · quant 508.1 (ok, 0 emitted) |
+| Deployment | `systemctl --user restart altradar.service` | requested 13:51:46Z, back **13:51:48Z** (drain **2 s**); the previous process was MainPID **732289**, started **2026-10-20 11:32:58 WAT**; the new process is MainPID **759227**, started **2026-10-20 14:51:48 WAT**, running the code of **`94bdf49`** (clean tree at that commit, committed 14:51:22; only documentation commits since). The route's `code_rev` is the repository HEAD read at request time, NOT the loaded revision. |
+| First sweep (new deployment) | `/scanner-health` | complete in **1 545.4 s**: scan 513.1 (ok) · collect **72.1** (ok) · funding 35.2 (ok) · settlements/prices 0.0 (not_due) · resolve 0.0 (skipped, background) · measure 416.8 (partial) · quant 508.1 (ok, **0 emitted** — the watcher was auto-paused on stale BTC bars) |
+| Candidates shown | `GET /quant-signals` | **24** at the deployment check — **stored rule candidates that already existed** in the shadow store, all with evidence status `insufficient`; the deployment's own first sweep emitted **none**. The count is live (the watcher has since resumed: 62 stored events, a 22:21 sweep emitted 38) and the rules behind them have **negative** dev means. |
 
 ## 4. Findings log
 
@@ -90,9 +92,22 @@
 | 2026-10-20 | **The validation window (14 days) is shorter than the preregistered minimum (20 distinct days), so no member can be evaluated on validation.** | Reported, NOT amended: the criteria were frozen and amending them after seeing the dev numbers would be criterion-shopping. Consequence: nothing can freeze and the holdout is not spent. |
 
 
+## 5b. Owner decisions (recorded here only — no decision entry was written)
+
+1. The one-shot **holdout remains unspent**: no candidate cleared dev and
+   validation, so there is nothing to confirm.
+2. **Adopt the separate hash-chained decision log**; the human-owned
+   `docs/decisions/log.jsonl` stays intact (0 bytes).
+3. **Defer 1-minute bars.**
+4. **Isolate provisional data from confirmed-bar validation** — a
+   provisional bar must never enter a measured window.
+5. **Keep fees labelled as assumptions** until the owner's fee tier is
+   verified.
+
 ## 6. Safety status
 
-- Live service: running the deployed code commit `c8647b5` (pid 732289);
-  untouched so far in this effort.
+- Live service: MainPID **759227**, started 2026-10-20 14:51:48 WAT, running
+  the code of `94bdf49` (the tree was clean at that commit when the process
+  started). It was restarted once, under owner authorization.
 - Holdout: sealed (`data/quant_research/` absent).
 - Decision log: 0 bytes; no chain file; no promotion record.

@@ -178,10 +178,27 @@ behind the existing bearer gate) + the Research view's candidate block.
    "manual review only — the app does not execute these". A promotion or a
    validation result never authorises an order.
 
-The live route (after the restart) returns **24 candidates (12 long, 12
-short)**, each with the evidence status `insufficient` and the reason, the
-dev denominators (3,421 events / 295 coins / 56 days for the shock rule),
-the measured range endpoints, and the family p = 1.0.
+**What the 24 candidates are.** At the deployment check the route returned
+**24 candidates (12 long, 12 short)** — these are **stored rule candidates
+that already existed in the shadow store**, not anything the new deployment
+produced. Each carries the evidence status **`insufficient`** with its
+reason, the dev denominators (3,421 events / 295 coins / 56 days for the
+shock rule), the measured range endpoints, and the family p = 1.0.
+
+**The deployment's own first sweep emitted ZERO new candidates.** Its
+quant stage ran 508.1 s and reported `emitted 0`, because the watcher was
+auto-paused on stale BTC bars; the 24 rows are the stored backlog, not fresh
+output. The count is live, not a constant: the watcher has since resumed
+(the stale-data pause cleared) and later sweeps have emitted new candidates
+— the store held 62 events and a 22:21 sweep emitted 38 (10 resolved) —
+so the route's number moves with the three-hour freshness window (it read
+4 candidates at the time of this correction).
+
+**None of this is a validated or positive signal.** The rules behind the
+stored candidates have **negative** dev means (§4); their evidence status is
+`insufficient`; and the family-level correction is p = 1.0. The candidates
+are displayed so the owner can review them by hand, not because they are
+evidence of anything.
 
 ## 6. The deployment
 
@@ -192,10 +209,11 @@ file was written.
 
 | Item | Value |
 |---|---|
-| Pre-restart | MainPID 732289, started 2026-10-19 15:46:39 WAT, `NRestarts=0` |
+| Pre-restart | MainPID **732289**, started **2026-10-20 11:32:58 WAT** (journal: `Started ALT RADAR …` / `listening on 127.0.0.1:18741` at 11:32:58), `NRestarts=0`. The 2026-10-19 15:46:39 start belongs to pid **572048**; the journal's start sequence is 571054 (Oct 19 15:38:43) → 572048 (Oct 19 15:46:39) → 732289 (Oct 20 11:32:58) → 759227 (Oct 20 14:51:48). |
 | Restart requested / returned | 13:51:46Z / **13:51:48Z** → **2 s** (the previous drain took 601 s and ended in a SIGKILL) |
 | New process | MainPID **759227**, started 2026-10-20 14:51:48 WAT |
-| Running revision | `code_rev 94bdf49` (reported by `/quant-research` — the live git HEAD) |
+| Deployed code revision | **`94bdf49`** — the working tree was clean at `94bdf49` (committed 14:51:22) when the process started at 14:51:48, and only documentation commits have landed since, so the running code is that revision. |
+| The route's `code_rev` | a **different** thing: `research_surface.code_rev()` reads the **repository HEAD at request time** (it reported the then-current HEAD `94bdf49` right after the restart, and `9abab98` at the time of this correction). It is a working-tree reading and is **not** proof of the revision the process loaded. |
 | Routes | `/healthz` 200 · `/readyz` 200 · `/scanner-health` 200 · `/quant-status` 200 · `/quant-research` 200 · **`/quant-signals` 200** |
 | Auth gate | 401 without a token on `/readyz`, `/quant-research`, `/quant-signals` |
 | First sweep | completed in **1 545.4 s (25.8 min)**: scan 513.1 s (ok, 150 evaluated) · collect **72.1 s** (ok, 557 coins) · funding 35.2 s (ok) · settlements 0.0 (**not_due**) · prices 0.0 (**not_due**) · resolve 0.0 (skipped — background) · measure 416.8 s (partial, 12 failed coins of 557) · quant 508.1 s (ok, 581 coins, 0 emitted — the watcher was auto-paused) |
@@ -249,20 +267,47 @@ in the history.
    volume, not measured. The +100 % aspiration is a research objective with
    **no** supporting evidence here, and the equity-denominated return is
    not computable without a position-sizing and liquidation model.
-5. **The 24 live candidates are exploratory**: their rules have negative dev
-   means, their evidence status is `insufficient`, and one of them (the
+5. **The displayed candidates are exploratory**: their rules have negative
+   dev means, their evidence status is `insufficient`, and one of them (the
    shock rule) had a dev mean whose 95 % interval excludes zero **on the
    negative side** (−0.0280 R, [−0.0579, −0.0017]). Showing them is
-   showing a rule that loses money on the measured window.
+   showing a rule that loses money on the measured window. The count is
+   live (the store keeps filling as the watcher resumes), and the
+   deployment's own first sweep emitted **none** of them.
 6. The quant watcher was **paused** for part of the deployed window
    ("BTC bars stale"): the venue's klines lag the collect, and the guard
    (20 min) then refuses to emit from stale data. The guard was **not**
-   weakened; the watcher resumed by itself when the lag fell back.
+   weakened, and the watcher has since resumed by itself (later sweeps emit
+   again). This is why the deployment's first sweep reported `emitted 0`.
 7. The first sweep of the new deployment still takes **25.8 min** (the
    scan 8.6 min and the quant step 8.5 min dominate; the collect is now
    72 s). The API is usable after ~2 s, but the **data** is only fresh when
    a sweep completes, and the quant step emitted **0** candidates because
    the watcher was auto-paused on stale BTC bars.
+
+## 8b. Owner decisions (2026-10-20, recorded here — no decision entry was written)
+
+These are the owner's decisions, recorded in the report only. **No entry was
+appended to any decision log**, and the human-owned
+`docs/decisions/log.jsonl` remains 0 bytes.
+
+1. **The one-shot holdout remains unspent.** No candidate cleared the
+   preregistered criteria on dev **and** validation (every member is
+   negative on dev and `insufficient` on validation), so there is nothing to
+   confirm. The holdout stays sealed.
+2. **Adopt the separate hash-chained decision log** (`docs/decisions/chain.jsonl`
+   and its module) **while leaving the human-owned log intact** — the old file
+   keeps its own format, its own validation and its 0 bytes.
+3. **Defer 1-minute bars.** The 1 m design stage is not started; nothing in
+   this effort depends on it.
+4. **Isolate provisional data from confirmed-bar validation.** Provisional
+   (in-progress / unconfirmed) bars must be kept apart from the confirmed-bar
+   data that validation and the research windows are computed on, so a
+   provisional bar can never enter a measured window.
+5. **Keep fees labelled as assumptions until verified.** The 5 bp/side taker
+   constant and the tiered slippage stay labelled as assumptions (they are
+   not measurements) until the owner's fee tier is confirmed; no result may
+   present them as measured.
 
 ## 9. The candid conclusion
 
@@ -284,9 +329,12 @@ sized, no liquidation distance was modelled, and the costs are assumptions.
 candidates with their evidence, so the owner can review them by hand; the
 app still cannot and will not trade them.
 
-**Still awaiting the owner:** whether to spend the one-shot holdout (not
-recommended on this evidence: the protocol's own criteria were not met, and
-the validation window is too short to evaluate them), whether to adopt the
-new hash-chained decision log in place of the human-owned one, and the
-deployment of the remaining WS3 items (1 m design, provisional tier,
-confirmed fee tier).
+**Owner decisions are recorded in §8b**: the holdout stays unspent (nothing
+cleared dev and validation), the separate hash-chained decision log is
+adopted while the human-owned log stays intact, 1-minute bars are deferred,
+provisional data is isolated from confirmed-bar validation, and the fees
+stay labelled as assumptions until verified. What remains for the owner is
+the **confirmed fee tier** (which the +100 % objective depends on and which
+this repository still cannot evidence) and any future preregistration whose
+minimum sample sizes are checked against the window lengths before it is
+frozen.
