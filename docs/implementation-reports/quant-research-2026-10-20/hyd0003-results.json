@@ -1,0 +1,1152 @@
+{
+ "protocol": "HYD-0003",
+ "windows": {
+  "dev": [
+   6.0,
+   61.0
+  ],
+  "val": [
+   63.0,
+   77.0
+  ]
+ },
+ "holdout_start_day": 79.0,
+ "holdout_evaluated": false,
+ "n_days": 99.39236111111111,
+ "universe": 530,
+ "events": 86307,
+ "members": {
+  "m1": {
+   "rule_id": "quant-v1:breakout_start:rvol4:fade:T288_ks1.5_R1",
+   "filter": null,
+   "filter_dropped": 0,
+   "dev": {
+    "label": "m1",
+    "rule": "breakout_start",
+    "params": {},
+    "geometry": {
+     "key": "T288_ks1.5_R1",
+     "horizon_bars": 288,
+     "k_stop": 1.5,
+     "r_tp": 1.0
+    },
+    "window": [
+     6.0,
+     61.0
+    ],
+    "denominators": {
+     "n_selected": 24737,
+     "n_resolved": 24737,
+     "n_friction_evaluable": 24737,
+     "n_funding_evaluable": 24732,
+     "n_censored": 0,
+     "n_invalidated": 0,
+     "n_coins": 372,
+     "n_days": 56,
+     "n_funding_unattributed": 5,
+     "funding_unattributed_reasons": {
+      "funding": 5
+     },
+     "funding_coverage": 0.9997978736305938
+    },
+    "causes": {
+     "TP": 3777,
+     "SL": 4409,
+     "TIME": 16551,
+     "INVALIDATED": 0,
+     "CENSORED": 0
+    },
+    "cause_denominator": 24737,
+    "friction_only": {
+     "mean_r": -0.040007365971445434,
+     "ci_lo_day": -0.08346241148089027,
+     "ci_hi_day": 0.005251806080613901,
+     "ci_lo_coin": -0.06039627068709953,
+     "ci_hi_coin": -0.02242563828761937,
+     "t_day": -1.740247041283734,
+     "t_coin": -4.151006409618893,
+     "clusters": {
+      "day": 56,
+      "coin": 372
+     },
+     "p_one_sided": 0.9590921756140477
+    },
+    "funding_adjusted": {
+     "mean_r": -0.03881239874458276,
+     "ci_lo_day": -0.0822735385009603,
+     "ci_hi_day": 0.00627264558150629,
+     "ci_lo_coin": -0.05914675570193658,
+     "ci_hi_coin": -0.020495084228786962,
+     "t_day": -1.689727254880374,
+     "t_coin": -4.009344870480502,
+     "clusters": {
+      "day": 56,
+      "coin": 370
+     },
+     "delta_vs_friction_only": 0.0011949672268626726,
+     "p_one_sided": 0.954459926740602
+    },
+    "status": "evaluated",
+    "reason": null,
+    "placebo": {
+     "placebos": 200,
+     "observed_mean": -0.040007365971445434,
+     "p_value": 0.19900497512437812,
+     "mean": -0.04328035348742204,
+     "sd": 0.0034299223549292355,
+     "n_donors": 17945,
+     "reason": null
+    },
+    "baselines": {
+     "version": "inference-v1",
+     "n_window_events": 52805,
+     "n_selected": 24737,
+     "n_untradeable": 0,
+     "n_untradeable_window": 0,
+     "n_labelled": 24737,
+     "unconditional": {
+      "rate": 0.16396174604677588,
+      "n": 52805,
+      "n_terminal": 18699,
+      "terminal_rate": 0.46301941280282366,
+      "denominator": "all labelled, tradeable events in the window (no rule, no feature gate)"
+     },
+     "rule_without_features": {
+      "rate": 0.15268625944940778,
+      "n": 24737,
+      "n_terminal": 8186,
+      "terminal_rate": 0.46139750794038603,
+      "denominator": "rule-selected, tradeable, labelled events in the window (no feature gate)"
+     },
+     "unconditional_on_rule_events": {
+      "rate": 0.15268625944940778,
+      "n": 24737,
+      "n_terminal": 8186,
+      "terminal_rate": 0.46139750794038603,
+      "denominator": "rule-selected, tradeable, labelled events in the window (the rule's own selection is the only conditioning in this workstream)"
+     },
+     "matched_placebo": {
+      "mean": 0.15551420948376926,
+      "sd": 0.002356545162655948,
+      "p05": 0.15187371144439504,
+      "p95": 0.15957472611876944,
+      "min": 0.14880543315680964,
+      "max": 0.16202449771597202,
+      "n_placebos": 200,
+      "n_per_placebo": 24737.0,
+      "n_per_placebo_min": 24737,
+      "n_per_placebo_max": 24737,
+      "observed": 0.15268625944940778,
+      "n_extreme": 178,
+      "p_value": 0.8905472636815921,
+      "n_same_day_fallback": 263800,
+      "n_cross_date_donors": 4683600,
+      "denominator": "labelled placebo events matched on (coin, time-of-day bucket, liquidity tier) and taken from a different date; the donors keep the rule's average edge, so the placebo detects date-specific deviations, not the rule's edge itself"
+     }
+    },
+    "family": {}
+   },
+   "val": {
+    "label": "m1",
+    "rule": "breakout_start",
+    "params": {},
+    "geometry": {
+     "key": "T288_ks1.5_R1",
+     "horizon_bars": 288,
+     "k_stop": 1.5,
+     "r_tp": 1.0
+    },
+    "window": [
+     63.0,
+     77.0
+    ],
+    "denominators": {
+     "n_selected": 6417,
+     "n_resolved": 6417,
+     "n_friction_evaluable": 6417,
+     "n_funding_evaluable": 6417,
+     "n_censored": 0,
+     "n_invalidated": 0,
+     "n_coins": 240,
+     "n_days": 15,
+     "n_funding_unattributed": 0,
+     "funding_unattributed_reasons": {},
+     "funding_coverage": 1.0
+    },
+    "causes": {
+     "TP": 983,
+     "SL": 1183,
+     "TIME": 4251,
+     "INVALIDATED": 0,
+     "CENSORED": 0
+    },
+    "cause_denominator": 6417,
+    "friction_only": null,
+    "funding_adjusted": null,
+    "status": "insufficient",
+    "reason": "insufficient: 6417 events (min 200), 240 coins (min 15), 15 days (min 20)",
+    "baselines": {
+     "version": "inference-v1",
+     "n_window_events": 14556,
+     "n_selected": 6417,
+     "n_untradeable": 0,
+     "n_untradeable_window": 0,
+     "n_labelled": 6417,
+     "unconditional": {
+      "rate": 0.17202528167078868,
+      "n": 14556,
+      "n_terminal": 5645,
+      "terminal_rate": 0.44357838795394156,
+      "denominator": "all labelled, tradeable events in the window (no rule, no feature gate)"
+     },
+     "rule_without_features": {
+      "rate": 0.1531868474364968,
+      "n": 6417,
+      "n_terminal": 2166,
+      "terminal_rate": 0.4538319482917821,
+      "denominator": "rule-selected, tradeable, labelled events in the window (no feature gate)"
+     },
+     "unconditional_on_rule_events": {
+      "rate": 0.1531868474364968,
+      "n": 6417,
+      "n_terminal": 2166,
+      "terminal_rate": 0.4538319482917821,
+      "denominator": "rule-selected, tradeable, labelled events in the window (the rule's own selection is the only conditioning in this workstream)"
+     },
+     "matched_placebo": {
+      "mean": 0.16290244662614928,
+      "sd": 0.003736461392480399,
+      "p05": 0.1569269128876422,
+      "p95": 0.16878603708898238,
+      "min": 0.1516284868318529,
+      "max": 0.17251051893408134,
+      "n_placebos": 200,
+      "n_per_placebo": 6417.0,
+      "n_per_placebo_min": 6417,
+      "n_per_placebo_max": 6417,
+      "observed": 0.1531868474364968,
+      "n_extreme": 199,
+      "p_value": 0.9950248756218906,
+      "n_same_day_fallback": 142200,
+      "n_cross_date_donors": 1141200,
+      "denominator": "labelled placebo events matched on (coin, time-of-day bucket, liquidity tier) and taken from a different date; the donors keep the rule's average edge, so the placebo detects date-specific deviations, not the rule's edge itself"
+     }
+    }
+   }
+  },
+  "m2": {
+   "rule_id": "quant-v1:breakout_start:rvol4:cont:T288_ks1.5_R1",
+   "filter": null,
+   "filter_dropped": 0,
+   "dev": {
+    "label": "m2",
+    "rule": "breakout_start",
+    "params": {},
+    "geometry": {
+     "key": "T288_ks1.5_R1",
+     "horizon_bars": 288,
+     "k_stop": 1.5,
+     "r_tp": 1.0
+    },
+    "window": [
+     6.0,
+     61.0
+    ],
+    "denominators": {
+     "n_selected": 24737,
+     "n_resolved": 24737,
+     "n_friction_evaluable": 24737,
+     "n_funding_evaluable": 24732,
+     "n_censored": 0,
+     "n_invalidated": 0,
+     "n_coins": 372,
+     "n_days": 56,
+     "n_funding_unattributed": 5,
+     "funding_unattributed_reasons": {
+      "funding": 5
+     },
+     "funding_coverage": 0.9997978736305938
+    },
+    "causes": {
+     "TP": 4400,
+     "SL": 3786,
+     "TIME": 16551,
+     "INVALIDATED": 0,
+     "CENSORED": 0
+    },
+    "cause_denominator": 24737,
+    "friction_only": {
+     "mean_r": -0.038447608041589434,
+     "ci_lo_day": -0.07988671078914542,
+     "ci_hi_day": 0.0044998837141901425,
+     "ci_lo_coin": -0.05953684216505091,
+     "ci_hi_coin": -0.021216585490230273,
+     "t_day": -1.7125248780186393,
+     "t_coin": -4.039467295157494,
+     "clusters": {
+      "day": 56,
+      "coin": 372
+     },
+     "p_one_sided": 0.9566000080259989
+    },
+    "funding_adjusted": {
+     "mean_r": -0.03963111274954998,
+     "ci_lo_day": -0.08105959841835449,
+     "ci_hi_day": 0.003162667128158332,
+     "ci_lo_coin": -0.05913599782318185,
+     "ci_hi_coin": -0.02307450594405614,
+     "t_day": -1.7693881458673477,
+     "t_coin": -4.193388594683299,
+     "clusters": {
+      "day": 56,
+      "coin": 370
+     },
+     "delta_vs_friction_only": -0.0011835047079605462,
+     "p_one_sided": 0.9615854387540836
+    },
+    "status": "evaluated",
+    "reason": null,
+    "placebo": {
+     "placebos": 200,
+     "observed_mean": -0.038447608041589434,
+     "p_value": 0.9203980099502488,
+     "mean": -0.03329711677146759,
+     "sd": 0.003419686582132711,
+     "n_donors": 17945,
+     "reason": null
+    },
+    "baselines": {
+     "version": "inference-v1",
+     "n_window_events": 52805,
+     "n_selected": 24737,
+     "n_untradeable": 0,
+     "n_untradeable_window": 0,
+     "n_labelled": 24737,
+     "unconditional": {
+      "rate": 0.18981157087397027,
+      "n": 52805,
+      "n_terminal": 18699,
+      "terminal_rate": 0.5360179688753409,
+      "denominator": "all labelled, tradeable events in the window (no rule, no feature gate)"
+     },
+     "rule_without_features": {
+      "rate": 0.1778712050774144,
+      "n": 24737,
+      "n_terminal": 8186,
+      "terminal_rate": 0.537503053994625,
+      "denominator": "rule-selected, tradeable, labelled events in the window (no feature gate)"
+     },
+     "unconditional_on_rule_events": {
+      "rate": 0.1778712050774144,
+      "n": 24737,
+      "n_terminal": 8186,
+      "terminal_rate": 0.537503053994625,
+      "denominator": "rule-selected, tradeable, labelled events in the window (the rule's own selection is the only conditioning in this workstream)"
+     },
+     "matched_placebo": {
+      "mean": 0.16991025589198366,
+      "sd": 0.0022966870619687474,
+      "p05": 0.16606500384040102,
+      "p95": 0.1735517645632049,
+      "min": 0.16404576141003355,
+      "max": 0.17576909083559042,
+      "n_placebos": 200,
+      "n_per_placebo": 24737.0,
+      "n_per_placebo_min": 24737,
+      "n_per_placebo_max": 24737,
+      "observed": 0.1778712050774144,
+      "n_extreme": 0,
+      "p_value": 0.004975124378109453,
+      "n_same_day_fallback": 263800,
+      "n_cross_date_donors": 4683600,
+      "denominator": "labelled placebo events matched on (coin, time-of-day bucket, liquidity tier) and taken from a different date; the donors keep the rule's average edge, so the placebo detects date-specific deviations, not the rule's edge itself"
+     }
+    },
+    "family": {}
+   },
+   "val": {
+    "label": "m2",
+    "rule": "breakout_start",
+    "params": {},
+    "geometry": {
+     "key": "T288_ks1.5_R1",
+     "horizon_bars": 288,
+     "k_stop": 1.5,
+     "r_tp": 1.0
+    },
+    "window": [
+     63.0,
+     77.0
+    ],
+    "denominators": {
+     "n_selected": 6417,
+     "n_resolved": 6417,
+     "n_friction_evaluable": 6417,
+     "n_funding_evaluable": 6417,
+     "n_censored": 0,
+     "n_invalidated": 0,
+     "n_coins": 240,
+     "n_days": 15,
+     "n_funding_unattributed": 0,
+     "funding_unattributed_reasons": {},
+     "funding_coverage": 1.0
+    },
+    "causes": {
+     "TP": 1183,
+     "SL": 983,
+     "TIME": 4251,
+     "INVALIDATED": 0,
+     "CENSORED": 0
+    },
+    "cause_denominator": 6417,
+    "friction_only": null,
+    "funding_adjusted": null,
+    "status": "insufficient",
+    "reason": "insufficient: 6417 events (min 200), 240 coins (min 15), 15 days (min 20)",
+    "baselines": {
+     "version": "inference-v1",
+     "n_window_events": 14556,
+     "n_selected": 6417,
+     "n_untradeable": 0,
+     "n_untradeable_window": 0,
+     "n_labelled": 6417,
+     "unconditional": {
+      "rate": 0.21578730420445177,
+      "n": 14556,
+      "n_terminal": 5645,
+      "terminal_rate": 0.5564216120460584,
+      "denominator": "all labelled, tradeable events in the window (no rule, no feature gate)"
+     },
+     "rule_without_features": {
+      "rate": 0.18435405952937509,
+      "n": 6417,
+      "n_terminal": 2166,
+      "terminal_rate": 0.5461680517082179,
+      "denominator": "rule-selected, tradeable, labelled events in the window (no feature gate)"
+     },
+     "unconditional_on_rule_events": {
+      "rate": 0.18435405952937509,
+      "n": 6417,
+      "n_terminal": 2166,
+      "terminal_rate": 0.5461680517082179,
+      "denominator": "rule-selected, tradeable, labelled events in the window (the rule's own selection is the only conditioning in this workstream)"
+     },
+     "matched_placebo": {
+      "mean": 0.1882756739909615,
+      "sd": 0.003769374699129917,
+      "p05": 0.18214897927380397,
+      "p95": 0.1937120149602618,
+      "min": 0.1788997974131214,
+      "max": 0.20040517375720743,
+      "n_placebos": 200,
+      "n_per_placebo": 6417.0,
+      "n_per_placebo_min": 6417,
+      "n_per_placebo_max": 6417,
+      "observed": 0.18435405952937509,
+      "n_extreme": 166,
+      "p_value": 0.8308457711442786,
+      "n_same_day_fallback": 142200,
+      "n_cross_date_donors": 1141200,
+      "denominator": "labelled placebo events matched on (coin, time-of-day bucket, liquidity tier) and taken from a different date; the donors keep the rule's average edge, so the placebo detects date-specific deviations, not the rule's edge itself"
+     }
+    }
+   }
+  },
+  "m3": {
+   "rule_id": "quant-v1:residual_shock:h8:fade:T144_ks3_R1",
+   "filter": null,
+   "filter_dropped": 0,
+   "dev": {
+    "label": "m3",
+    "rule": "residual_shock",
+    "params": {},
+    "geometry": {
+     "key": "T144_ks3_R1",
+     "horizon_bars": 144,
+     "k_stop": 3.0,
+     "r_tp": 1.0
+    },
+    "window": [
+     6.0,
+     61.0
+    ],
+    "denominators": {
+     "n_selected": 3421,
+     "n_resolved": 3421,
+     "n_friction_evaluable": 3421,
+     "n_funding_evaluable": 3420,
+     "n_censored": 0,
+     "n_invalidated": 0,
+     "n_coins": 295,
+     "n_days": 56,
+     "n_funding_unattributed": 1,
+     "funding_unattributed_reasons": {
+      "funding": 1
+     },
+     "funding_coverage": 0.9997076878105817
+    },
+    "causes": {
+     "TP": 159,
+     "SL": 278,
+     "TIME": 2984,
+     "INVALIDATED": 0,
+     "CENSORED": 0
+    },
+    "cause_denominator": 3421,
+    "friction_only": {
+     "mean_r": -0.028006112933768066,
+     "ci_lo_day": -0.05785493394866101,
+     "ci_hi_day": -0.0017091168681088863,
+     "ci_lo_coin": -0.053813084951815755,
+     "ci_hi_coin": -0.007576673262618281,
+     "t_day": -1.8785031488088257,
+     "t_coin": -2.4277797516640596,
+     "clusters": {
+      "day": 56,
+      "coin": 295
+     },
+     "p_one_sided": 0.9698438166449748
+    },
+    "funding_adjusted": {
+     "mean_r": -0.02799596554882237,
+     "ci_lo_day": -0.057546019515335896,
+     "ci_hi_day": -0.0013334704463976845,
+     "ci_lo_coin": -0.05361267472541363,
+     "ci_hi_coin": -0.007864648127953882,
+     "t_day": -1.8761405119376664,
+     "t_coin": -2.4285480268876176,
+     "clusters": {
+      "day": 56,
+      "coin": 294
+     },
+     "delta_vs_friction_only": 1.0147384945695392e-05,
+     "p_one_sided": 0.9696820059634811
+    },
+    "status": "evaluated",
+    "reason": null,
+    "placebo": {
+     "placebos": 200,
+     "observed_mean": -0.028006112933768066,
+     "p_value": 0.26865671641791045,
+     "mean": -0.03092271754739202,
+     "sd": 0.005248091292742508,
+     "n_donors": 1291,
+     "reason": null
+    },
+    "baselines": {
+     "version": "inference-v1",
+     "n_window_events": 52805,
+     "n_selected": 3421,
+     "n_untradeable": 0,
+     "n_untradeable_window": 0,
+     "n_labelled": 3421,
+     "unconditional": {
+      "rate": 0.03653063156898021,
+      "n": 52805,
+      "n_terminal": 4546,
+      "terminal_rate": 0.42432908051033874,
+      "denominator": "all labelled, tradeable events in the window (no rule, no feature gate)"
+     },
+     "rule_without_features": {
+      "rate": 0.0464776381175095,
+      "n": 3421,
+      "n_terminal": 437,
+      "terminal_rate": 0.36384439359267734,
+      "denominator": "rule-selected, tradeable, labelled events in the window (no feature gate)"
+     },
+     "unconditional_on_rule_events": {
+      "rate": 0.0464776381175095,
+      "n": 3421,
+      "n_terminal": 437,
+      "terminal_rate": 0.36384439359267734,
+      "denominator": "rule-selected, tradeable, labelled events in the window (the rule's own selection is the only conditioning in this workstream)"
+     },
+     "matched_placebo": {
+      "mean": 0.03637971353405437,
+      "sd": 0.0034322394537014992,
+      "p05": 0.03126278865828705,
+      "p95": 0.042677579655071615,
+      "min": 0.026892721426483485,
+      "max": 0.0461853259280912,
+      "n_placebos": 200,
+      "n_per_placebo": 3421.0,
+      "n_per_placebo_min": 3421,
+      "n_per_placebo_max": 3421,
+      "observed": 0.0464776381175095,
+      "n_extreme": 0,
+      "p_value": 0.004975124378109453,
+      "n_same_day_fallback": 13000,
+      "n_cross_date_donors": 671200,
+      "denominator": "labelled placebo events matched on (coin, time-of-day bucket, liquidity tier) and taken from a different date; the donors keep the rule's average edge, so the placebo detects date-specific deviations, not the rule's edge itself"
+     }
+    },
+    "family": {}
+   },
+   "val": {
+    "label": "m3",
+    "rule": "residual_shock",
+    "params": {},
+    "geometry": {
+     "key": "T144_ks3_R1",
+     "horizon_bars": 144,
+     "k_stop": 3.0,
+     "r_tp": 1.0
+    },
+    "window": [
+     63.0,
+     77.0
+    ],
+    "denominators": {
+     "n_selected": 922,
+     "n_resolved": 922,
+     "n_friction_evaluable": 922,
+     "n_funding_evaluable": 922,
+     "n_censored": 0,
+     "n_invalidated": 0,
+     "n_coins": 178,
+     "n_days": 15,
+     "n_funding_unattributed": 0,
+     "funding_unattributed_reasons": {},
+     "funding_coverage": 1.0
+    },
+    "causes": {
+     "TP": 37,
+     "SL": 67,
+     "TIME": 818,
+     "INVALIDATED": 0,
+     "CENSORED": 0
+    },
+    "cause_denominator": 922,
+    "friction_only": null,
+    "funding_adjusted": null,
+    "status": "insufficient",
+    "reason": "insufficient: 922 events (min 200), 178 coins (min 15), 15 days (min 20)",
+    "baselines": {
+     "version": "inference-v1",
+     "n_window_events": 14556,
+     "n_selected": 922,
+     "n_untradeable": 0,
+     "n_untradeable_window": 0,
+     "n_labelled": 922,
+     "unconditional": {
+      "rate": 0.030296784830997528,
+      "n": 14556,
+      "n_terminal": 1136,
+      "terminal_rate": 0.3882042253521127,
+      "denominator": "all labelled, tradeable events in the window (no rule, no feature gate)"
+     },
+     "rule_without_features": {
+      "rate": 0.04013015184381779,
+      "n": 922,
+      "n_terminal": 104,
+      "terminal_rate": 0.3557692307692308,
+      "denominator": "rule-selected, tradeable, labelled events in the window (no feature gate)"
+     },
+     "unconditional_on_rule_events": {
+      "rate": 0.04013015184381779,
+      "n": 922,
+      "n_terminal": 104,
+      "terminal_rate": 0.3557692307692308,
+      "denominator": "rule-selected, tradeable, labelled events in the window (the rule's own selection is the only conditioning in this workstream)"
+     },
+     "matched_placebo": {
+      "mean": 0.031453362255965296,
+      "sd": 0.005283303166805759,
+      "p05": 0.02386117136659436,
+      "p95": 0.04013015184381779,
+      "min": 0.015184381778741865,
+      "max": 0.04880694143167028,
+      "n_placebos": 200,
+      "n_per_placebo": 922.0,
+      "n_per_placebo_min": 922,
+      "n_per_placebo_max": 922,
+      "observed": 0.04013015184381779,
+      "n_extreme": 12,
+      "p_value": 0.06467661691542288,
+      "n_same_day_fallback": 10600,
+      "n_cross_date_donors": 173800,
+      "denominator": "labelled placebo events matched on (coin, time-of-day bucket, liquidity tier) and taken from a different date; the donors keep the rule's average edge, so the placebo detects date-specific deviations, not the rule's edge itself"
+     }
+    }
+   }
+  },
+  "m4": {
+   "rule_id": "quant-v1:residual_shock:h8:cont:T144_ks3_R1",
+   "filter": null,
+   "filter_dropped": 0,
+   "dev": {
+    "label": "m4",
+    "rule": "residual_shock",
+    "params": {},
+    "geometry": {
+     "key": "T144_ks3_R1",
+     "horizon_bars": 144,
+     "k_stop": 3.0,
+     "r_tp": 1.0
+    },
+    "window": [
+     6.0,
+     61.0
+    ],
+    "denominators": {
+     "n_selected": 3421,
+     "n_resolved": 3421,
+     "n_friction_evaluable": 3421,
+     "n_funding_evaluable": 3420,
+     "n_censored": 0,
+     "n_invalidated": 0,
+     "n_coins": 295,
+     "n_days": 56,
+     "n_funding_unattributed": 1,
+     "funding_unattributed_reasons": {
+      "funding": 1
+     },
+     "funding_coverage": 0.9997076878105817
+    },
+    "causes": {
+     "TP": 277,
+     "SL": 160,
+     "TIME": 2984,
+     "INVALIDATED": 0,
+     "CENSORED": 0
+    },
+    "cause_denominator": 3421,
+    "friction_only": {
+     "mean_r": -0.04773521465380148,
+     "ci_lo_day": -0.07419552812470881,
+     "ci_hi_day": -0.01885985919011776,
+     "ci_lo_coin": -0.07122376114575044,
+     "ci_hi_coin": -0.026602347662784263,
+     "t_day": -3.224136547126067,
+     "t_coin": -4.094867130060416,
+     "clusters": {
+      "day": 56,
+      "coin": 295
+     },
+     "p_one_sided": 0.9993682343234283
+    },
+    "funding_adjusted": {
+     "mean_r": -0.047734936762902254,
+     "ci_lo_day": -0.07444753070011789,
+     "ci_hi_day": -0.018953614390446315,
+     "ci_lo_coin": -0.07397716003875085,
+     "ci_hi_coin": -0.025903574965600935,
+     "t_day": -3.2201396047692565,
+     "t_coin": -4.064323676609379,
+     "clusters": {
+      "day": 56,
+      "coin": 294
+     },
+     "delta_vs_friction_only": 2.77890899229305e-07,
+     "p_one_sided": 0.9993593590800421
+    },
+    "status": "evaluated",
+    "reason": null,
+    "placebo": {
+     "placebos": 200,
+     "observed_mean": -0.04773521465380148,
+     "p_value": 0.9552238805970149,
+     "mean": -0.03738231910187072,
+     "sd": 0.005254967708449082,
+     "n_donors": 1291,
+     "reason": null
+    },
+    "baselines": {
+     "version": "inference-v1",
+     "n_window_events": 52805,
+     "n_selected": 3421,
+     "n_untradeable": 0,
+     "n_untradeable_window": 0,
+     "n_labelled": 3421,
+     "unconditional": {
+      "rate": 0.049427137581668404,
+      "n": 52805,
+      "n_terminal": 4546,
+      "terminal_rate": 0.5741311042674879,
+      "denominator": "all labelled, tradeable events in the window (no rule, no feature gate)"
+     },
+     "rule_without_features": {
+      "rate": 0.08097047646886875,
+      "n": 3421,
+      "n_terminal": 437,
+      "terminal_rate": 0.6338672768878718,
+      "denominator": "rule-selected, tradeable, labelled events in the window (no feature gate)"
+     },
+     "unconditional_on_rule_events": {
+      "rate": 0.08097047646886875,
+      "n": 3421,
+      "n_terminal": 437,
+      "terminal_rate": 0.6338672768878718,
+      "denominator": "rule-selected, tradeable, labelled events in the window (the rule's own selection is the only conditioning in this workstream)"
+     },
+     "matched_placebo": {
+      "mean": 0.05591932183572055,
+      "sd": 0.0031738353391883656,
+      "p05": 0.050847705349313065,
+      "p95": 0.060523238819058744,
+      "min": 0.0470622624963461,
+      "max": 0.06489330605086233,
+      "n_placebos": 200,
+      "n_per_placebo": 3421.0,
+      "n_per_placebo_min": 3421,
+      "n_per_placebo_max": 3421,
+      "observed": 0.08097047646886875,
+      "n_extreme": 0,
+      "p_value": 0.004975124378109453,
+      "n_same_day_fallback": 13000,
+      "n_cross_date_donors": 671200,
+      "denominator": "labelled placebo events matched on (coin, time-of-day bucket, liquidity tier) and taken from a different date; the donors keep the rule's average edge, so the placebo detects date-specific deviations, not the rule's edge itself"
+     }
+    },
+    "family": {}
+   },
+   "val": {
+    "label": "m4",
+    "rule": "residual_shock",
+    "params": {},
+    "geometry": {
+     "key": "T144_ks3_R1",
+     "horizon_bars": 144,
+     "k_stop": 3.0,
+     "r_tp": 1.0
+    },
+    "window": [
+     63.0,
+     77.0
+    ],
+    "denominators": {
+     "n_selected": 922,
+     "n_resolved": 922,
+     "n_friction_evaluable": 922,
+     "n_funding_evaluable": 922,
+     "n_censored": 0,
+     "n_invalidated": 0,
+     "n_coins": 178,
+     "n_days": 15,
+     "n_funding_unattributed": 0,
+     "funding_unattributed_reasons": {},
+     "funding_coverage": 1.0
+    },
+    "causes": {
+     "TP": 67,
+     "SL": 37,
+     "TIME": 818,
+     "INVALIDATED": 0,
+     "CENSORED": 0
+    },
+    "cause_denominator": 922,
+    "friction_only": null,
+    "funding_adjusted": null,
+    "status": "insufficient",
+    "reason": "insufficient: 922 events (min 200), 178 coins (min 15), 15 days (min 20)",
+    "baselines": {
+     "version": "inference-v1",
+     "n_window_events": 14556,
+     "n_selected": 922,
+     "n_untradeable": 0,
+     "n_untradeable_window": 0,
+     "n_labelled": 922,
+     "unconditional": {
+      "rate": 0.04774663369057433,
+      "n": 14556,
+      "n_terminal": 1136,
+      "terminal_rate": 0.6117957746478874,
+      "denominator": "all labelled, tradeable events in the window (no rule, no feature gate)"
+     },
+     "rule_without_features": {
+      "rate": 0.07266811279826464,
+      "n": 922,
+      "n_terminal": 104,
+      "terminal_rate": 0.6442307692307693,
+      "denominator": "rule-selected, tradeable, labelled events in the window (no feature gate)"
+     },
+     "unconditional_on_rule_events": {
+      "rate": 0.07266811279826464,
+      "n": 922,
+      "n_terminal": 104,
+      "terminal_rate": 0.6442307692307693,
+      "denominator": "rule-selected, tradeable, labelled events in the window (the rule's own selection is the only conditioning in this workstream)"
+     },
+     "matched_placebo": {
+      "mean": 0.04613340563991323,
+      "sd": 0.005608800323791162,
+      "p05": 0.03796095444685466,
+      "p95": 0.05536876355748371,
+      "min": 0.03036876355748373,
+      "max": 0.06290672451193059,
+      "n_placebos": 200,
+      "n_per_placebo": 922.0,
+      "n_per_placebo_min": 922,
+      "n_per_placebo_max": 922,
+      "observed": 0.07266811279826464,
+      "n_extreme": 0,
+      "p_value": 0.004975124378109453,
+      "n_same_day_fallback": 10600,
+      "n_cross_date_donors": 173800,
+      "denominator": "labelled placebo events matched on (coin, time-of-day bucket, liquidity tier) and taken from a different date; the donors keep the rule's average edge, so the placebo detects date-specific deviations, not the rule's edge itself"
+     }
+    }
+   }
+  },
+  "m5": {
+   "rule_id": "quant-v1:breakout_start:rvol4:fade:T288_ks1.5_R1",
+   "filter": "pivot_state==low",
+   "filter_dropped": 41931,
+   "dev": {
+    "label": "m5",
+    "rule": "breakout_start",
+    "params": {},
+    "geometry": {
+     "key": "T288_ks1.5_R1",
+     "horizon_bars": 288,
+     "k_stop": 1.5,
+     "r_tp": 1.0
+    },
+    "window": [
+     6.0,
+     61.0
+    ],
+    "denominators": {
+     "n_selected": 12445,
+     "n_resolved": 12445,
+     "n_friction_evaluable": 12445,
+     "n_funding_evaluable": 12440,
+     "n_censored": 0,
+     "n_invalidated": 0,
+     "n_coins": 365,
+     "n_days": 56,
+     "n_funding_unattributed": 5,
+     "funding_unattributed_reasons": {
+      "funding": 5
+     },
+     "funding_coverage": 0.9995982322217758
+    },
+    "causes": {
+     "TP": 1938,
+     "SL": 2634,
+     "TIME": 7873,
+     "INVALIDATED": 0,
+     "CENSORED": 0
+    },
+    "cause_denominator": 12445,
+    "friction_only": {
+     "mean_r": -0.039291935030450593,
+     "ci_lo_day": -0.10743820352296718,
+     "ci_hi_day": 0.02714013086649361,
+     "ci_lo_coin": -0.05937892042688279,
+     "ci_hi_coin": -0.01824782546841014,
+     "t_day": -1.081144664641418,
+     "t_coin": -3.707011720283237,
+     "clusters": {
+      "day": 56,
+      "coin": 365
+     },
+     "p_one_sided": 0.8601836159718309
+    },
+    "funding_adjusted": {
+     "mean_r": -0.03942389391958388,
+     "ci_lo_day": -0.10758597475270747,
+     "ci_hi_day": 0.026545908202665093,
+     "ci_lo_coin": -0.05950204632195723,
+     "ci_hi_coin": -0.01818744671879636,
+     "t_day": -1.0866970831825895,
+     "t_coin": -3.737292552295256,
+     "clusters": {
+      "day": 56,
+      "coin": 363
+     },
+     "delta_vs_friction_only": -0.0001319588891332893,
+     "p_one_sided": 0.8614146482488406
+    },
+    "status": "evaluated",
+    "reason": null,
+    "placebo": {
+     "placebos": 200,
+     "observed_mean": -0.039291935030450593,
+     "p_value": 0.004975124378109453,
+     "mean": -0.05185037862959433,
+     "sd": 0.00418871887990899,
+     "n_donors": 6843,
+     "reason": null
+    },
+    "baselines": {
+     "version": "inference-v1",
+     "n_window_events": 27325,
+     "n_selected": 12445,
+     "n_untradeable": 0,
+     "n_untradeable_window": 0,
+     "n_labelled": 12445,
+     "unconditional": {
+      "rate": 0.1666605672461116,
+      "n": 27325,
+      "n_terminal": 10549,
+      "terminal_rate": 0.4316996871741397,
+      "denominator": "all labelled, tradeable events in the window (no rule, no feature gate)"
+     },
+     "rule_without_features": {
+      "rate": 0.15572519083969466,
+      "n": 12445,
+      "n_terminal": 4572,
+      "terminal_rate": 0.4238845144356955,
+      "denominator": "rule-selected, tradeable, labelled events in the window (no feature gate)"
+     },
+     "unconditional_on_rule_events": {
+      "rate": 0.15572519083969466,
+      "n": 12445,
+      "n_terminal": 4572,
+      "terminal_rate": 0.4238845144356955,
+      "denominator": "rule-selected, tradeable, labelled events in the window (the rule's own selection is the only conditioning in this workstream)"
+     },
+     "matched_placebo": {
+      "mean": 0.16013499397348332,
+      "sd": 0.002818367870374444,
+      "p05": 0.15564081960626758,
+      "p95": 0.16480514262756127,
+      "min": 0.15251104861390116,
+      "max": 0.16922458818802733,
+      "n_placebos": 200,
+      "n_per_placebo": 12445.0,
+      "n_per_placebo_min": 12445,
+      "n_per_placebo_max": 12445,
+      "observed": 0.15572519083969466,
+      "n_extreme": 188,
+      "p_value": 0.9402985074626866,
+      "n_same_day_fallback": 200000,
+      "n_cross_date_donors": 2289000,
+      "denominator": "labelled placebo events matched on (coin, time-of-day bucket, liquidity tier) and taken from a different date; the donors keep the rule's average edge, so the placebo detects date-specific deviations, not the rule's edge itself"
+     }
+    },
+    "family": {}
+   },
+   "val": {
+    "label": "m5",
+    "rule": "breakout_start",
+    "params": {},
+    "geometry": {
+     "key": "T288_ks1.5_R1",
+     "horizon_bars": 288,
+     "k_stop": 1.5,
+     "r_tp": 1.0
+    },
+    "window": [
+     63.0,
+     77.0
+    ],
+    "denominators": {
+     "n_selected": 3445,
+     "n_resolved": 3445,
+     "n_friction_evaluable": 3445,
+     "n_funding_evaluable": 3445,
+     "n_censored": 0,
+     "n_invalidated": 0,
+     "n_coins": 233,
+     "n_days": 15,
+     "n_funding_unattributed": 0,
+     "funding_unattributed_reasons": {},
+     "funding_coverage": 1.0
+    },
+    "causes": {
+     "TP": 487,
+     "SL": 732,
+     "TIME": 2226,
+     "INVALIDATED": 0,
+     "CENSORED": 0
+    },
+    "cause_denominator": 3445,
+    "friction_only": null,
+    "funding_adjusted": null,
+    "status": "insufficient",
+    "reason": "insufficient: 3445 events (min 200), 233 coins (min 15), 15 days (min 20)",
+    "baselines": {
+     "version": "inference-v1",
+     "n_window_events": 8095,
+     "n_selected": 3445,
+     "n_untradeable": 0,
+     "n_untradeable_window": 0,
+     "n_labelled": 3445,
+     "unconditional": {
+      "rate": 0.15528103767757875,
+      "n": 8095,
+      "n_terminal": 3265,
+      "terminal_rate": 0.3849923430321593,
+      "denominator": "all labelled, tradeable events in the window (no rule, no feature gate)"
+     },
+     "rule_without_features": {
+      "rate": 0.1413642960812772,
+      "n": 3445,
+      "n_terminal": 1219,
+      "terminal_rate": 0.39950779327317476,
+      "denominator": "rule-selected, tradeable, labelled events in the window (no feature gate)"
+     },
+     "unconditional_on_rule_events": {
+      "rate": 0.1413642960812772,
+      "n": 3445,
+      "n_terminal": 1219,
+      "terminal_rate": 0.39950779327317476,
+      "denominator": "rule-selected, tradeable, labelled events in the window (the rule's own selection is the only conditioning in this workstream)"
+     },
+     "matched_placebo": {
+      "mean": 0.1546531204644412,
+      "sd": 0.0038700449398990683,
+      "p05": 0.14891146589259796,
+      "p95": 0.1613933236574746,
+      "min": 0.1448476052249637,
+      "max": 0.16342525399129174,
+      "n_placebos": 200,
+      "n_per_placebo": 3445.0,
+      "n_per_placebo_min": 3445,
+      "n_per_placebo_max": 3445,
+      "observed": 0.1413642960812772,
+      "n_extreme": 200,
+      "p_value": 1.0,
+      "n_same_day_fallback": 106200,
+      "n_cross_date_donors": 582800,
+      "denominator": "labelled placebo events matched on (coin, time-of-day bucket, liquidity tier) and taken from a different date; the donors keep the rule's average edge, so the placebo detects date-specific deviations, not the rule's edge itself"
+     }
+    }
+   }
+  }
+ },
+ "family_dev": {
+  "status": null,
+  "method": "bootstrap",
+  "alpha": 0.1,
+  "n_members": 5,
+  "n_evaluable": 5,
+  "family_p": 1.0,
+  "best_id": "m5",
+  "adjusted": null,
+  "reason": null,
+  "note": "recomputed from the same cached events and the same point-in-time filter; the per-member mean was verified against the run's own result before the correction"
+ },
+ "freeze": {
+  "m1": {
+   "frozen": false,
+   "reason": "a split is insufficient or refused",
+   "checks": []
+  },
+  "m2": {
+   "frozen": false,
+   "reason": "a split is insufficient or refused",
+   "checks": []
+  },
+  "m3": {
+   "frozen": false,
+   "reason": "a split is insufficient or refused",
+   "checks": []
+  },
+  "m4": {
+   "frozen": false,
+   "reason": "a split is insufficient or refused",
+   "checks": []
+  },
+  "m5": {
+   "frozen": false,
+   "reason": "a split is insufficient or refused",
+   "checks": []
+  }
+ },
+ "any_frozen": false,
+ "holdout_spent": false,
+ "holdout_note": "The holdout was NOT spent: no family member met the seven preregistered criteria on both dev and validation."
+}

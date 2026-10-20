@@ -1,0 +1,5802 @@
+{
+ "0G": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "1000000BABYDOGE": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "1000000MOG": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "1000BONK": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "1000BTT": {
+  "rows": 26740,
+  "raw_rows": 26740,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 93,
+  "first_ts": 1783911000,
+  "last_ts": 1791932700
+ },
+ "1000RATS": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "1INCH": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "2Z": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "4": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "A": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "AAVE": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "ACE": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "ACH": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "ACT": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "ACU": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "ADA": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "AERO": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "AEVO": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "AGENCY": {
+  "rows": 4661,
+  "raw_rows": 4661,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 17,
+  "first_ts": 1791098400,
+  "last_ts": 1792496400
+ },
+ "AGI": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "AGT": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "AIA": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "AIN": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "AIO": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "AIOT": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "AIOZ": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "AIXBT": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "AKE": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "AKT": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "ALCH": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "ALGO": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "ALICE": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "ALL": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "ALLINU": {
+  "rows": 2441,
+  "raw_rows": 2441,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 9,
+  "first_ts": 1790904900,
+  "last_ts": 1791636900
+ },
+ "ALLO": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "ALPINE": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "ALT": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "ANIME": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "ANKR": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "ANSEM": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "APE": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "APEX": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "API3": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "APM": {
+  "rows": 9287,
+  "raw_rows": 9287,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 33,
+  "first_ts": 1789710600,
+  "last_ts": 1792496400
+ },
+ "APR": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "APT": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "AR": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "ARB": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "ARCSOL": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "ARGUS": {
+  "rows": 9824,
+  "raw_rows": 9824,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 35,
+  "first_ts": 1789529700,
+  "last_ts": 1792476600
+ },
+ "ARIA": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "ARK": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "ARKM": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "ARPA": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "ASR": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "ASTER": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "ASTR": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "AT": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "ATH": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "ATOM": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "AUCTION": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "AUDIO": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "AURORA": {
+  "rows": 7841,
+  "raw_rows": 7841,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 28,
+  "first_ts": 1790144400,
+  "last_ts": 1792496400
+ },
+ "AVA": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "AVAAI": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "AVAX": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "AVNT": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "AWE": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "AXL": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "AXS": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "B": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "B2": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "B3": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "BABY": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "BAN": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "BANANA": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "BANANAS31": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "BAND": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "BANK": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "BARD": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "BAS": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "BASECAT": {
+  "rows": 18463,
+  "raw_rows": 18463,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 65,
+  "first_ts": 1786957800,
+  "last_ts": 1792496400
+ },
+ "BASED": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "BAT": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "BATON": {
+  "rows": 10142,
+  "raw_rows": 10142,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 36,
+  "first_ts": 1789454100,
+  "last_ts": 1792496400
+ },
+ "BB": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "BCH": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "BEAMX": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "BEAT": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "BEL": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "BERA": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "BICO": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "BIGTIME": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "BIO": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "BIRB": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "BLEND": {
+  "rows": 28615,
+  "raw_rows": 28615,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783912200,
+  "last_ts": 1792496400
+ },
+ "BLESS": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "BLUAI": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "BLUR": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "BMT": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "BNB": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "BNT": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "BOBA": {
+  "rows": 26736,
+  "raw_rows": 26736,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 93,
+  "first_ts": 1783912200,
+  "last_ts": 1791932700
+ },
+ "BOME": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "BONER": {
+  "rows": 12891,
+  "raw_rows": 12891,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 45,
+  "first_ts": 1788242400,
+  "last_ts": 1792109400
+ },
+ "BP": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "BR": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "BRETT": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "BROCCOLI": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "BROCCOLIF3B": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "BSB": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "BSV": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "BTC": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "BTR": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "BTW": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "BULLA": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "C": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "C98": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "CAKE": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "CAP": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "CARV": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "CASHCAT": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "CAT": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "CATE": {
+  "rows": 24550,
+  "raw_rows": 24550,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 86,
+  "first_ts": 1785131700,
+  "last_ts": 1792496400
+ },
+ "CATI": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "CC": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "CELO": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "CELR": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "CENT": {
+  "rows": 2335,
+  "raw_rows": 2335,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 9,
+  "first_ts": 1791796200,
+  "last_ts": 1792496400
+ },
+ "CETUS": {
+  "rows": 28603,
+  "raw_rows": 28603,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783915800,
+  "last_ts": 1792496400
+ },
+ "CFG": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "CFX": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "CGPT": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "CHEEMS": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "CHILLGUY": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "CHIP": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "CHR": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "CHZ": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "CKB": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "CLANKER": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "CLAUDIA": {
+  "rows": 2368,
+  "raw_rows": 2368,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 9,
+  "first_ts": 1791786300,
+  "last_ts": 1792496400
+ },
+ "CLAUS": {
+  "rows": 3533,
+  "raw_rows": 3533,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 13,
+  "first_ts": 1791436800,
+  "last_ts": 1792496400
+ },
+ "CLO": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "CNPY": {
+  "rows": 12380,
+  "raw_rows": 12380,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 43,
+  "first_ts": 1788782700,
+  "last_ts": 1792496400
+ },
+ "COAI": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "COLLECT": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "COMP": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "COOKIE": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "COOL": {
+  "rows": 2440,
+  "raw_rows": 2440,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 9,
+  "first_ts": 1790904900,
+  "last_ts": 1791636600
+ },
+ "CORE": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "COTI": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "COW": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "CP": {
+  "rows": 13787,
+  "raw_rows": 13787,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 48,
+  "first_ts": 1788360600,
+  "last_ts": 1792496400
+ },
+ "CRO": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "CROSS": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "CRV": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "CT": {
+  "rows": 5801,
+  "raw_rows": 5801,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 21,
+  "first_ts": 1790756400,
+  "last_ts": 1792496400
+ },
+ "CTC": {
+  "rows": 28615,
+  "raw_rows": 28615,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783912200,
+  "last_ts": 1792496400
+ },
+ "CTK": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "CTR": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "CTSI": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "CVC": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "CVX": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "CYBER": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "CYS": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "DATA": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "DBR": {
+  "rows": 26736,
+  "raw_rows": 26736,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 93,
+  "first_ts": 1783912200,
+  "last_ts": 1791932700
+ },
+ "DEBIT": {
+  "rows": 13978,
+  "raw_rows": 13978,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 49,
+  "first_ts": 1787739300,
+  "last_ts": 1791932400
+ },
+ "DEEP": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "DELTA": {
+  "rows": 14315,
+  "raw_rows": 14315,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 50,
+  "first_ts": 1787638200,
+  "last_ts": 1791932400
+ },
+ "DEXE": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "DGAI": {
+  "rows": 16195,
+  "raw_rows": 16195,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 57,
+  "first_ts": 1787638200,
+  "last_ts": 1792496400
+ },
+ "DIA": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "DNA": {
+  "rows": 1195,
+  "raw_rows": 1195,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 5,
+  "first_ts": 1792138200,
+  "last_ts": 1792496400
+ },
+ "DODO": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "DOGE": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "DOGS": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "DOLO": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "DOOD": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "DOPE": {
+  "rows": 1173,
+  "raw_rows": 1173,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 5,
+  "first_ts": 1792144800,
+  "last_ts": 1792496400
+ },
+ "DOS": {
+  "rows": 20239,
+  "raw_rows": 20239,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 71,
+  "first_ts": 1786425000,
+  "last_ts": 1792496400
+ },
+ "DOT": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "DRIFT": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "DYDX": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "DYM": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "EACC": {
+  "rows": 6831,
+  "raw_rows": 6831,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 24,
+  "first_ts": 1790427600,
+  "last_ts": 1792476600
+ },
+ "EDEN": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "EDGE": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "EDU": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "EIGEN": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "ELSA": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "ENA": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "ENJ": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "ENS": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "ENSO": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "EPIC": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "ERA": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "ESP": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "ESPORTS": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "ETC": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "ETH": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "ETHFI": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "ETHW": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "EUL": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "EVAA": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "F": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "FARTCOIN": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "FET": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "FF": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "FHE": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "FIDA": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "FIGHT": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "FLOCK": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "FLOKI": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "FLOW": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "FLR": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "FLUID": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "FLUX": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "FOGO": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "FOLKS": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "FONE": {
+  "rows": 14056,
+  "raw_rows": 14056,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 49,
+  "first_ts": 1787892900,
+  "last_ts": 1792109400
+ },
+ "FORM": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "FRAX": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "G": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "GALA": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "GENIUS": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "GEOD": {
+  "rows": 22671,
+  "raw_rows": 22671,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 79,
+  "first_ts": 1785131400,
+  "last_ts": 1791932400
+ },
+ "GIGGLE": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "GLM": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "GMT": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "GMX": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "GOAT": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "GP": {
+  "rows": 7576,
+  "raw_rows": 7576,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 27,
+  "first_ts": 1790223900,
+  "last_ts": 1792496400
+ },
+ "GPS": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "GRAM": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "GRASS": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "GRIFFAIN": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "GRT": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "GRVT": {
+  "rows": 23611,
+  "raw_rows": 23611,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 82,
+  "first_ts": 1785413400,
+  "last_ts": 1792496400
+ },
+ "GTC": {
+  "rows": 97,
+  "raw_rows": 97,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 1,
+  "first_ts": 1792467600,
+  "last_ts": 1792496400
+ },
+ "GUA": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "GUN": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "GWEI": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "H": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "HAEDAL": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "HANA": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "HBAR": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "HEI": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "HEMI": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "HIVE": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "HMSTR": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "HNT": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "HOLO": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "HOME": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "HOOKED": {
+  "rows": 4660,
+  "raw_rows": 4660,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 17,
+  "first_ts": 1791098700,
+  "last_ts": 1792496400
+ },
+ "HOT": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "HUMA": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "HYPE": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "HYPER": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "ICNT": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "ICP": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "ID": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "IDOL": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "ILV": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "IMX": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "IN": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "INIT": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "INJ": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "INX": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "IO": {
+  "rows": 28609,
+  "raw_rows": 28609,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783914000,
+  "last_ts": 1792496400
+ },
+ "IOST": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "IOTA": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "IOTX": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "IRYS": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "JASMY": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "JCT": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "JEANPHIL": {
+  "rows": 3160,
+  "raw_rows": 3160,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 11,
+  "first_ts": 1791548700,
+  "last_ts": 1792496400
+ },
+ "JELLYJELLY": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "JOE": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "JST": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "JTO": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "JUP": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "KAIA": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "KAITO": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "KAS": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "KAT": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "KAVA": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "KERNEL": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "KGEN": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "KII": {
+  "rows": 19279,
+  "raw_rows": 19279,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 67,
+  "first_ts": 1786713000,
+  "last_ts": 1792496400
+ },
+ "KITE": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "KMNO": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "KNC": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "KOMA": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "KSM": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "LA": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "LAB": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "LAYER": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "LDO": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "LIGHT": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "LINEA": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "LINK": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "LISTA": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "LIT": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "LPT": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "LQTY": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "LRC": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "LSK": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "LTC": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "LUMIA": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "LUNC": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "LYN": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "M": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "MAGIC": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "MAGMA": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "MANA": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "MANTA": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "MANTRA": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "MARSCOIN": {
+  "rows": 23593,
+  "raw_rows": 23593,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 82,
+  "first_ts": 1785418800,
+  "last_ts": 1792496400
+ },
+ "MASKSOL": {
+  "rows": 5607,
+  "raw_rows": 5607,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 20,
+  "first_ts": 1790427600,
+  "last_ts": 1792109400
+ },
+ "MAV": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "MAVIA": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "ME": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "MEGA": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "MELANIA": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "MEME": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "MEMEROBINHOOD": {
+  "rows": 13279,
+  "raw_rows": 13279,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 47,
+  "first_ts": 1788513000,
+  "last_ts": 1792496400
+ },
+ "MERL": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "MET": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "METIS": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "MEW": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "MIRA": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "MITO": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "MMT": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "MNT": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "MOCA": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "MOO": {
+  "rows": 12892,
+  "raw_rows": 12892,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 45,
+  "first_ts": 1788242100,
+  "last_ts": 1792109400
+ },
+ "MOODENG": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "MORPHO": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "MOVE": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "MOVR": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "MTL": {
+  "rows": 28615,
+  "raw_rows": 28615,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783912200,
+  "last_ts": 1792496400
+ },
+ "MUBARAK": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "MUSEBOOK": {
+  "rows": 8472,
+  "raw_rows": 8472,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 30,
+  "first_ts": 1789568100,
+  "last_ts": 1792109400
+ },
+ "MYX": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "NAORIS": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "NEAR": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "NEIROCTO": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "NEO": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "NES": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "NEWT": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "NEX": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "NIL": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "NMR": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "NOM": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "NOT": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "NPC": {
+  "rows": 26741,
+  "raw_rows": 26741,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 93,
+  "first_ts": 1783910400,
+  "last_ts": 1791932400
+ },
+ "NXPC": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "O": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "OFC": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "OG": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "OGN": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "OKB": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "OL": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "ON": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "ONDO": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "ONE": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "ONG": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "ONT": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "OP": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "OPG": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "OPN": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "ORBIO": {
+  "rows": 12259,
+  "raw_rows": 12259,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 43,
+  "first_ts": 1788432000,
+  "last_ts": 1792109400
+ },
+ "ORCA": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "ORDER": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "ORDI": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "OTC": {
+  "rows": 7775,
+  "raw_rows": 7775,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 27,
+  "first_ts": 1790144400,
+  "last_ts": 1792476600
+ },
+ "PAID": {
+  "rows": 9820,
+  "raw_rows": 9820,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 35,
+  "first_ts": 1789530900,
+  "last_ts": 1792476600
+ },
+ "PAPER": {
+  "rows": 227,
+  "raw_rows": 227,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 1,
+  "first_ts": 1792386600,
+  "last_ts": 1792454400
+ },
+ "PARTI": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "PEAQ": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "PENDLE": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "PENGU": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "PEOPLE": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "PEPE": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "PHA": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "PI": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "PIEVERSE": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "PIPPIN": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "PIXEL": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "PLAY": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "PLUME": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "PNUT": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "POD": {
+  "rows": 3964,
+  "raw_rows": 3964,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 14,
+  "first_ts": 1790920500,
+  "last_ts": 1792109400
+ },
+ "POL": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "POLYX": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "PONS": {
+  "rows": 27969,
+  "raw_rows": 27969,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 98,
+  "first_ts": 1784106000,
+  "last_ts": 1792496400
+ },
+ "POPCAT": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "PORTAL": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "POWER": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "POWR": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "PRL": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "PROM": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "PROVE": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "PTB": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "PUFFER": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "PUNDIX": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "PYTH": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "Q": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "QNT": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "QTUM": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "RARE": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "RAVE": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "RAY": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "RE": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "RECALL": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "RED": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "RENDER": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "RESOLV": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "REZ": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "RHEA": {
+  "rows": 7842,
+  "raw_rows": 7842,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 28,
+  "first_ts": 1790144100,
+  "last_ts": 1792496400
+ },
+ "RIF": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "RIVER": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "RLC": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "RLS": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "ROBO": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "RON": {
+  "rows": 26727,
+  "raw_rows": 26727,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 93,
+  "first_ts": 1783914900,
+  "last_ts": 1791932700
+ },
+ "RPL": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "RSR": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "RUNE": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "RVN": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "S": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "SAFE": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "SAGA": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "SAHARA": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "SAND": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "SANTOS": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "SAPIEN": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "SATS": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "SCR": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "SEI": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "SENT": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "SFP": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "SHELL": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "SHIB": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "SHROOM": {
+  "rows": 11449,
+  "raw_rows": 11449,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 40,
+  "first_ts": 1788675000,
+  "last_ts": 1792109400
+ },
+ "SI": {
+  "rows": 6897,
+  "raw_rows": 6897,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 24,
+  "first_ts": 1790427600,
+  "last_ts": 1792496400
+ },
+ "SIGN": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "SIREN": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "SKL": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "SKR": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "SKY": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "SKYAI": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "SLP": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "SLX": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "SNX": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "SOCK": {
+  "rows": 10878,
+  "raw_rows": 10878,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 38,
+  "first_ts": 1788846300,
+  "last_ts": 1792109400
+ },
+ "SOL": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "SOLV": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "SOMI": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "SONIC": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "SOPH": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "SPACE": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "SPELL": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "SPK": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "SQD": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "SSV": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "STABLE": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "STANDARD": {
+  "rows": 8852,
+  "raw_rows": 8852,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 31,
+  "first_ts": 1789454100,
+  "last_ts": 1792109400
+ },
+ "STAR": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "STBL": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "STEEM": {
+  "rows": 28615,
+  "raw_rows": 28615,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783912200,
+  "last_ts": 1792496400
+ },
+ "STO": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "STONK": {
+  "rows": 12625,
+  "raw_rows": 12625,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 44,
+  "first_ts": 1788709200,
+  "last_ts": 1792496400
+ },
+ "STORJ": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "STRK": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "STX": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "SUI": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "SUN": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "SUPER": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "SUSHI": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "SWARM": {
+  "rows": 15680,
+  "raw_rows": 15680,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 55,
+  "first_ts": 1787228700,
+  "last_ts": 1791932400
+ },
+ "SWARMS": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "SXT": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "SYN": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "SYRUP": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "T": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "TA": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "TAC": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "TAG": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "TAIKO": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "TAKE": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "TAO": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "TFUEL": {
+  "rows": 26741,
+  "raw_rows": 26741,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 93,
+  "first_ts": 1783910400,
+  "last_ts": 1791932400
+ },
+ "THE": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "THETA": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "TIA": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "TLM": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "TMX": {
+  "rows": 16148,
+  "raw_rows": 16148,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 57,
+  "first_ts": 1787652300,
+  "last_ts": 1792496400
+ },
+ "TNSR": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "TOSHI": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "TOWNS": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "TRADOOR": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "TRB": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "TREAD": {
+  "rows": 9587,
+  "raw_rows": 9587,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 34,
+  "first_ts": 1789620600,
+  "last_ts": 1792496400
+ },
+ "TREE": {
+  "rows": 28615,
+  "raw_rows": 28615,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783912200,
+  "last_ts": 1792496400
+ },
+ "TRIA": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "TRUST": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "TRUTH": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "TRX": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "TST": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "TURBO": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "TURTLE": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "TUT": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "TWT": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "UAI": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "UB": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "UBIK": {
+  "rows": 6862,
+  "raw_rows": 6862,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 24,
+  "first_ts": 1790051100,
+  "last_ts": 1792109400
+ },
+ "UMA": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "UNI": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "UP": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "UPROBINHOOD": {
+  "rows": 18359,
+  "raw_rows": 18359,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 64,
+  "first_ts": 1786425000,
+  "last_ts": 1791932400
+ },
+ "US": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "USDC": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "USELESS": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "USTC": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "USUAL": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "VANA": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "VELO": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "VELODROME": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "VELVET": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "VET": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "VIRTUAL": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "VTHO": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "VVV": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "W": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "WAL": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "WAVES": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "WAXP": {
+  "rows": 28615,
+  "raw_rows": 28615,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783912200,
+  "last_ts": 1792496400
+ },
+ "WCT": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "WET": {
+  "rows": 28615,
+  "raw_rows": 28615,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783912200,
+  "last_ts": 1792496400
+ },
+ "WHUF": {
+  "rows": 3411,
+  "raw_rows": 3411,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 12,
+  "first_ts": 1791473400,
+  "last_ts": 1792496400
+ },
+ "WIF": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "WLD": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "WLFI": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "WOO": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "XAI": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "XAN": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "XCN": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "XDC": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "XDP": {
+  "rows": 6311,
+  "raw_rows": 6311,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 22,
+  "first_ts": 1790603400,
+  "last_ts": 1792496400
+ },
+ "XEC": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "XLM": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "XMR": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "XNY": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "XPIN": {
+  "rows": 28617,
+  "raw_rows": 28617,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911600,
+  "last_ts": 1792496400
+ },
+ "XPL": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "XRP": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "XTZ": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "XVG": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "XVS": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "YB": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "YFI": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "YGG": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "ZAMA": {
+  "rows": 28620,
+  "raw_rows": 28620,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910700,
+  "last_ts": 1792496400
+ },
+ "ZBCN": {
+  "rows": 26737,
+  "raw_rows": 26737,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 93,
+  "first_ts": 1783911900,
+  "last_ts": 1791932700
+ },
+ "ZBT": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "ZC": {
+  "rows": 6117,
+  "raw_rows": 6117,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 22,
+  "first_ts": 1790661600,
+  "last_ts": 1792496400
+ },
+ "ZCAT": {
+  "rows": 12414,
+  "raw_rows": 12414,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 44,
+  "first_ts": 1788772500,
+  "last_ts": 1792496400
+ },
+ "ZEN": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "ZEREBRO": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "ZEST": {
+  "rows": 28616,
+  "raw_rows": 28616,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911900,
+  "last_ts": 1792496400
+ },
+ "ZETA": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "ZIG": {
+  "rows": 26741,
+  "raw_rows": 26741,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 93,
+  "first_ts": 1783910400,
+  "last_ts": 1791932400
+ },
+ "ZIL": {
+  "rows": 28619,
+  "raw_rows": 28619,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911000,
+  "last_ts": 1792496400
+ },
+ "ZKC": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "ZORA": {
+  "rows": 28618,
+  "raw_rows": 28618,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783911300,
+  "last_ts": 1792496400
+ },
+ "ZRO": {
+  "rows": 28622,
+  "raw_rows": 28622,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910100,
+  "last_ts": 1792496400
+ },
+ "ZRX": {
+  "rows": 28621,
+  "raw_rows": 28621,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 100,
+  "first_ts": 1783910400,
+  "last_ts": 1792496400
+ },
+ "ZZZ": {
+  "rows": 11449,
+  "raw_rows": 11449,
+  "duplicates": 0,
+  "malformed": 0,
+  "gaps": 0,
+  "days_covered": 40,
+  "first_ts": 1788675000,
+  "last_ts": 1792109400
+ }
+}
