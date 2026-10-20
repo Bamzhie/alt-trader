@@ -63,6 +63,7 @@ ACTIONABLE output, never writes a decision and never touches the holdout.
 """
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import time
@@ -484,7 +485,13 @@ def _value(outcome, metric):
 def _side_block(version, values, days, coins, causes, n_selected, n_evaluable,
                 metric, seed=1, geometry=None, label_slots=None):
     """The per-side report: the mean over the PAIRED events, its interval
-    and its denominators."""
+    and its denominators.
+
+    The interval follows the SAME rule as the cluster intervals in
+    ``inference.uncertainty``: a degenerate (zero-width) day-cluster
+    interval is reported as NO interval and NO statistic, with a reason --
+    it is never presented as if it were a cluster interval.
+    """
     n = len(values)
     block = {
         "id": version.id,
@@ -508,12 +515,25 @@ def _side_block(version, values, days, coins, causes, n_selected, n_evaluable,
         "denominator": ("the paired events: the events BOTH configurations "
                         "were evaluated on, in the window, with the "
                         f"'{metric}' metric"),
+        "reason": None,
     }
-    if n and len(set(days)) >= MIN_CLUSTERS:
+    n_days = len(set(days))
+    if n and n_days >= MIN_CLUSTERS:
         _m, lo, hi, _D = S.day_cluster_mean(values, days, B=BOOTSTRAP_B,
                                             seed=seed)
-        block["ci_lo"], block["ci_hi"] = lo, hi
-        block["t"] = S.day_cluster_t(values, days)
+        if (lo is not None and hi is not None and math.isfinite(lo)
+                and math.isfinite(hi) and lo < hi):
+            block["ci_lo"], block["ci_hi"] = lo, hi
+            block["t"] = S.day_cluster_t(values, days)
+        else:
+            # A degenerate (zero-width) day-cluster interval is NOT evidence
+            # of certainty: no interval, no statistic, and a reason.
+            block["reason"] = ("the day-cluster interval is suppressed: the "
+                               "bootstrap produced a degenerate (zero-width) "
+                               "interval")
+    elif n:
+        block["reason"] = (f"the day-cluster interval is suppressed: only "
+                           f"{n_days} distinct days (< {MIN_CLUSTERS})")
     return block
 
 
@@ -733,7 +753,17 @@ def compare(champion: ConfigVersion, candidate: ConfigVersion, events, window,
     if n_days >= MIN_CLUSTERS:
         mean, ci_lo, ci_hi, _D = S.day_cluster_mean(diffs, days,
                                                      B=BOOTSTRAP_B, seed=seed)
-        t = S.day_cluster_t(diffs, days)
+        if (ci_lo is None or ci_hi is None or not math.isfinite(ci_lo)
+                or not math.isfinite(ci_hi) or ci_lo >= ci_hi):
+            # A degenerate (zero-width) day-cluster interval is NOT evidence
+            # of certainty: no interval and no statistic, with a reason.
+            ci_lo = ci_hi = None
+            t = None
+            reasons.append("the day-cluster interval is suppressed: the "
+                           "bootstrap produced a degenerate (zero-width) "
+                           "interval")
+        else:
+            t = S.day_cluster_t(diffs, days)
     else:
         mean = sum(diffs) / n
         ci_lo = ci_hi = None

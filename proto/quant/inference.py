@@ -335,6 +335,12 @@ def uncertainty(values, days=None, coins=None, *, B=2000, seed=1) -> dict:
     suppressed with the interval: a ``t`` that is reported next to a
     suppressed interval would read as evidence that the interval does not
     carry.
+
+    A day label that is ``None`` is NOT a day: the labels then do not
+    align with the values, so they are treated exactly like "no day
+    labels" (the same rule ``competing_outcomes.expected_return`` applies)
+    and no day interval is reported.  The same holds for a ``None`` coin
+    label.  The function never raises on a missing label.
     """
     n = len(values)
     reasons = []
@@ -350,6 +356,12 @@ def uncertainty(values, days=None, coins=None, *, B=2000, seed=1) -> dict:
 
     # ---- day cluster (house rule) ----
     if days is None or len(days) != n:
+        reasons.append("no-day-labels")
+    elif any(d is None for d in days):
+        # A None day label is a MISSING label, not a day.  It is treated
+        # like "no day labels": no day interval, no day statistic, and a
+        # reason.  (Sorting a mixed None/str label list used to raise a
+        # TypeError out of this function.)
         reasons.append("no-day-labels")
     else:
         D = len(set(days))
@@ -368,6 +380,12 @@ def uncertainty(values, days=None, coins=None, *, B=2000, seed=1) -> dict:
 
     # ---- coin cluster ----
     if coins is None or len(coins) != n:
+        reasons.append("no-coin-labels")
+    elif any(c is None for c in coins):
+        # A None coin label is a MISSING label, not a coin: the labels do
+        # not align with the values, so they are treated like "no coin
+        # labels" (the coin-block bootstrap sorts the coin keys, so a
+        # mixed None/str list used to raise a TypeError).
         reasons.append("no-coin-labels")
     else:
         C = len(set(coins))

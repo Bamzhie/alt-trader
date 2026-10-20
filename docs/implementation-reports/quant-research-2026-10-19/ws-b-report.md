@@ -55,7 +55,12 @@ def resolve_competing(events, rule, geom, window, cfg=DEFAULT, *,
 def outcome_distribution(outcomes, *, key="net_r") -> dict
 
 def expected_return(outcomes, key="net_r", days=None, *, B=1500, seed=1) -> dict
+
+def cause_incidence(outcomes, horizon_bars) -> dict
 ```
+
+`cause_incidence` was added in fix round 1 (the cumulative-incidence view
+of the same taxonomy) and is part of the public surface.
 
 Also public (helpers the other modules and the reviewer may use):
 `slot_index(geom, side)`, `label_slot(ev, geom, side) -> (cause, gross, offset)`,
@@ -523,10 +528,16 @@ fitted on 30 observations instead of none.)*
 30 are all hits, `min_train=30`:
 
 ```
-first prediction p = 0.995455   (an empty training set would give 0.5)
+first prediction p = 0.986979   (an empty training set would give 0.5)
 n_train = 40                     (the prefix plus the 10 predicted events)
 n_predictions = 10, n_outcomes = 10   (the prefix itself is never predicted)
 ```
+
+*(Corrected in the final review: the figure quoted here was `0.995455`,
+which does not reproduce from the committed fixture.  The value above is
+the one the committed fixture actually produces — the same 40-event probe
+as `tests/test_ws_b_outcomes.py` — and `n_train` / `n_predictions` /
+`n_outcomes` reproduce as quoted.)*
 
 ### 4.5 Placebo distribution (60 events, 2 coins, seed 7, 200 placebos)
 
@@ -748,11 +759,16 @@ two CENSORED outcomes plus the invalidated one are still at risk).
     `expected_return`, and the bootstrap method needs a resample count and a
     seed to be reproducible. All are keyword-only with defaults, so the
     brief's calls still work unchanged.
-11. **Not done (deliberately, out of scope):** the layer is not wired into
-    any CLI, report or service path, it promotes nothing, it does not enable
-    ACTIONABLE output, it does not touch the holdout, and it did not re-run
-    or retune the 288-configuration evaluation. The 288-config grid and the
-    one-shot holdout remain untouched.
+11. **Not done (deliberately, out of scope):** the layer promotes nothing, it
+    does not enable ACTIONABLE output, it does not touch the holdout, and
+    it did not re-run or retune the 288-configuration evaluation. The
+    288-config grid and the one-shot holdout remain untouched.
+    *(Corrected in the final review: the claim that the layer "is not
+    wired into any CLI, report or service path" is no longer true — the
+    `champions compare` sub-command of `proto/quant/__main__.py` drives
+    `competing_outcomes` + `inference` through `champion.compare`.  The
+    sub-command is read-only: it cannot promote and it cannot spend the
+    holdout.)*
 12. **Denominator rule (chosen, and now consistent across the layer).**
     The event set of every entry point is the **rule-selected, TRADEABLE**
     events of the window: an event with no cost model (below the liquidity

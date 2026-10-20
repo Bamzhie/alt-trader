@@ -28,6 +28,7 @@ Run:  python3 tests/test_ws_f_startup.py   -> ALL PASS, exit 0
 
 import http.client
 import inspect
+import io
 import json
 import math
 import os
@@ -38,6 +39,7 @@ import sys
 import tempfile
 import threading
 import time
+import warnings
 from types import SimpleNamespace
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -539,6 +541,126 @@ def test_bar_index():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ------------------------------------------- a flush never loses a record --
+def test_bar_index_flush_does_not_lose_a_mid_flush_record():
+    print("=== a coin recorded DURING a flush is not lost ===")
+    from proto import collector as col
+    tmp = tempfile.mkdtemp(prefix="wsf-flush-")
+    try:
+        idx = col.BarIndex(os.path.join(tmp, ".bar_index.json"))
+        idx.record("AAA", {"max_ts": 1, "rows": 1})
+        check("the index is dirty after a record", idx.dirty is True)
+
+        # A coin is recorded WHILE the flush is in flight (the write has
+        # already been prepared, the file is not yet replaced).
+        real_replace = os.replace
+
+        def _racing_replace(src, dst):
+            idx.record("LATE", {"max_ts": 2, "rows": 1})
+            return real_replace(src, dst)
+
+        os.replace = _racing_replace
+        try:
+            path = idx.flush()
+        finally:
+            os.replace = real_replace
+        check("the flush wrote the index", path is not None, str(path))
+        check("the coin recorded during the flush keeps the index dirty",
+              idx.dirty is True, f"dirty={idx.dirty}")
+        # The second flush must carry the late record to the disk.
+        idx.flush()
+        on_disk = json.load(open(os.path.join(tmp, ".bar_index.json"),
+                                 encoding="utf-8"))
+        check("the coin recorded during the flush reaches the disk",
+              "LATE" in on_disk and "AAA" in on_disk, str(sorted(on_disk)))
+        check("a clean index is not dirty any more", idx.dirty is False,
+              f"dirty={idx.dirty}")
+
+        # A failed write must not swallow the data either: the flag is
+        # restored, so the next flush retries.
+        idx2 = col.BarIndex(os.path.join(tmp, ".bar_index2.json"))
+        idx2.record("BBB", {"max_ts": 3, "rows": 1})
+        real_mkstemp = tempfile.mkstemp
+
+        def _boom(*a, **kw):
+            raise OSError("no space left on device")
+
+        tempfile.mkstemp = _boom
+        try:
+            out = idx2.flush()
+        finally:
+            tempfile.mkstemp = real_mkstemp
+        check("a failed write never raises", out is None, str(out))
+        check("a failed write keeps the index dirty (it is retried)",
+              idx2.dirty is True, f"dirty={idx2.dirty}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ------------------------------------- the stage map is read under a lock --
+def test_stage_map_is_read_under_the_lock():
+    print("=== the running stage map is read under the lock ===")
+    from proto import daemon_timing as dt
+    timing = dt.TimingLog(path=None)
+    errors = []
+    stop = threading.Event()
+    stages = ("scan", "collect", "funding", "settlements", "prices",
+              "resolve", "measure", "quant")
+
+    def _writer():
+        # The daemon thread: it opens an iteration, records its stages and
+        # closes it (which REPLACES the running iteration).
+        try:
+            while not stop.is_set():
+                timing.begin()
+                for s in stages:
+                    timing.record(s, 0.01, "ok")
+                timing.end()
+        except Exception as e:      # noqa: BLE001 -- the failure IS the test
+            errors.append("writer: " + repr(e))
+
+    def _reader():
+        # The HTTP thread: it reads the stage map of the most recent
+        # iteration.  An unsynchronised read used to raise
+        # "TypeError: 'NoneType' object is not subscriptable" (the running
+        # iteration was replaced between the check and the access), and the
+        # service swallowed it -> the answer silently lost its stages.
+        try:
+            while not stop.is_set():
+                got = timing.last_stages()
+                if not isinstance(got, dict):
+                    errors.append(f"not a dict: {got!r}")
+                    return
+                for k, v in got.items():
+                    if not isinstance(v, dict) or "outcome" not in v:
+                        errors.append(f"bad stage entry: {k} {v!r}")
+                        return
+        except Exception as e:      # noqa: BLE001 -- the failure IS the test
+            errors.append("reader: " + repr(e))
+
+    threads = ([threading.Thread(target=_writer)]
+               + [threading.Thread(target=_reader) for _ in range(3)])
+    # A short switch interval makes the daemon thread interleave with the
+    # reader often enough for the race to be hit (and the race IS the bug).
+    old_switch = sys.getswitchinterval()
+    try:
+        sys.setswitchinterval(0.000001)
+        for t in threads:
+            t.start()
+        time.sleep(1.0)
+        stop.set()
+        for t in threads:
+            t.join(5)
+    finally:
+        sys.setswitchinterval(old_switch)
+    check("reading the running stage map never raises", not errors,
+          str(errors[:3]))
+    check("the stage map is still readable afterwards",
+          isinstance(timing.last_stages(), dict), str(timing.last_stages()))
+    check("the recorded stages are in the map",
+          "scan" in timing.last_stages(), str(timing.last_stages()))
+
+
 # ------------------------------------------------------- the bounded rebuild --
 def test_watermark_rollback_is_detected():
     print("=== the persisted watermark is read back (rollback detection) ===")
@@ -819,6 +941,121 @@ def test_stop_flag_interrupts_the_iteration():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# --------------------------------------- the ready= deprecation is VISIBLE --
+def test_ready_deprecation_is_visible():
+    print("=== the ready=/is_ready= deprecation is visible ===")
+    from proto import service as svc
+    tmp = tempfile.mkdtemp(prefix="wsf-depr-")
+    server = None
+    try:
+        db = os.path.join(tmp, "signals.db")
+        # The deprecation is emitted ONCE per process: reset the flag so the
+        # warning is emitted here (the other tests of this file may have
+        # triggered it already).
+        svc._READY_DEPRECATION_WARNED = False
+        err = io.StringIO()
+        real_stderr = sys.stderr
+        caught = []
+        sys.stderr = err
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                server = svc.serve(0, "ws-f-token", lambda: {},
+                                   store_path=db, data_dir=tmp,
+                                   is_ready=lambda: True)
+        finally:
+            sys.stderr = real_stderr
+        check("the deprecation is written to stderr (it is not hidden by "
+              "the default warning filter)",
+              "deprecated" in err.getvalue().lower(), err.getvalue()[:200])
+        check("the deprecation still reaches the warnings machinery",
+              any(issubclass(w.category, DeprecationWarning) for w in caught),
+              str([w.category.__name__ for w in caught]))
+        # ... and it is emitted only ONCE per process.
+        err2 = io.StringIO()
+        real_stderr = sys.stderr
+        sys.stderr = err2
+        try:
+            svc.serve(0, "ws-f-token", lambda: {}, store_path=db,
+                      data_dir=tmp, is_ready=lambda: True)
+        finally:
+            sys.stderr = real_stderr
+        check("the deprecation is emitted only once per process",
+              err2.getvalue() == "", err2.getvalue()[:200])
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ------------------------------------------- no resolve pass on a SIGTERM --
+def test_no_resolve_pass_is_started_in_an_interrupted_iteration():
+    print("=== an interrupted iteration starts no resolve pass ===")
+    from proto import daemon as dmod
+    from proto.daemon_timing import TimingLog
+    tmp = tempfile.mkdtemp(prefix="wsf-resolve-")
+    real_app = dmod.App
+    real_collect = dmod.colmod.collect_full_universe
+    real_fund = dmod.fmod.collect_funding
+    real_settle = dmod.smod.maybe_collect
+    real_prices = dmod.pmod.maybe_collect
+    real_pool = dmod.ThreadPoolExecutor
+    submitted = []
+
+    class _CountingPool(real_pool):
+        """The resolver pool: every submitted job is recorded."""
+
+        def submit(self, fn, *a, **kw):
+            submitted.append(getattr(fn, "__name__", str(fn)))
+            return super().submit(fn, *a, **kw)
+
+    try:
+        db = os.path.join(tmp, "signals.db")
+        stop = threading.Event()
+
+        class _StoppingCounts(dict):
+            def __init__(self):
+                super().__init__()
+                self.errors = {}
+                self.stopped = True
+
+        def _stop_collect(*a, **k):
+            # the stop arrives in the middle of the collect cycle
+            stop.set()
+            return _StoppingCounts()
+
+        dmod.fmod.collect_funding = lambda *a, **k: {}
+        dmod.smod.maybe_collect = lambda *a, **k: {}
+        dmod.pmod.maybe_collect = lambda *a, **k: {}
+        dmod.App = _fake_app({})
+        dmod.colmod.collect_full_universe = _stop_collect
+        dmod.ThreadPoolExecutor = _CountingPool
+        timing = TimingLog(os.path.join(tmp, ".timing.json"), db=db)
+        args = SimpleNamespace(
+            stake=0.10, coins=150, interval=300, db=db, log_threshold=24.0,
+            use_v3=False, collect_every=0, resolve_every=0,
+            measure_every=HUGE, iterations=5, no_scan=True,
+            quant_shadow=False, quant_db=os.path.join(tmp, "q.db"),
+            quant_bars=os.path.join(tmp, "bars"), quant_equity=1000.0,
+            settlements_dir=None, prices_dir=None)
+        dmod.run_daemon_loop(args, stop_event=stop, timing=timing)
+        check("an interrupted iteration starts no resolve pass",
+              submitted == [], str(submitted))
+        stages = (timing.last() or {}).get("stages") or {}
+        check("the resolve stage is recorded as skipped",
+              (stages.get("resolve") or {}).get("outcome") == "skipped",
+              str(stages.get("resolve")))
+    finally:
+        dmod.App = real_app
+        dmod.colmod.collect_full_universe = real_collect
+        dmod.fmod.collect_funding = real_fund
+        dmod.smod.maybe_collect = real_settle
+        dmod.pmod.maybe_collect = real_prices
+        dmod.ThreadPoolExecutor = real_pool
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ------------------------------------------------------- the sweep records --
 def test_one_sweep_record_per_iteration():
     print("=== exactly one sweep record per completed iteration ===")
@@ -950,6 +1187,10 @@ def main():
                test_cadence_persisted_across_restarts,
                test_failed_stage_is_not_marked_as_run,
                test_bar_index,
+               test_bar_index_flush_does_not_lose_a_mid_flush_record,
+               test_stage_map_is_read_under_the_lock,
+               test_ready_deprecation_is_visible,
+               test_no_resolve_pass_is_started_in_an_interrupted_iteration,
                test_bounded_rebuild_is_identical,
                test_watermark_rollback_is_detected,
                test_interrupted_first_iteration_is_not_complete,

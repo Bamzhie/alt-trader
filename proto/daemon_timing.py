@@ -30,6 +30,15 @@ Contract (deliberately conservative):
   and every later restart resumes instead of repeating the work.
 * Nothing here ever writes to the production archives: the sidecars sit
   beside the DB, and every write goes through ``atomic_write_json``.
+
+**The first-sweep state is PROCESS-LOCAL.**  ``TimingLog.first_sweep``
+starts at ``pending`` in every fresh process: it is NOT persisted (the
+sidecar holds the iterations, not the sweep state) and it RESETS TO
+``pending`` on every restart.  It therefore means "has THIS process
+completed its first sweep since it started", never "has the system ever
+completed a sweep".  A consumer that needs the system-wide fact must read
+the persisted sweep records (or the service's own ``sweep_count`` /
+``last_sweep_ts``), not this block.
 """
 
 import json
@@ -180,8 +189,9 @@ class TimingLog:
             return self.iterations
         rows = data.get("iterations")
         if isinstance(rows, list):
-            self.iterations = [r for r in rows if isinstance(r, dict)]
-            self.iterations = self.iterations[-self.keep:]
+            with self._lock:
+                self.iterations = [r for r in rows if isinstance(r, dict)]
+                self.iterations = self.iterations[-self.keep:]
         return self.iterations
 
     def save(self):
@@ -193,8 +203,10 @@ class TimingLog:
         if not self.path:
             return None
         try:
-            atomic_write_json(self.path, {"version": 1, "db": self.db,
-                                          "iterations": self.iterations})
+            with self._lock:
+                payload = {"version": 1, "db": self.db,
+                           "iterations": list(self.iterations)}
+            atomic_write_json(self.path, payload)
         except Exception:
             return None
         return self.path
@@ -203,17 +215,21 @@ class TimingLog:
     def begin(self, ts=None):
         """Start a new iteration record (the previous one is kept)."""
         now = int(ts if ts is not None else self.now_fn())
-        self.current = {"ts": now, "stages": {}}
-        return self.current
+        with self._lock:
+            self.current = {"ts": now, "stages": {}}
+            return self.current
 
     def record(self, stage, duration_s, outcome, **extra):
         """Record one stage's measured duration and outcome.
 
         The outcome is validated against :data:`OUTCOMES`; an unknown value
         is stored as ``failed`` (never silently as a success).
+
+        The record is written UNDER THE LOCK: the HTTP thread reads the
+        running iteration's stages concurrently (``last_stages``), and an
+        unsynchronised write could raise "dictionary changed size during
+        iteration" out of that reader.
         """
-        if self.current is None:
-            self.begin()
         if outcome not in OUTCOMES:
             outcome = "failed"
         entry = {"duration_s": round(float(duration_s or 0.0), 3),
@@ -221,29 +237,34 @@ class TimingLog:
         for key, value in extra.items():
             if value is not None:
                 entry[key] = value
-        self.current["stages"][stage] = entry
+        with self._lock:
+            if self.current is None:
+                self.current = {"ts": int(self.now_fn()), "stages": {}}
+            self.current["stages"][stage] = entry
         return entry
 
     def end(self, duration_s=None, ts=None):
         """Close the current iteration, persist it and return it."""
-        if self.current is None:
-            return None
-        if duration_s is not None:
-            self.current["duration_s"] = round(float(duration_s), 3)
-        self.current["ts"] = int(ts if ts is not None
-                                 else self.current.get("ts")
-                                 or self.now_fn())
-        self.iterations.append(self.current)
-        self.iterations = self.iterations[-self.keep:]
+        with self._lock:
+            if self.current is None:
+                return None
+            if duration_s is not None:
+                self.current["duration_s"] = round(float(duration_s), 3)
+            self.current["ts"] = int(ts if ts is not None
+                                     else self.current.get("ts")
+                                     or self.now_fn())
+            finished = self.current
+            self.current = None
+            self.iterations.append(finished)
+            self.iterations = self.iterations[-self.keep:]
         self.save()
-        finished = self.current
-        self.current = None
         return finished
 
     # -- readers --------------------------------------------------------
     def last(self):
         """The last completed iteration record (or None)."""
-        return self.iterations[-1] if self.iterations else None
+        with self._lock:
+            return self.iterations[-1] if self.iterations else None
 
     def last_stages(self):
         """``{stage: {duration_s, outcome}}`` of the most recent iteration.
@@ -251,14 +272,27 @@ class TimingLog:
         The RUNNING iteration wins when it has stages already (the
         durations measured so far are more useful than the previous run's),
         otherwise the last completed iteration is used.
+
+        The snapshot is taken UNDER THE LOCK and copied out of it: the
+        daemon thread mutates the running iteration's stage map while this
+        reader walks it, and an unsynchronised walk could raise
+        "dictionary changed size during iteration" (the caller would then
+        silently lose the whole stage map).
         """
-        if self.current and self.current.get("stages"):
-            return dict(self.current["stages"])
-        last = self.last()
-        return dict((last or {}).get("stages") or {})
+        with self._lock:
+            current = self.current
+            stages = dict(current["stages"]) if current else {}
+            if stages:
+                return stages
+            last = self.iterations[-1] if self.iterations else None
+            return dict((last or {}).get("stages") or {})
 
     def stage_durations(self):
-        """``{stage: duration_s}`` of the last completed run."""
+        """``{stage: duration_s}`` of the most recent iteration.
+
+        The same snapshot ``last_stages`` returns (the running iteration
+        when it has stages, the last completed one otherwise).
+        """
         return dict((k, v.get("duration_s"))
                     for k, v in self.last_stages().items())
 
@@ -269,7 +303,13 @@ class TimingLog:
     # -- first sweep ----------------------------------------------------
     @property
     def first_sweep(self):
-        """The current first-sweep snapshot (read-only)."""
+        """The current first-sweep snapshot (read-only).
+
+        PROCESS-LOCAL: it starts at ``pending`` in every fresh process and
+        resets to ``pending`` on every restart.  It says "this process has
+        completed its first sweep", NOT "the system ever completed a
+        sweep" (see the module docstring).
+        """
         return self.first_sweep_state()
 
     def mark_sweep_started(self, ts=None):
@@ -315,7 +355,12 @@ class TimingLog:
             return dict(new)
 
     def first_sweep_state(self):
-        """The ``first_sweep`` block published by ``/scanner-health``."""
+        """The ``first_sweep`` block published by ``/scanner-health``.
+
+        PROCESS-LOCAL: it is not persisted and it resets to ``pending`` on
+        every restart.  It must never be read as "the system ever completed
+        a sweep".
+        """
         with self._lock:
             fs = dict(self._first_sweep)
         fs["stages"] = dict(fs.get("stages") or {})

@@ -569,6 +569,13 @@ def expected_return(outcomes, key="net_r", days=None, *, B=1500, seed=1) -> dict
         reason says why.  The se/t fall back to the row level
         (``cluster="row"``) and the row-level interval is reported
         separately as ``row_ci_lo``/``row_ci_hi``.
+      * ``days`` supplied, aligned, at least three distinct days, but the
+        bootstrap produced a DEGENERATE (zero-width) interval (every
+        resampled mean identical): NO interval is reported and the
+        matching ``t`` is suppressed too -- a zero-width interval is not
+        evidence of certainty.  The se falls back to the row level
+        (``cluster="row"``) and the row-level interval is reported
+        separately as ``row_ci_lo``/``row_ci_hi``.
       * no day labels (or labels that do not align with the evaluated
         outcomes): the plain mean with the row-level standard error and
         its normal-approximation interval; ``cluster="row"``.
@@ -623,12 +630,25 @@ def expected_return(outcomes, key="net_r", days=None, *, B=1500, seed=1) -> dict
                       "row-level interval is row_ci_lo..row_ci_hi")
         else:
             _m, lo, hi, _D = S.day_cluster_mean(values, day_list, B=B, seed=seed)
-            t = S.day_cluster_t(values, day_list)
-            se = (mean / t) if (t and math.isfinite(t)) else plain_se
-            cluster = "day"
-            reason = (None if t and math.isfinite(t) else
-                      "day-cluster t undefined: the se falls back to the "
-                      "row-level one")
+            if (lo is None or hi is None or not math.isfinite(lo)
+                    or not math.isfinite(hi) or lo >= hi):
+                # A degenerate (zero-width) day-cluster interval is NOT
+                # evidence of certainty: report NO interval and NO
+                # statistic, exactly like the too-few-clusters case.  The
+                # row-level view is still reported next to it.
+                se, t, lo, hi = plain_se, None, None, None
+                cluster = "row"
+                reason = ("day-cluster interval suppressed: the bootstrap "
+                          "produced a degenerate (zero-width) interval; the "
+                          "se is row-level and the row-level interval is "
+                          "row_ci_lo..row_ci_hi")
+            else:
+                t = S.day_cluster_t(values, day_list)
+                se = (mean / t) if (t and math.isfinite(t)) else plain_se
+                cluster = "day"
+                reason = (None if t and math.isfinite(t) else
+                          "day-cluster t undefined: the se falls back to the "
+                          "row-level one")
     return {"key": key, "mean": mean, "n": n, "n_missing": len(outcomes) - n,
             "se": se, "t": t, "ci_lo": lo, "ci_hi": hi, "cluster": cluster,
             "row_ci_lo": row_lo, "row_ci_hi": row_hi,

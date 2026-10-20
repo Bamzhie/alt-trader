@@ -110,11 +110,22 @@ class BarIndex:
         would raise "dictionary changed size during iteration" out of
         ``append_bars``.  A failed write never propagates (the index is
         only an accelerator) and never leaves a temp file behind.
+
+        The dirty flag is CLEARED BEFORE the snapshot is taken, never
+        after: a coin recorded while the write is in flight must stay
+        dirty, otherwise the record would live in memory, be considered
+        persisted and never reach the disk (the next flush would return
+        early and the index on disk would stay stale forever).  A failed
+        write restores the flag, so the data is retried.
         """
         with self._flush_lock:
             with self._lock:
                 if not self.dirty:
                     return None
+                # Cleared first, under the same lock as the snapshot: a
+                # record that lands from here on sets the flag again and is
+                # picked up by the NEXT flush.
+                self.dirty = False
                 snapshot = dict(self.entries)
             d = os.path.dirname(os.path.abspath(self.path)) or "."
             tmp = None
@@ -127,8 +138,6 @@ class BarIndex:
                     os.fsync(f.fileno())
                 os.replace(tmp, self.path)
                 tmp = None
-                with self._lock:
-                    self.dirty = False
                 return self.path
             except Exception:
                 if tmp is not None:
@@ -136,6 +145,10 @@ class BarIndex:
                         os.unlink(tmp)
                     except OSError:
                         pass
+                # The snapshot did not land: the entries are still only in
+                # memory, so they must be flushed again later.
+                with self._lock:
+                    self.dirty = True
                 return None
 
     # -- lookups --------------------------------------------------------

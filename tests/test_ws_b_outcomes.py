@@ -325,6 +325,29 @@ check("day labels that do not align say so (not 'no day labels supplied')",
       "no day labels supplied" not in (er_none["reason"] or "")
       and "do not align" in (er_none["reason"] or ""), str(er_none["reason"]))
 
+# A degenerate (zero-width) day-cluster interval is NOT a cluster interval:
+# six IDENTICAL values over three days used to report ci_lo == ci_hi == the
+# mean with cluster="day" -- a zero-width interval presented as certainty.
+flat = [mk_outcome(cause="TP", gross=0.01, friction=0.0, funding=0.0, dd=1.0,
+                   coin=f"C{i % 2}", ts=T0 + i * 86400)
+        for i in range(6)]
+er_flat = CO.expected_return(flat, key="gross_log",
+                             days=[0, 0, 1, 1, 2, 2])
+check("a degenerate day-cluster interval is suppressed, not reported",
+      er_flat["ci_lo"] is None and er_flat["ci_hi"] is None,
+      f"ci_lo={er_flat['ci_lo']} ci_hi={er_flat['ci_hi']}")
+check("the suppressed interval says why",
+      "degenerate" in (er_flat["reason"] or "")
+      and "suppressed" in (er_flat["reason"] or ""), str(er_flat["reason"]))
+check("the cluster field does not claim a day cluster it did not report",
+      er_flat["cluster"] == "row", str(er_flat["cluster"]))
+check("a degenerate interval takes its statistic with it",
+      er_flat["t"] is None, str(er_flat["t"]))
+check("the row-level interval is still available next to the suppressed one",
+      er_flat["row_ci_lo"] is not None and er_flat["row_ci_hi"] is not None)
+check("the mean is still reported (only the interval is suppressed)",
+      er_flat["mean"] is not None and er_flat["n"] == 6, str(er_flat["n"]))
+
 # --------------------------------------------------------------------------
 print("\n=== 7. chronological probability and calibration ===")
 N = 160
@@ -429,6 +452,32 @@ unc_few = INF.uncertainty([1.0, 2.0, 3.0], days=[0, 0, 1],
                            coins=["A", "A", "A"], B=200, seed=1)
 check("too few clusters takes the statistic with it as well",
       unc_few["t_day"] is None and unc_few["t_coin"] is None, str(unc_few))
+
+# A None day label is a MISSING label, not a day: the labels do not align
+# with the values, so they are treated like "no day labels".  The day
+# bootstrap SORTS the day labels, so a mixed None/str list used to raise a
+# TypeError out of the function.
+unc_none_day = INF.uncertainty([1, 2, 3, 4], days=["a", None, "b", "c"])
+check("a None day label never raises (it is a missing label, not a day)",
+      isinstance(unc_none_day, dict), str(unc_none_day))
+check("a None day label means no day interval",
+      unc_none_day["ci_lo_day"] is None and unc_none_day["ci_hi_day"] is None
+      and unc_none_day["t_day"] is None, str(unc_none_day))
+check("the missing day label is reported as no-day-labels",
+      "no-day-labels" in unc_none_day["reasons"],
+      str(unc_none_day["reasons"]))
+check("no day cluster is counted for a missing label",
+      unc_none_day["clusters"]["day"] == 0, str(unc_none_day["clusters"]))
+unc_none_coin = INF.uncertainty([1, 2, 3, 4], days=["a", "b", "c", "d"],
+                                 coins=["A", None, "B", "C"])
+check("a None coin label never raises either",
+      isinstance(unc_none_coin, dict), str(unc_none_coin))
+check("a None coin label means no coin interval",
+      unc_none_coin["ci_lo_coin"] is None and unc_none_coin["ci_hi_coin"] is None
+      and unc_none_coin["t_coin"] is None, str(unc_none_coin))
+check("the missing coin label is reported as no-coin-labels",
+      "no-coin-labels" in unc_none_coin["reasons"],
+      str(unc_none_coin["reasons"]))
 
 # --------------------------------------------------------------------------
 print("\n=== 9. baselines on the same event set ===")

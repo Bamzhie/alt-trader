@@ -55,12 +55,25 @@ never read; the quant step's `seconds` return is discarded).
 
 | WS | Scope | State |
 |---|---|---|
-| A | measurement & structure engine | fix round 2 done, re-review in flight |
-| B | outcomes & inference | **approved**, merged (`280e41c`) |
-| C | preregistered research workflow | briefed; starts after A merges |
-| D | Research UI expansion | briefed; starts after the API contracts land |
-| E | champion/candidate tracking | implementing (worktree `/tmp/opencode/wt-e`) |
-| F | startup & first-sweep optimization | **approved**, merged (`dacf7e7`) |
+| A | measurement & structure engine | **merged** (`af1814e`) — 3 fix rounds, re-reviewed, approved |
+| B | outcomes & inference | **merged** (`280e41c`) — fix round 1, re-reviewed, approved |
+| C | preregistered research workflow | **merged** (`c14bda1`) — fix round 1, whole-branch review **done** (no ship blockers) |
+| D | Research UI expansion | **merged** (`6d20e87`) — fix round 1, whole-branch review **done** (no ship blockers) |
+| E | champion/candidate tracking | **merged** (`93bf6ee`) — fix round 1, whole-branch review **done** (no ship blockers) |
+| F | startup & first-sweep optimization | **merged** (`dacf7e7`) — fix round 1, re-reviewed, approved |
+
+The whole-branch review of the integrated `main` is **done**: it found no
+ship blockers and a set of fix-before-ship items (two honesty defects,
+several small code defects and several documentation statements that did
+not reproduce or were stale).  Those items are fixed in the final review
+fix wave (see the "Final review fix wave" section of `final-report.md`).
+
+Integration on `main`: the offline backend suite is **ALL SUITES PASS (87
+files)**; the frontend gates are 200 tests / 14 files, typecheck clean, lint
+(0 warnings) clean and the build clean. One merge conflict was resolved by
+the orchestrator (`proto/quant/__main__.py` — both the `prereg` and the
+`champions` subcommands were kept; neither can promote or spend the
+holdout).
 
 ## 4. Owner decisions taken (2026-10-19)
 
@@ -80,10 +93,10 @@ never read; the quant step's `seconds` return is discarded).
 
 | Wave | Workstreams | Isolation | State |
 |---|---|---|---|
-| 1 | F, A, B | separate git worktrees, disjoint file ownership | running |
-| 2 | C, E | separate worktrees; depend on A/B contracts | pending |
-| 3 | D | separate worktree; depends on the A/B/C/E API contracts | pending |
-| 4 | whole-branch review + full suites + integration | orchestrator + fresh reviewer | pending |
+| 1 | F, A, B | separate git worktrees, disjoint file ownership | **done** — all three merged and re-reviewed |
+| 2 | C, E | separate worktrees; depend on A/B contracts | **done** — both merged (fix round 1 each) |
+| 3 | D | separate worktree; depends on the A/B/C/E API contracts | **done** — merged (fix round 1) |
+| 4 | whole-branch review + full suites + integration | orchestrator + fresh reviewer | **review done** (no ship blockers); the fix-before-ship items are fixed in the final review fix wave |
 
 Ownership map (no two agents may edit the same file concurrently):
 

@@ -141,6 +141,35 @@ def build_events(n_days=6, per_day=3, wide=False):
     return events
 
 
+def build_flat_events(n_days=6, per_day=3):
+    """Events whose values are all IDENTICAL.
+
+    Every event carries the same gross on both geometries' slots, the same
+    liquidity and the same volatility, so both sides of the comparison have
+    ONE repeated value.  The day-cluster bootstrap of such a series is
+    exactly zero-width -- a degenerate interval that must be suppressed
+    rather than presented as a cluster interval.
+
+    The base timestamp is MIDNIGHT-ALIGNED and every day holds exactly
+    ``per_day`` events, so the day sums are identical too (an unaligned
+    base would split a day in two and the bootstrap would not be exactly
+    zero-width).
+    """
+    base = (T0 // 86400) * 86400
+    events = []
+    for d in range(n_days):
+        for j in range(per_day):
+            ts = base + d * 86400 + j * 3600
+            coin = COINS[(d + j) % len(COINS)]
+            side = 1 if (d + j) % 3 == 0 else -1
+            gross = [0.0] * (2 * len(GRID))
+            gross[GI_CH * 2] = gross[GI_CH * 2 + 1] = 0.005
+            gross[GI_CA * 2] = gross[GI_CA * 2 + 1] = 0.005
+            kind = (0, 1, 2)[(d + j) % 3]
+            events.append(mk_event(coin, ts, side, gross, kind=kind))
+    return events
+
+
 def write_settlements(directory, coin, rows):
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, coin + ".csv.gz")
@@ -404,6 +433,40 @@ check("a doubled slippage changes both sides",
 check("the cost model records the multiplier",
       res_slip["cost_model"].get("slip_mult") == 2.0,
       str(res_slip["cost_model"].get("slip_mult")))
+
+# --- a DEGENERATE (zero-width) cluster interval is suppressed -------------
+# Every event carries the SAME value, so the day-cluster bootstrap of the
+# side values (and of the paired differences) is exactly zero-width.  A
+# zero-width interval is not evidence of certainty: it used to be reported
+# as ci_lo == ci_hi with a t of 0.0, which reads like a real cluster
+# interval.
+flat_events = build_flat_events()
+res_flat = compare(mk_version("cfg-0001", GEOM_CH),
+                    mk_version("cfg-0002", GEOM_CA), flat_events, WINDOW)
+check("the flat comparison is not refused", res_flat.get("refused") is False,
+      str(res_flat.get("reason")))
+check("a degenerate side interval is suppressed, not reported",
+      res_flat["champion"]["ci_lo"] is None
+      and res_flat["champion"]["ci_hi"] is None,
+      f"{res_flat['champion']['ci_lo']} {res_flat['champion']['ci_hi']}")
+check("the suppressed side interval says why",
+      "degenerate" in (res_flat["champion"].get("reason") or ""),
+      str(res_flat["champion"].get("reason")))
+check("a degenerate side interval takes its statistic with it",
+      res_flat["champion"]["t"] is None, str(res_flat["champion"]["t"]))
+check("the candidate side is suppressed the same way",
+      res_flat["candidate"]["ci_lo"] is None
+      and res_flat["candidate"]["ci_hi"] is None
+      and res_flat["candidate"]["t"] is None,
+      str(res_flat["candidate"]))
+check("a degenerate difference interval is suppressed too",
+      res_flat["ci_lo"] is None and res_flat["ci_hi"] is None
+      and res_flat["t"] is None, str((res_flat["ci_lo"], res_flat["ci_hi"])))
+check("the suppressed difference interval says why",
+      any("degenerate" in (r or "") for r in res_flat.get("reasons") or []),
+      str(res_flat.get("reasons")))
+check("the difference itself is still reported",
+      res_flat["difference"] is not None, str(res_flat["difference"]))
 
 # ---------------------------------------------------------------------------
 # 4. refusals

@@ -16,6 +16,13 @@ READABLE (a read-only probe, so the daemon's write lock can never make it
 flap).  It no longer waits for the first sweep: that state has its own
 place, the ``first_sweep`` block of ``GET /scanner-health``, which never
 claims a sweep completed that did not.
+
+The ``first_sweep`` block is PROCESS-LOCAL: the daemon's timing log starts
+at ``pending`` in every fresh process and RESETS TO ``pending`` on every
+restart.  It says "this process has completed its first sweep", never "the
+system ever completed a sweep" - a consumer that needs the system-wide
+fact reads the persisted sweep records (or ``sweep_count`` /
+``last_sweep_ts``) instead.
 """
 
 import argparse
@@ -463,17 +470,39 @@ def _warn_ready_deprecated():
     A parameter that silently does nothing is worse than one that is
     loudly deprecated: the caller has to know that the first-sweep signal
     moved to ``GET /scanner-health`` -> ``first_sweep``.
+
+    The warning is emitted THREE ways, because a ``DeprecationWarning`` is
+    FILTERED OUT by default outside ``__main__`` (CPython hides it), so in
+    the deployed service it would be invisible:
+
+    * on stderr (always visible, whatever the logging configuration is);
+    * through the service's own logger (``proto.service``);
+    * as a ``DeprecationWarning`` (so a test or an embedding app can
+      still catch it with ``warnings.catch_warnings``).
+
+    The parameters' BEHAVIOUR is unchanged: they are still accepted, and
+    they are still read as the first-sweep signal by a server that wires
+    its own ``scanner_health``.
     """
     global _READY_DEPRECATION_WARNED
     if _READY_DEPRECATION_WARNED:
         return
     _READY_DEPRECATION_WARNED = True
-    warnings.warn(
+    message = (
         "serve(ready=...)/serve(is_ready=...) is deprecated (WS-F): "
         "/readyz is API-serving readiness and no longer waits for the "
         "first sweep; the first-sweep state is published in "
-        "GET /scanner-health -> first_sweep",
-        DeprecationWarning, stacklevel=3)
+        "GET /scanner-health -> first_sweep")
+    try:
+        sys.stderr.write("DEPRECATION: " + message + "\n")
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001 -- a closed stderr must not break serve
+        pass
+    try:
+        LOG.warning("%s", message)
+    except Exception:  # noqa: BLE001 -- logging must never break serve
+        pass
+    warnings.warn(message, DeprecationWarning, stacklevel=3)
 
 
 def _quant_status_for(writable, paused, watermarks, total):
@@ -494,9 +523,11 @@ def _quant_status_for(writable, paused, watermarks, total):
 def _quant_db_writable(quant_db):
     """Write probe against the quant store's own meta table.
 
-    The generic _db_writable targets the signals-db `meta` table, which
-    quant.db does not have (it owns `quant_meta`); probing the wrong
-    table would report every healthy quant store unavailable.
+    The generic signals-DB probe (``_db_readable``) is a READ probe on the
+    signals database and says nothing about the quant store: quant.db
+    owns its own ``quant_meta`` table (not the signals-db ``meta``), so
+    probing the wrong table would report every healthy quant store
+    unavailable.
     Rolled back — nothing is kept. Call only after the read path has
     proven the file exists and carries quant tables.
     """
@@ -1093,6 +1124,17 @@ def _make_handler(token, ready=None, store_path=None, data_dir=None,
             machine (pending / in_progress / complete with the measured
             duration) and ``stages`` carries the per-stage durations of the
             last completed iteration.
+
+            THE ``first_sweep`` BLOCK IS PROCESS-LOCAL: the daemon's timing
+            log starts at ``pending`` in every fresh process and resets to
+            ``pending`` on every restart, so the block says "THIS process
+            has completed its first sweep", never "the system ever
+            completed a sweep".  A server that wires its own
+            ``scanner_health`` without a ``first_sweep`` block gets the
+            DEPRECATED readiness flag instead; that fallback can report
+            ``state: "complete"`` with ``completed_ts: null`` and must not
+            be read as a completed sweep (the service itself never takes
+            that path).
             """
             if scanner_health is None:
                 self._deny(503, "UNAVAILABLE",
@@ -1120,6 +1162,19 @@ def _make_handler(token, ready=None, store_path=None, data_dir=None,
                 # only first-sweep signal there is.  It carries no
                 # timestamp, so completed_ts stays null - the block never
                 # invents a measurement.
+                #
+                # READ THIS BEFORE TRUSTING THE BLOCK: this FALLBACK can
+                # report ``state: "complete"`` with ``completed_ts: null``.
+                # It means "the embedder's readiness flag says the first
+                # sweep happened", NOT "a sweep completed at a known time",
+                # and it is NOT the daemon's own first-sweep state machine
+                # (which is process-local and resets on every restart).
+                # A consumer that needs "a sweep completed, and when" must
+                # use the daemon's ``first_sweep`` block (with a non-null
+                # ``completed_ts``) or the ``sweep_count`` /
+                # ``last_sweep_ts`` fields.  The service itself never
+                # takes this path: it always wires the daemon's timing
+                # log.
                 first_sweep = {
                     "state": "complete" if _ready_ok() else "pending",
                     "started_ts": None, "completed_ts": None,
@@ -1859,9 +1914,12 @@ def serve(port, token, ready=None, store_path=None, data_dir=None,
     published in the `first_sweep` block of `GET /scanner-health` (the
     daemon owns it).  The parameters are still accepted so existing
     embedders keep working, but they no longer gate `/readyz`; passing
-    them raises a `DeprecationWarning` (once per process).  They are
-    still read as the first-sweep signal for a server that wires its own
-    `scanner_health` without a `first_sweep` block.
+    them raises a `DeprecationWarning` (once per process) AND writes the
+    deprecation to stderr (a `DeprecationWarning` is hidden by default
+    outside `__main__`, so it would otherwise be invisible in the
+    deployed service).  They are still read as the first-sweep signal for
+    a server that wires its own `scanner_health` without a `first_sweep`
+    block.
     """
     if ready is not None or is_ready is not None:
         _warn_ready_deprecated()

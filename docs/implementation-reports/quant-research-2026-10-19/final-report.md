@@ -142,8 +142,17 @@ beside this one (`ws-a-report.md` … `ws-f-report.md`).
 
 ### 4.2 Deployment status — **NOT deployed**
 
-- The code is merged into `main` and pushed, but the **running service still
-  executes the pre-merge code** (pid 572048, started 2026-10-19 15:46:39).
+- The code is merged into `main`, and `main` is pushed to `origin/main` so
+  that the pushed tip IS the tip of `main` — **verify it with
+  `git rev-parse origin/main` == `git rev-parse main`**.
+  *The pushed tip at the time of the whole-branch review was `51eb418`
+  ("docs(quant): file the WS-C, WS-D and WS-E workstream reports"); the two
+  report commits `a74f945` (this report) and `0d7e9d8` (the roadmap
+  status) were AHEAD of `origin/main` and not yet pushed at that moment.
+  The orchestrator pushes them together with the final-review fix commit,
+  so after the push the tip is the fix commit (the child of `0d7e9d8`).*
+- The **running service still executes the pre-merge code** (pid 572048,
+  started 2026-10-19 15:46:39).
 - The service was **not** restarted, reloaded or altered at any point in this
   effort; the operator's drop-in
   (`~/.config/systemd/user/altradar.service.d/quant-shadow.conf` —
@@ -212,6 +221,22 @@ beside this one (`ws-a-report.md` … `ws-f-report.md`).
 - The new estimators are O(n); at 28 k bars `mfdfa` takes ~8 s, so a
   production run would window or subsample per coin.
 
+**Public API that is available but not wired yet**
+
+These are implemented, documented and tested, but nothing in the shipped
+paths calls them (they are referenced only by their own definitions and by
+the tests).  They are listed here so that nobody reads them as an
+integrated feature, and so that the next iteration does not re-invent
+them:
+
+| Symbol | What it is | Why it is not wired |
+|---|---|---|
+| `collector.CollectCounts.attempted` | the number of coins a collect cycle touched (succeeded + failed) | the daemon reports the succeeded count and the failed count separately; the sum was never needed |
+| `daemon_timing.TimingLog.summary()` | the one-line summary of the last completed iteration | the service publishes the structured `stages` map instead |
+| `daemon_timing.TimingLog.stage_durations()` | `{stage: duration_s}` of the most recent iteration | same — the structured map carries the durations and the outcomes |
+| `quant.feature_store.FeatureStore.latest()` | the newest stored record of one coin/measure, regardless of any as-of timestamp (the module itself marks it DIAGNOSTIC ONLY) | a point-in-time join must use `as_of`, so the diagnostic read is not on any shipped path |
+| `quant.estimators.level_from_returns()` | cumulates a return series into a level series | the estimators take levels directly; the helper is for a caller that has returns only |
+
 ---
 
 ## 6. Whole-branch review
@@ -235,3 +260,141 @@ per-workstream reports beside it).
 4. **WS3 items** unchanged: the 1 m design stage, the provisional-bar tier,
    and the confirmed fee tier (which the execution-cost viability question for
    H1 depends on).
+
+---
+
+## 8. Final review fix wave
+
+A fresh whole-branch review of the integrated `main` found **no ship
+blockers** and a set of fix-before-ship items: two honesty defects, several
+small code defects, and several documentation statements that did not
+reproduce or were stale.  All of them are fixed in one wave, on `main`,
+without touching `data/`, without restarting the live service (pid 572048)
+and without touching the holdout, a promotion or a registry file.
+
+### 8.1 The fixes, item by item
+
+| # | Item | Changed | Test that now covers it |
+|---|---|---|---|
+| 1 | **honesty** — the ≥ 3-cluster branch of `expected_return` reported a zero-width "cluster interval" as if it were certainty | `proto/quant/competing_outcomes.py:631-651` (the ≥ 3-day branch now suppresses `ci_lo`/`ci_hi`/`t` and says why; `cluster` falls back to `"row"`, the row-level interval stays available) | `tests/test_ws_b_outcomes.py:336-356` — *"a degenerate day-cluster interval is suppressed, not reported"*, *"the suppressed interval says why"*, *"the cluster field does not claim a day cluster it did not report"*, *"a degenerate interval takes its statistic with it"* (FAILS against the old code: `ci_lo=0.01 ci_hi=0.01`, `cluster="day"`, `t=0.0`) |
+| 1b | the same gap in the champion comparison (reachable from the `champions compare` CLI) | `proto/quant/champion.py:485-538` (`_side_block`: the interval, the statistic and a new `reason` key) and `proto/quant/champion.py:753-766` (the paired-difference interval, same rule — the same defect in the same function) | `tests/test_ws_e_champion.py:448-470` — *"a degenerate side interval is suppressed, not reported"*, *"a degenerate side interval takes its statistic with it"*, *"a degenerate difference interval is suppressed too"* (FAILS against the old code: `ci_lo == ci_hi == 0.20207259421636908`, `t=0.0`) |
+| 2 | **honesty** — `uncertainty()` raised an unhandled `TypeError` on a `None` day label | `proto/quant/inference.py:339-344` (docstring) and `proto/quant/inference.py:357-366` — a `None` day label is a *missing* label, treated exactly like "no day labels" (`no-day-labels`, no day interval, no day statistic, no exception). The same rule now covers a `None` **coin** label (`proto/quant/inference.py:381-391`), which had the identical crash (`_coin_bootstrap` sorts the coin keys) | `tests/test_ws_b_outcomes.py:461-479` — *"a None day label never raises"*, *"a None day label means no day interval"*, *"a None coin label never raises either"* (the old code raised `TypeError: '<' not supported between instances of 'NoneType' and 'str'`) |
+| 3 | the running stage map was read **without** the lock while the daemon thread mutated it | `proto/daemon_timing.py:269-286` (`last_stages()` takes the snapshot under the lock) and `proto/daemon_timing.py:181-266` (`load`/`save`/`begin`/`record`/`end`/`last` are lock-protected too, so the lock actually protects something) | `tests/test_ws_f_startup.py:601-670` — *"reading the running stage map never raises"* (FAILS against the old code: `TypeError: 'NoneType' object is not subscriptable`, swallowed by `service._scanner_health`) |
+| 3b | `first_sweep` must not be read as "the system ever completed a sweep" | `proto/daemon_timing.py:34-40` (module docstring), `proto/daemon_timing.py:305-313` and `proto/daemon_timing.py:357-365` (the property and the reader), `proto/service.py:19-25` (the module docstring) and `proto/service.py:1125-1135` (the `/scanner-health` route docstring): the state is **process-local** and resets to `pending` on every restart | documentation (no behaviour change) |
+| 4 | a coin recorded **during** a flush was never persisted (the flag was cleared after the snapshot) | `proto/collector.py:105-154` — `dirty` is cleared **before** the snapshot, under the same lock; a failed write restores it | `tests/test_ws_f_startup.py:545-598` — *"the coin recorded during the flush keeps the index dirty"*, *"the coin recorded during the flush reaches the disk"*, *"a failed write keeps the index dirty"* (FAILS against the old code: `dirty=False`, the late coin never reaches the disk) |
+| 5 | a resolve pass could be **submitted during a SIGTERM iteration** | `proto/daemon.py:573-590` — the resolve block now tests `interrupted` first: no pass is started and the stage is recorded as `skipped` | `tests/test_ws_f_startup.py:993-1046` — *"an interrupted iteration starts no resolve pass"* (FAILS against the old code: the pool received `resolve_batch`) |
+| 6 | the `ready=`/`is_ready=` deprecation was invisible (a `DeprecationWarning` is filtered out outside `__main__`) | `proto/service.py:467-505` — the deprecation is written to **stderr**, logged through `proto.service` and still raised as a `DeprecationWarning`; the parameters' behaviour is unchanged | `tests/test_ws_f_startup.py:945-991` — *"the deprecation is written to stderr"*, *"the deprecation still reaches the warnings machinery"*, *"the deprecation is emitted only once per process"* (FAILS against the old code: stderr empty) |
+| 7 | the "a 4-scale ladder (8..16)" claim was false (the ladder is every integer in the range: **9** scales at n = 32) | `proto/quant/mfdfa.py:207-213`, `docs/…/ws-a-report.md:1167` and `docs/…/ws-a-report.md:1288` | documentation (verified: `mfdfa(levels, n=32)` reports `n_scales = 9`) |
+| 8 | the quoted probe "first prediction p = 0.995455" did not reproduce | `docs/…/ws-b-report.md:530-540` — the figure is `0.986979` (the exact value the committed fixture produces: `0.9869791666666666`; `n_train = 40` and `n_predictions = 10` do reproduce) | documentation (verified against `tests/test_ws_b_outcomes.py`'s fixture) |
+| 9 | the WS-B "Public surface" list omitted `cause_incidence` | `docs/…/ws-b-report.md:55-64` | documentation (the signature `cause_incidence(outcomes, horizon_bars)` matches the module) |
+| 10 | "the layer is not wired into any CLI, report or service path" was false | `docs/…/ws-b-report.md:762-771` — the `champions compare` sub-command of `proto/quant/__main__.py` drives `competing_outcomes` + `inference` through `champion.compare` (read-only: it cannot promote and it cannot spend the holdout) | documentation (the CLI path is covered by `tests/test_ws_e_champion.py`) |
+| 11 | the `_quant_db_writable` docstring pointed at the deleted `_db_writable` | `proto/service.py:523-537` — the reference is now `_db_readable`, and the sentence says what that probe actually does | documentation |
+| 12 | four stale line references in the WS-A report | `docs/…/ws-a-report.md:745` (`measures.py:321-322`), `docs/…/ws-a-report.md:791-796` (`structure.py:174`, `structure.py:288`, `structure.py:308`) and `docs/…/ws-a-report.md:822-823` (`estimators.py:470`, `estimators.py:474`) | documentation — every referenced line was re-read and now matches the code. **One deviation from the review:** the review asked for `measures.py:321 → 320`; line 321 **is** the aligned-tail cleaning (`xa, bad_a = _clean(ra[-n:])`, and 322 is the second series), while 320 is the `"insufficient-sample"` return — so the reference was tightened to `321-322` instead of being moved to a line that does not hold the code. The review's `estimators.py:364 → 474` was also re-checked: 474 is `_bootstrap_agg`, and the `H = slope / 2` expression is at 470; both are now cited. |
+| 13 | "The code is merged into `main` and pushed" overstated the state at review time | `docs/…/final-report.md:143-156` — the pushed tip is now stated explicitly and is verifiable (`git rev-parse origin/main` == `git rev-parse main`), and the two commits that were ahead of `origin/main` (`a74f945`, `0d7e9d8`) are named. The orchestrator pushes them together with this fix commit | documentation |
+| 14 | the workstream / wave status tables were stale | `docs/…/progress.md:54-74` (C/D/E: whole-branch review **done**) and `docs/…/progress.md:92-99` (waves 1-3 **done**, wave 4 review **done**) | documentation |
+| 15 | the `first_sweep` fallback for an embedder with its own `scanner_health` can report `state: "complete"` with `completed_ts: null` | `proto/service.py:1163-1180` — the fallback is documented in the code: it means "the embedder's readiness flag says the first sweep happened", never "a sweep completed at a known time"; the service itself never takes that path | documentation (the reviewer's triage: defer the behaviour change, fix the wording) |
+| D1 | *deferred, documented only* — `_orders` accepts an int-keyed mapping as `q_range` but refuses the same mapping with string keys | `proto/quant/mfdfa.py:131-151` — the accepted shapes and the inconsistency are now in the docstring | documentation (no behaviour change) |
+| D2 | *deferred, documented only* — public API that is available but not wired | `docs/…/final-report.md:224-238` (§5) — `collector.CollectCounts.attempted`, `daemon_timing.TimingLog.summary()` / `stage_durations()`, `feature_store.FeatureStore.latest()` and `estimators.level_from_returns()` are listed with what each one is and why nothing calls it yet | documentation (no behaviour change) |
+
+### 8.2 What was deliberately NOT changed
+
+- The live service (pid 572048) was not restarted, reloaded or altered, and
+  no systemd file was touched.
+- `data/` was not written to; the holdout was not spent; nothing was
+  promoted; no `docs/decisions/chain.jsonl` and no registry file was
+  created in the repository.
+- The `first_sweep` fallback of item 15 keeps its behaviour (the wording is
+  fixed, the behaviour is deferred by the reviewer's triage).
+- `_orders` (D1) keeps its behaviour (the inconsistency is documented).
+
+### 8.3 The command outputs
+
+The six focused workstream suites:
+
+```
+$ python3 tests/test_ws_f_startup.py
+ALL PASS  tests/test_ws_f_startup.py  (106 checks)
+
+$ python3 tests/test_ws_a_measurement.py
+ALL PASS
+
+$ python3 tests/test_ws_b_outcomes.py
+ALL PASS
+
+$ python3 tests/test_ws_c_prereg.py
+ALL PASS
+
+$ python3 tests/test_ws_d_research_surface.py
+ALL PASS  tests/test_ws_d_research_surface.py  (86 checks)
+
+$ python3 tests/test_ws_e_champion.py
+ALL PASS  tests/test_ws_e_champion.py  (146 checks)
+```
+
+The three quant-side suites:
+
+```
+$ python3 tests/test_quant.py
+ALL PASS
+
+$ python3 tests/test_hypotheses.py
+ALL PASS
+
+$ python3 tests/test_decisions.py
+ALL PASS
+```
+
+The full offline backend suite:
+
+```
+$ python3 tests/run_all.py
+...
+PASS  test_ws_a_measurement.py  [ALL PASS]
+PASS  test_ws_b_outcomes.py  [ALL PASS]
+PASS  test_ws_c_prereg.py  [ALL PASS]
+PASS  test_ws_d_research_surface.py  [ALL PASS  tests/test_ws_d_research_surface.py  (86 checks)]
+PASS  test_ws_e_champion.py  [ALL PASS  tests/test_ws_e_champion.py  (146 checks)]
+PASS  test_ws_f_startup.py  [ALL PASS  tests/test_ws_f_startup.py  (106 checks)]
+
+ALL SUITES PASS (87 files)
+```
+
+The frontend gates (`app/`):
+
+```
+$ npm run test
+ Test Files  14 passed (14)
+      Tests  200 passed (200)
+
+$ npm run typecheck
+> tsc --noEmit
+(exit 0, no output)
+
+$ npm run lint
+> eslint . --max-warnings 0
+(exit 0, no output)
+
+$ npm run build
+> tsc --noEmit && vite build
+✓ 66 modules transformed.
+dist/index.html                   0.44 kB │ gzip:  0.28 kB
+dist/assets/index-2Pm9sww9.css   11.81 kB │ gzip:  3.22 kB
+dist/assets/index-BxMF15B1.js   367.35 kB │ gzip: 114.47 kB
+✓ built in 9.79s
+```
+
+### 8.4 The regression tests fail against the old code
+
+Every new check was run against the pre-fix source (the fixed files were
+stashed and the suites re-run).  The results:
+
+| New check | Against the pre-fix code |
+|---|---|
+| WS-B "a degenerate day-cluster interval is suppressed, not reported" | `FAIL  ci_lo=0.01 ci_hi=0.01` |
+| WS-B "a None day label never raises" | `TypeError: '<' not supported between instances of 'NoneType' and 'str'` (the suite crashed) |
+| WS-E "a degenerate side interval is suppressed, not reported" | `FAIL  0.20207259421636908 0.20207259421636908` |
+| WS-F "the coin recorded during the flush reaches the disk" | `FAIL  ['AAA']` (the late coin never reached the disk) |
+| WS-F "reading the running stage map never raises" | `FAIL  TypeError("'NoneType' object is not subscriptable")` |
+| WS-F "an interrupted iteration starts no resolve pass" | `FAIL  ['resolve_batch']` |
+| WS-F "the deprecation is written to stderr" | `FAIL` (stderr empty) |
+

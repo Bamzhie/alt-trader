@@ -571,7 +571,15 @@ def run_daemon_loop(args, stop_event=None, on_sweep=None, app_box=None,
                     resolve_entry = (duration_s, "failed")
                 resolve_future = None
             if resolve_entry is None:
-                if not cadence.due("resolve"):
+                if interrupted:
+                    # The iteration is being interrupted (SIGTERM): a new
+                    # resolve pass is NOT started here.  Submitting one
+                    # would keep the pool busy past the drain and the
+                    # result would arrive after the shutdown.
+                    print(f"[{time.strftime('%H:%M:%S')}] resolve skipped: "
+                          "the iteration is interrupted", flush=True)
+                    resolve_entry = (0.0, "skipped")
+                elif not cadence.due("resolve"):
                     resolve_entry = (0.0, "not_due")
                 elif resolve_future is not None:
                     print(f"[{time.strftime('%H:%M:%S')}] resolve remains "

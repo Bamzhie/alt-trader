@@ -742,7 +742,7 @@ the reviewer listed):
 |---|---|---|
 | `volatility_measures` | the last `window` values | `measures.py:104` (`_clean(raw[-W:])`) |
 | `regime` | the window that ends at `as_of_index` **plus** the `W` calibration windows before it (`raw[start:idx+1]`, `start = max(0, idx-2W+1)`) | `measures.py:243` |
-| `dependence` | the aligned tails of the two series | `measures.py:321` |
+| `dependence` | the aligned tails of the two series | `measures.py:321-322` (`_clean(ra[-n:])` / `_clean(rb[-n:])`) |
 | `breadth` | each coin's last `window` values | `measures.py:382` |
 
 A non-finite value **inside** the slice yields `None` + `"non-finite-input"`
@@ -789,8 +789,9 @@ the last confirming FRAME bar:
 
 ```
 structure.py:105   def confirmed_pivots(bars, left=2, right=2, *, frame_bars=1)
-structure.py:169   confirmed_ts = ts[i] + (right + 1) * frame_bars * BAR_S
-structure.py:216   multi_timeframe passes frame_bars=fb
+structure.py:174   confirmed_ts = ts[i] + (right + 1) * frame_bars * BAR_S
+structure.py:288   def multi_timeframe(bars, frames=(3, 12, 48), ...)
+structure.py:308   multi_timeframe passes frame_bars=fb
 ```
 
 The base (5 m) series keeps the briefed timing (`ts + 3*BAR_S` for
@@ -818,8 +819,8 @@ satisfies `confirmed_ts == ts + 3*frame_bars*BAR_S` and
 **Fix.** It now implements the classical aggregated-variance estimator: for
 every block size `q` the series is cut into NON-OVERLAPPING blocks of `q`
 points, the block SUMS are formed, the variance `V(q)` of those sums is
-regressed on `log q`, and **H = slope / 2** (`estimators.py:364`,
-`_bootstrap_agg` at `estimators.py:425`).
+regressed on `log q`, and **H = slope / 2** (`estimators.py:470`,
+`_bootstrap_agg` at `estimators.py:474`).
 
 * A random walk now gives **H = 0.9843** (was 1.5279 — the DFA tau, the same
   statistic `mfdfa` reports).
@@ -1164,7 +1165,7 @@ in the last column.
 |---|---:|---:|---|
 | `hurst_rs` | **128** | 128 | the R/S curve needs ≥ 3 scales (8, 16, 32) and the default `max_scale = n // 4` must reach 32 → n ≥ 4 × 32 = 128 |
 | `hurst_generalized` | **512** | 512 | the ladder needs ≥ 3 scales (8, 16, 32) **and** `MIN_BLOCKS = 16` non-overlapping blocks at the largest scale → n ≥ 16 × 32 = 512 |
-| `mfdfa` / `mfdfa_spectrum` | **32** | 18 | the log-log fit needs ≥ 2 scales: `min(q_max, n // 2) ≥ q_min + 1` → n ≥ 2 × (8 + 1) = 18; **n = 32** is the practical threshold (a 4-scale ladder 8…16) |
+| `mfdfa` / `mfdfa_spectrum` | **32** | 18 | the log-log fit needs ≥ 2 scales: `min(q_max, n // 2) ≥ q_min + 1` → n ≥ 2 × (8 + 1) = 18; **n = 32** is the practical threshold (a 9-scale ladder 8…16 — every integer in the range) |
 
 Bisection evidence (20 random-walk seeds per point):
 
@@ -1285,7 +1286,7 @@ this tree** (20 random-walk seeds per point; the threshold is the smallest
 |---|---:|---|
 | `hurst_rs` | **128** | the R/S curve needs ≥ 3 scales (8, 16, 32) and the default `max_scale = n // 4` must reach 32 → n ≥ 4 × 32 = 128 |
 | `hurst_generalized` | **512** | the ladder needs ≥ 3 scales (8, 16, 32) **and** `MIN_BLOCKS = 16` non-overlapping blocks at the largest scale → n ≥ 16 × 32 = 512 |
-| `mfdfa` / `mfdfa_spectrum` | **32** (structural floor 18) | the log-log fit needs ≥ 2 scales: `min(q_max, n // 2) ≥ q_min + 1` → n ≥ 2 × (8 + 1) = 18; n = 32 is the practical threshold (a 4-scale ladder 8…16) |
+| `mfdfa` / `mfdfa_spectrum` | **32** (structural floor 18) | the log-log fit needs ≥ 2 scales: `min(q_max, n // 2) ≥ q_min + 1` → n ≥ 2 × (8 + 1) = 18; n = 32 is the practical threshold (a 9-scale ladder 8…16 — every integer in the range) |
 
 **Changed**
 
