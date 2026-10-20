@@ -29,6 +29,21 @@ holdout window, but the holdout is only ever evaluated by
 ``proto.quant.research.holdout_once``, under its own one-shot lock, and
 only after validation kept a config.
 
+HOW A CODE HASH IS MEANT TO BE PRODUCED
+--------------------------------------
+``code_hash(root, files)`` fingerprints the WORKING TREE (the git
+revision of ``root`` plus the digests of the named files).  That is right
+for code that has not run yet and WRONG for a result produced earlier:
+the pipeline files of the run may have changed since, and hashing the
+tree would certify code that never produced the numbers.  For a completed
+run use ``code_hash_at(root, rev, files)``, which reads the contents FROM
+the revision the run used (``git cat-file blob <rev>:<path>``) and mixes
+that revision into the digest.  The shipped HYD-0002 record does exactly
+this: the sweep ran from ``da5f43c`` and five of its eight pipeline files
+have changed since.  The record carries the revision and the file list
+(``statistics.code_git_rev`` / ``statistics.code_files``), so the
+fingerprint can be recomputed and checked.
+
 Standard library only.
 """
 
@@ -50,8 +65,12 @@ STATUSES = ("proposed", "registered", "testing", "validated", "rejected")
 #: Statuses a tested variant may carry.
 VARIANT_STATUSES = ("pending", "passed", "failed", "rejected")
 
-#: Horizon labels (the registry vocabulary).  "7d" drives the embargo rule.
-HORIZONS = ("1h", "4h", "24h", "7d")
+#: Horizon labels a preregistration record may declare.  This is the
+#: QUANT label vocabulary (the label horizon of the evaluated rule), not
+#: the episode vocabulary of ``proto.hypothesis_registry`` -- "12h" is a
+#: legitimate quant horizon (144 bars of the declared grid) and is missing
+#: from the episode vocabulary, which is left untouched.
+HORIZONS = ("1h", "4h", "12h", "24h", "7d")
 
 #: Status-gated required-field sets (mirroring ``hypothesis_registry``,
 #: extended with the machine-readable fields).
@@ -462,13 +481,25 @@ def _resolve_evidence(path):
 
 
 def _required_fields(status):
-    if not status:
+    # An unknown status is gated like the markdown registry does it: only
+    # the base fields are demanded, and the status error is the finding.
+    if not status or status not in STATUSES:
         return list(BASE_FIELDS)
     if status == "proposed":
         return list(BASE_FIELDS)
     if status == "registered":
         return list(BASE_FIELDS) + list(REGISTERED_EXTRA)
     return list(BASE_FIELDS) + list(REGISTERED_EXTRA) + list(TESTING_EXTRA)
+
+
+def _declares_setup(status):
+    """True when the status means the record must declare the whole setup.
+
+    A ``proposed`` record is a bare idea: like the markdown registry's
+    ``proposed`` entries it passes the window, hash and family rules
+    vacuously instead of reporting them as missing.
+    """
+    return status in ("registered", "testing", "validated", "rejected")
 
 
 def validate(record, *, known_hypothesis_ids=None) -> list:
@@ -491,6 +522,10 @@ def validate(record, *, known_hypothesis_ids=None) -> list:
     elif status not in STATUSES:
         errors.append(f"unknown-status: {record.status!r} is not a known status")
     for name in _required_fields(status):
+        # "status" and "id" have their own checks below; reporting them
+        # twice would duplicate every error they raise.
+        if name in ("status", "id"):
+            continue
         if not _present(getattr(record, name, None)):
             errors.append(f"required-field: {name} is required")
 
@@ -500,31 +535,41 @@ def validate(record, *, known_hypothesis_ids=None) -> list:
     elif not ID_RE.match(str(record.id).strip()):
         errors.append(f"bad-id: {record.id!r} does not match ^HYD-[0-9]{{4}}$")
 
-    # --- declared family
-    family = record.family
-    if not isinstance(family, list) or not family:
-        errors.append("required-field: family is required")
-    else:
-        for hid in family:
-            if not isinstance(hid, str) or not hid.strip():
-                errors.append("bad-family: family entries must be "
-                              "non-empty hypothesis ids")
-            elif (known_hypothesis_ids is not None
-                  and hid not in known_hypothesis_ids):
-                errors.append(f"unknown-hypothesis: {hid!r} is not a known "
-                              "hypothesis id")
+    if _declares_setup(status):
+        # --- declared family
+        family = record.family
+        if not isinstance(family, list) or not family:
+            errors.append("required-field: family is required")
+        else:
+            for hid in family:
+                if not isinstance(hid, str) or not hid.strip():
+                    errors.append("bad-family: family entries must be "
+                                  "non-empty hypothesis ids")
+                elif (known_hypothesis_ids is not None
+                      and hid not in known_hypothesis_ids):
+                    errors.append(f"unknown-hypothesis: {hid!r} is not a known "
+                                  "hypothesis id")
 
-    # --- hashes
-    for name in ("config_hash", "data_hash", "code_hash"):
-        value = getattr(record, name, None)
-        if not _present(value):
-            errors.append(f"required-field: {name} is required")
-        elif not isinstance(value, str) or not HASH_RE.match(value.strip()):
-            errors.append(f"bad-hash: {name} must be a non-empty lowercase "
-                          "hex string")
+        # --- hashes
+        for name in ("config_hash", "data_hash", "code_hash"):
+            value = getattr(record, name, None)
+            if not _present(value):
+                errors.append(f"required-field: {name} is required")
+            elif not isinstance(value, str) or not HASH_RE.match(value.strip()):
+                errors.append(f"bad-hash: {name} must be a non-empty lowercase "
+                              "hex string")
 
-    # --- splits: ordering + embargo
-    errors.extend(_validate_splits(record))
+        # --- horizons: every declared horizon must be in the vocabulary
+        horizons = record.horizons
+        if isinstance(horizons, list):
+            for horizon in horizons:
+                if not isinstance(horizon, str) or horizon not in HORIZONS:
+                    errors.append(
+                        f"bad-horizon: {horizon!r} is not a known horizon "
+                        f"(one of {', '.join(HORIZONS)})")
+
+        # --- splits: ordering + embargo
+        errors.extend(_validate_splits(record))
 
     # --- variants
     errors.extend(_validate_variants(record, known_hypothesis_ids))
@@ -567,14 +612,18 @@ def _validate_splits(record):
                         if isinstance(horizons, list) and LONG_HORIZON in horizons
                         else SHORT_HORIZON_EMBARGO_DAYS)
     embargo = record.embargo_days
-    if not _is_number(embargo):
-        errors.append("required-field: embargo_days is required")
+    if embargo is None:
+        pass                    # already reported by the required-field pass
+    elif not _is_number(embargo):
+        errors.append("required-field: embargo_days must be a number")
         return errors
-    embargo = float(embargo)
-    if embargo < required_embargo:
-        errors.append(f"embargo: embargo_days {embargo:g} < {required_embargo:g} "
-                      f"required by horizons {horizons}")
-    if len(parsed) == 3:
+    else:
+        embargo = float(embargo)
+        if embargo < required_embargo:
+            errors.append(f"embargo: embargo_days {embargo:g} < "
+                          f"{required_embargo:g} required by horizons "
+                          f"{horizons}")
+    if len(parsed) == 3 and embargo is not None and _is_number(embargo):
         dev, val, hold = parsed["dev"], parsed["val"], parsed["holdout"]
         for gap, label in ((val[0] - dev[1], "dev/val"),
                            (hold[0] - val[1], "val/holdout")):
@@ -671,10 +720,21 @@ def register_variant(record: PreregRecord, variant: Variant, directory):
                     f"{variant.variant_id!r} already registered with a "
                     f"different result"])
     stored = None
-    try:
-        stored = load(directory, record.id)
-    except (FileNotFoundError, ValueError, OSError):
-        stored = None
+    stored_path = os.path.join(str(directory), f"{record.id}.json")
+    if os.path.exists(stored_path):
+        try:
+            stored = load(directory, record.id)
+        except (ValueError, OSError) as exc:
+            # The file EXISTS but cannot be read as a record.  Treating it
+            # as absent would let save() overwrite it and lose a
+            # registered variant -- the append-only guard must refuse
+            # instead of silently skipping the comparison.
+            raise PreregError(
+                f"stored-record-unreadable: {stored_path} exists but cannot "
+                f"be read as a preregistration record ({exc}); refusing to "
+                f"write over it",
+                errors=[f"stored-record-unreadable: {stored_path} exists but "
+                        f"cannot be read as a preregistration record"]) from exc
     if stored is not None:
         existing = _find_variant(stored, variant.variant_id)
         if existing is not None and _result_key(existing.result) != incoming:

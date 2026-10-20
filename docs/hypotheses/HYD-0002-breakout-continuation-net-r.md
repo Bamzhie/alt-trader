@@ -50,8 +50,17 @@ configurations**, fixed in `proto/quant/config.py` (`GRID_HORIZONS`,
   before the holdout was seen and are never relaxed.
 
 The machine-readable version of all of this is the sidecar
-`docs/hypotheses/HYD-0002.json` (the preregistration record), which also
-carries the **variant registry**: every tested variant, failures included.
+`docs/hypotheses/HYD-0002.json` (the preregistration record). Its
+**variant registry** holds ONE variant for this run -- the sweep as a
+whole (`ws5-288-config-sweep`, status `failed`, reason `no positive
+edge`) -- because the sweep is one pre-declared experiment over a
+pre-declared grid, not 288 separately registered hypotheses. The
+per-configuration results are not registered one by one: they survive in
+the record only as the artifact's `dev_config_means` (the minimum,
+median, maximum and share of positive dev means) and its `top5_dev`
+list is NOT carried over. The full per-configuration detail stays in the
+preserved artifact, which the record cites by sha256. Any future
+per-configuration variant must be registered in its own right.
 
 ## Windows
 
@@ -89,6 +98,17 @@ dev -> val, so there was nothing to spend it on. The holdout is evaluated
 at most once, by `proto.quant.research.holdout_once`, under its own
 one-shot lock.
 
+## How a later report may slice this result
+
+`proto.quant.research_report.slice_results` reports the result of one
+(rule, geometry) over a window, sliced by coin, by period, by liquidity
+group and by a **volatility** group. The volatility groups are trailing
+volatility terciles of each event's own sigma and are **NOT comparable**
+with the six-state codes of `proto.quant.estimators.regime` (that measure
+needs the market-factor return series, which the event stream does not
+carry). A group called `high-vol` in a report is not the `*/high-vol`
+state of the regime measure.
+
 ## Honest scope
 
 This record is a **retrospective** registration: it was written on
@@ -99,3 +119,8 @@ snapshot and this rule family, not a proof that no continuation edge can
 exist. The artifact's funding-adjusted blocks predate the 2026-10-19
 cost/split audit and are superseded by `funding-transitions.json`; the
 friction-only rows quoted above are unchanged.
+
+The record's `code_hash` is pinned to revision `da5f43c`, the revision
+the sweep ran from, because five of its eight pipeline files have changed
+since; hashing the current tree would have certified code that did not
+produce these numbers.

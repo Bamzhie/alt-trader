@@ -189,10 +189,16 @@ check("code_hash changes when the file set changes",
 head = prereg.git_rev(ROOT)
 clean_files = ["proto/quant/config.py", "proto/quant/stats.py",
                "proto/quant/bars.py"]
-check("code_hash_at agrees with code_hash on a clean tree",
-      prereg.code_hash_at(ROOT, head, clean_files) ==
-      prereg.code_hash(ROOT, clean_files),
-      f"{head}")
+dirty = subprocess.run(["git", "-C", ROOT, "status", "--porcelain", "--"]
+                        + clean_files, capture_output=True, text=True).stdout
+if dirty.strip():
+    print("  SKIP  code_hash_at agrees with code_hash on a clean tree "
+          "(the working tree is dirty for those files)")
+else:
+    check("code_hash_at agrees with code_hash on a clean tree",
+          prereg.code_hash_at(ROOT, head, clean_files) ==
+          prereg.code_hash(ROOT, clean_files),
+          f"{head}")
 raised = False
 try:
     prereg.code_hash_at(ROOT, head, ["proto/quant/does_not_exist.py"])
@@ -228,6 +234,10 @@ check("every missing required field is reported by name",
 
 check("an unknown status is rejected",
       any("unknown-status" in e for e in prereg.validate(make_record(status="bogus"))),
+      str(prereg.validate(make_record(status="bogus"))))
+check("an unknown status demands only the base fields",
+      prereg.validate(make_record(status="bogus")) ==
+      ["unknown-status: 'bogus' is not a known status"],
       str(prereg.validate(make_record(status="bogus"))))
 check("a bad id is rejected",
       any("bad-id" in e for e in prereg.validate(make_record(id="HYD-99"))),
@@ -279,6 +289,48 @@ check("a known hypothesis id in the family validates",
                       known_hypothesis_ids=["HYD-0001"]) == [],
       str(prereg.validate(make_record(family=["HYD-0001"]),
                           known_hypothesis_ids=["HYD-0001"])))
+
+print("\n=== horizon vocabulary ===")
+check("the quant horizon vocabulary accepts 12h",
+      "12h" in prereg.HORIZONS, str(prereg.HORIZONS))
+check("a declared 12h horizon validates",
+      prereg.validate(make_record(horizons=["4h", "12h", "24h"])) == [],
+      str(prereg.validate(make_record(horizons=["4h", "12h", "24h"]))))
+bad_horizon = prereg.validate(make_record(horizons=["4h", "99h"]))
+check("a horizon outside the vocabulary is flagged",
+      any("bad-horizon" in e for e in bad_horizon), str(bad_horizon))
+check("the bad-horizon error names the vocabulary",
+      any("12h" in e and "7d" in e for e in bad_horizon), str(bad_horizon))
+
+print("\n=== one error per problem ===")
+errs = prereg.validate(make_record(status=""))
+check("a missing status is reported exactly once",
+      errs.count("required-field: status is required") == 1, str(errs))
+errs = prereg.validate(make_record(id=""))
+check("a missing id is reported exactly once",
+      errs.count("required-field: id is required") == 1, str(errs))
+errs = prereg.validate(make_record(embargo_days=None))
+check("a missing embargo_days is reported exactly once",
+      errs.count("required-field: embargo_days is required") == 1, str(errs))
+errs = prereg.validate(make_record(embargo_days="soon"))
+check("a non-numeric embargo_days is reported once, as a type error",
+      errs.count("required-field: embargo_days must be a number") == 1
+      and "required-field: embargo_days is required" not in errs, str(errs))
+
+print("\n=== a bare proposed record passes vacuously ===")
+bare = prereg.new_record(id="HYD-0003", title="An idea", status="proposed",
+                          hypothesis="maybe")
+errs = prereg.validate(bare)
+check("a bare proposed record validates clean", errs == [], str(errs))
+check("a proposed record is not asked for splits, hashes or a family",
+      not any("splits" in e or "hash" in e or "family" in e for e in errs),
+      str(errs))
+proposed_with_windows = prereg.new_record(
+    id="HYD-0003", title="An idea", status="proposed", hypothesis="maybe",
+    splits={"dev": [6.0, 61.0]}, horizons=["24h"])
+check("a proposed record with windows still passes vacuously",
+      prereg.validate(proposed_with_windows) == [],
+      str(prereg.validate(proposed_with_windows)))
 
 # --------------------------------------------------------- variant + evidence
 print("\n=== variant registry ===")
@@ -379,6 +431,28 @@ check("load_all finds the record",
       [r.id for r in prereg.load_all(tmp3)] == ["HYD-0002"],
       str([r.id for r in prereg.load_all(tmp3)]))
 
+print("\n=== a corrupt sidecar cannot be overwritten ===")
+tmp4 = tempfile.mkdtemp()
+corrupt = os.path.join(tmp4, "HYD-0002.json")
+with open(corrupt, "w") as fh:
+    fh.write('{"prereg_version": "prereg-v1", broken')
+before = open(corrupt, "rb").read()
+raised = False
+refusal = None
+try:
+    prereg.register_variant(make_record(status="testing", variants=[]),
+                            make_variant(), tmp4)
+except prereg.PreregError as exc:
+    refusal = exc
+    raised = "stored-record-unreadable" in str(exc)
+check("registering over a corrupt sidecar is refused", raised)
+check("the corrupt sidecar is left byte-identical",
+      open(corrupt, "rb").read() == before)
+check("the refusal carries a machine-readable violation",
+      refusal is not None and
+      any("stored-record-unreadable" in e for e in refusal.errors),
+      str(getattr(refusal, "errors", [])))
+
 # --------------------------------------------------------------- sliced report
 print("\n=== sliced research report ===")
 events = fixture_events()
@@ -395,6 +469,20 @@ check("the report carries a code hash",
       len(report.get("code_hash")) == 64, str(report.get("code_hash")))
 check("the report has a data_hash slot", "data_hash" in report,
       str(sorted(report.keys())))
+
+attached = rr.attach_evidence(report, data_hash="a" * 64)
+check("attach_evidence sets the data hash", attached.get("data_hash") == "a" * 64,
+      str(attached.get("data_hash")))
+check("attach_evidence does not mutate the report",
+      report.get("data_hash") is None, str(report.get("data_hash")))
+check("attach_evidence keeps the other fields",
+      attached.get("report_version") == report.get("report_version") and
+      attached.get("config_hash") == report.get("config_hash"))
+check("attach_evidence can override the code hash",
+      rr.attach_evidence(report, code_hash="b" * 64).get("code_hash")
+      == "b" * 64)
+check("attach_evidence without arguments changes nothing",
+      rr.attach_evidence(report) == report)
 
 overall = report.get("overall") or {}
 check("the overall block has n, mean and an interval",
@@ -482,11 +570,35 @@ literals = [n.value for n in ast.walk(tree)
 check("no code literal mentions the holdout lock",
       not any("holdout_evaluated" in s for s in literals),
       str([s for s in literals if "holdout_evaluated" in s]))
-opens = [n for n in ast.walk(tree)
-         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-         and n.func.id == "open"]
-check("the report module opens no files at all", not opens,
-      str([ast.dump(o) for o in opens]))
+
+# The report module must have NO write path at all: not `open(...)`, not
+# `os.open`, not `Path.write_text` / `write_bytes`, not a rename/unlink.
+WRITE_CALLS = {
+    "open", "write_text", "write_bytes", "write", "remove", "unlink",
+    "rename", "replace", "mkdir", "makedirs", "rmdir", "removedirs",
+    "truncate", "symlink", "link", "chmod", "chown", "utime", "mkstemp",
+    "NamedTemporaryFile", "TemporaryFile", "copyfile", "copy2", "copytree",
+    "move", "rmtree",
+}
+writes = []
+for node in ast.walk(tree):
+    if not isinstance(node, ast.Call):
+        continue
+    func = node.func
+    name = None
+    if isinstance(func, ast.Name):
+        name = func.id
+    elif isinstance(func, ast.Attribute):
+        name = func.attr
+    if name in WRITE_CALLS:
+        writes.append(ast.dump(node)[:120])
+check("the report module has no write path at all", not writes, str(writes))
+imports = [a.name for n in ast.walk(tree) if isinstance(n, ast.Import)
+           for a in n.names]
+imports += [a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+            for a in n.names]
+check("the report module imports no filesystem writer",
+      not any(i in ("shutil", "tempfile") for i in imports), str(imports))
 
 # ---------------------------------------------------- the shipped 288-config record
 print("\n=== the shipped 288-configuration record ===")
@@ -579,6 +691,19 @@ proc = subprocess.run([sys.executable, "-m", "proto.quant", "prereg", "show",
                        "HYD-9999", "--dir", "docs/hypotheses"], cwd=ROOT, env=env,
                       capture_output=True, text=True)
 check("prereg show exits 1 for an unknown record", proc.returncode == 1,
+      proc.stdout + proc.stderr)
+
+corrupt_dir = tempfile.mkdtemp()
+with open(os.path.join(corrupt_dir, "HYD-0002.json"), "w") as fh:
+    fh.write('{"prereg_version": "prereg-v1", broken')
+proc = subprocess.run([sys.executable, "-m", "proto.quant", "prereg", "validate",
+                       "--dir", corrupt_dir], cwd=ROOT, env=env,
+                      capture_output=True, text=True)
+check("prereg validate exits 1 on a corrupt sidecar", proc.returncode == 1,
+      proc.stdout + proc.stderr)
+check("prereg validate prints the error instead of a traceback",
+      "ERROR" in (proc.stdout + proc.stderr) and
+      "Traceback" not in (proc.stdout + proc.stderr),
       proc.stdout + proc.stderr)
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))

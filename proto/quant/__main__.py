@@ -27,7 +27,13 @@ def _prereg_validate(directory):
     """`prereg validate`: print every record and its validation errors."""
     from . import prereg
     from .. import hypothesis_registry as hr
-    records = prereg.load_all(directory)
+    try:
+        records = prereg.load_all(directory)
+    except ValueError as exc:
+        # A sidecar that claims to be a preregistration record but cannot be
+        # parsed is reported, not raised as a traceback.
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
     # A hypothesis is "known" when the markdown registry declares it or when
     # a preregistration record for it exists in the same directory.
     known = {e["id"] for e in hr.load_registry(directory)

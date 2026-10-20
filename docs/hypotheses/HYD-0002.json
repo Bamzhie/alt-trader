@@ -3,7 +3,7 @@
   "id": "HYD-0002",
   "title": "Breakout continuation edges have no positive net edge after friction",
   "status": "rejected",
-  "hypothesis": "Pre-declared continuation rules (breakout start, residual shock) have a positive mean net R after fees and tiered slippage on the development window. RETROSPECTIVE REGISTRATION: this record was written AFTER the run it documents (the run produced its artifact at 2026-10-19T12:37:10Z); it transcribes that run's preserved artifacts and must not be read as a prospective pre-registration. The sweep tested the continuation rule family, NOT the funding-quintile hypothesis of HYD-0001.",
+  "hypothesis": "Pre-declared continuation rules (breakout start, residual shock) have a positive mean net R after fees and tiered slippage on the development window. RETROSPECTIVE REGISTRATION: this record was written AFTER the run it documents (the run produced its artifact at 2026-10-19T11:37:10Z); it transcribes that run's preserved artifacts and must not be read as a prospective pre-registration. The sweep tested the continuation rule family, NOT the funding-quintile hypothesis of HYD-0001.",
   "feature_definitions": [
     {
       "name": "sigma",
@@ -202,7 +202,8 @@
       "proto/quant/stream.py",
       "proto/quant/bars.py"
     ],
-    "code_note": "the code hash is pinned to the revision the sweep ran from (the artifact's git_rev); six of these files have changed since, so the working tree is not the code that produced the numbers"
+    "code_note": "the code hash is pinned to the revision the sweep ran from (the artifact's git_rev); five of these files have changed since, so the working tree is not the code that produced the numbers",
+    "regime_note": "the volatility/regime groups of a sliced report are trailing volatility terciles of each event's own sigma; they are NOT comparable with the six-state codes of proto.quant.estimators.regime, which needs the market-factor return series"
   },
   "promotion_criteria": [
     {
@@ -351,6 +352,6 @@
       ]
     }
   ],
-  "created_ts": 1792453723,
-  "updated_ts": 1792453723
+  "created_ts": 1792458606,
+  "updated_ts": 1792458606
 }

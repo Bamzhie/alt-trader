@@ -10,7 +10,11 @@ window and returns a report that can be read without re-deriving anything:
   * a **period** slice: the window cut into five equal chronological
     sub-periods;
   * a **volatility / regime** slice: the events grouped by their trailing
-    volatility tercile;
+    volatility tercile.  THESE LABELS ARE NOT COMPARABLE with the six-state
+    codes of ``proto.quant.estimators.regime``: that measure needs the
+    market-factor return series, which the event stream does not carry, so
+    this report slices by VOLATILITY only and labels the groups
+    ``low-vol`` / ``mid-vol`` / ``high-vol`` / ``unclassified``;
   * a **liquidity** slice: the events grouped by the ``CostModel``
     slippage tiers, using each event's trailing-24h quote volume.
 
@@ -235,6 +239,12 @@ def _regime_thresholds(rows, calib_days=REGIME_CALIB_DAYS,
     volatility.  The trend half of the 6-state ``regime`` label needs the
     market factor and is therefore NOT reproduced here -- this report
     slices by VOLATILITY, which is what the trend-free tercile supports.
+
+    NOT COMPARABLE with ``measures.regime``: the groups here are volatility
+    terciles of the event's own sigma, while the regime codes are a
+    trend x volatility-tercile label of the market factor.  A group named
+    ``high-vol`` here is NOT the ``*/high-vol`` state of the regime
+    measure, and the two must never be read as the same thing.
 
     Returns ``{day: (q_lo, q_hi)}``.
     """
