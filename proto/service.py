@@ -1560,11 +1560,16 @@ def _make_handler(token, ready=None, store_path=None, data_dir=None,
                                "research surface unavailable", origin=origin)
                     return
                 promo_dir = os.path.dirname(os.path.abspath(quant_db)) or "."
-                data = _surface.build(conn, cfg=_quant_default,
-                                      promo_dir=promo_dir)
-            except Exception:
+                data = _surface.build_cached(conn, cfg=_quant_default,
+                                             promo_dir=promo_dir)
+            except Exception as exc:
                 # The surface must never answer with a figure it could not
                 # read: an unreadable store is UNAVAILABLE, not a guess.
+                # The exception is logged (type and message only - no token,
+                # no request body) so an internal bug is not
+                # indistinguishable from an unreadable store.
+                LOG.warning("research surface unavailable: %s: %s",
+                            type(exc).__name__, exc)
                 self._deny(503, "UNAVAILABLE",
                            "research surface unavailable", origin=origin)
                 return

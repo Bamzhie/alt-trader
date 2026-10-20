@@ -12542,19 +12542,19 @@
   "config_hash": "9f2c1ab4de07",
   "event_counts": {
    "total": 44,
-   "emitted": 44,
+   "emitted": 27,
    "resolved": 17
   },
   "actionable_events": 0,
   "suppression_top": [
    {
     "rule_id": "quant-v1:breakout_start:rvol4:fade:T288_ks1.5_R1",
-    "reason": "cooldown from the previous event",
+    "reason": "cooldown",
     "n": 9
    },
    {
     "rule_id": "quant-v1:residual_shock:h8:fade:T144_ks3_R1",
-    "reason": "quote volume below the cost model floor",
+    "reason": "no_vol",
     "n": 4
    }
   ],
@@ -12601,7 +12601,7 @@
    "events": 44,
    "resolved": 17,
    "open": 27,
-   "days": 12,
+   "days": 10,
    "coins": 8,
    "rules": 3
   },
@@ -12626,7 +12626,7 @@
     "cost_note": "costs are assumed (fee + slippage); funding is not modeled; no fill model beyond next bar open",
     "suppression": [
      {
-      "reason": "cooldown from the previous event",
+      "reason": "cooldown",
       "n": 9
      }
     ],
@@ -12671,8 +12671,8 @@
     "events": 2,
     "resolved": 0,
     "open": 2,
-    "days": 0,
-    "coins": 0,
+    "days": null,
+    "coins": null,
     "interval": null,
     "outcome_shares": {
      "tp": null,
@@ -12682,7 +12682,7 @@
     "cost_note": "costs are assumed (fee + slippage); funding is not modeled; no fill model beyond next bar open",
     "suppression": [
      {
-      "reason": "quote volume below the cost model floor",
+      "reason": "no_vol",
       "n": 4
      }
     ],
@@ -12697,6 +12697,7 @@
   "calibration": {
    "available": false,
    "buckets": [],
+   "count": 0,
    "reason": "the shadow store records outcomes, not predicted outcomes - calibration is not computed"
   },
   "coverage": {
@@ -12704,6 +12705,10 @@
    "eligible": 57,
    "ratio": 0.7719298245614035,
    "reason": "attributed events over recorded opportunities (emitted + recorded suppressions); opportunities the watcher never recorded are not in the denominator"
+  },
+  "validation": {
+   "validated": 0,
+   "rules": 3
   }
  }
 }

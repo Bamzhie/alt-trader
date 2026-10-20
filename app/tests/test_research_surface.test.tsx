@@ -11,15 +11,19 @@
 //     denominator named).
 //   * Uncertainty is interval endpoints only: `measured range (lower–upper)`
 //     with the static caption `range of measured outcomes, not a prediction`,
-//     or `measured range unavailable`. No point reading, no mean.
+//     or `measured range unavailable`. No point reading, no mean — and no
+//     point proportion: the outcome shares are not rendered at all.
 //   * An unavailable value renders the literal "unavailable" — never a zero.
 //   * An insufficient surface renders the insufficient-evidence block WITH
 //     the reason the API gave.
 //   * Provenance (config hash, code revision, rule ids, feature versions)
 //     is rendered as plain muted text.
-//   * Banned copy: confidence / probability / tier / TOTAL / 1m / leverage /
-//     liquidation / scanned must not appear in research copy, and a passed
-//     gate record still renders as research, never as an action.
+//   * Every count in the view comes from the API — the view never counts
+//     rules or buckets itself.
+//   * Banned copy: the strings confidence / probability / tier / TOTAL / 1m
+//     / leverage / liquidation / scanned must not appear in research copy
+//     (a plain substring scan, the way the backend scans the payload), and
+//     a passed gate record still renders as research, never as an action.
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { createClient } from "../src/api/client";
@@ -32,6 +36,8 @@ const RULE_ID = "quant-v1:breakout_start:rvol4:fade:T288_ks1.5_R1";
 const CONTROL_ID = "quant-v1:breakout_start:rvol4:cont:T288_ks1.5_R1";
 
 // A /quant-status body shaped like proto/service.py _handle_quant_status.
+// `emitted` counts the rows that are STILL OPEN, so emitted + resolved ==
+// total.
 function populatedStatus(): Record<string, unknown> {
   return {
     mode: "shadow",
@@ -39,12 +45,12 @@ function populatedStatus(): Record<string, unknown> {
     paused: false,
     pause_reason: null,
     config_hash: "abc123",
-    event_counts: { total: 9, emitted: 9, resolved: 4 },
+    event_counts: { total: 9, emitted: 5, resolved: 4 },
     actionable_events: 0,
     suppression_top: [
       {
         rule_id: RULE_ID,
-        reason: "holdout not evaluated",
+        reason: "cooldown",
         n: 4,
       },
     ],
@@ -67,11 +73,11 @@ function researchSurface(): Record<string, unknown> {
       feature_versions: [{ name: "hurst", version: "hurst-v1" }],
     },
     sample: {
-      events: 9,
+      events: 11,
       resolved: 4,
-      open: 5,
-      days: 3,
-      coins: 2,
+      open: 7,
+      days: 5,
+      coins: 4,
       rules: 2,
     },
     rules: [
@@ -88,7 +94,7 @@ function researchSurface(): Record<string, unknown> {
         cost_note:
           "costs are assumed (fee + slippage); funding is not modeled; " +
           "no fill model beyond next bar open",
-        suppression: [{ reason: "holdout not evaluated", n: 4 }],
+        suppression: [{ reason: "cooldown", n: 4 }],
         validation: {
           status: "not_validated",
           reasons: ["holdout events 12 < 200"],
@@ -100,8 +106,8 @@ function researchSurface(): Record<string, unknown> {
         events: 2,
         resolved: 0,
         open: 2,
-        days: 0,
-        coins: 0,
+        days: null,
+        coins: null,
         interval: null,
         outcome_shares: { tp: null, sl: null, time: null },
         cost_note:
@@ -117,18 +123,20 @@ function researchSurface(): Record<string, unknown> {
     calibration: {
       available: false,
       buckets: [],
+      count: 0,
       reason:
         "the shadow store records outcomes, not predicted outcomes - " +
         "calibration is not computed",
     },
     coverage: {
-      attributed: 9,
-      eligible: 13,
-      ratio: 9 / 13,
+      attributed: 11,
+      eligible: 15,
+      ratio: 11 / 15,
       reason:
         "attributed events over recorded opportunities (emitted + recorded " +
         "suppressions)",
     },
+    validation: { validated: 1, rules: 2 },
   };
 }
 
@@ -186,16 +194,20 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** Every banned wording from the research copy discipline. */
-const BANNED_PATTERNS: RegExp[] = [
-  /confidence/i,
-  /probability/i,
-  /\btier\b/i,
-  /TOTAL/,
-  /1m/,
-  /leverage/i,
-  /liquidation/i,
-  /scanned/i,
+/**
+ * Every banned wording from the research copy discipline — a PLAIN
+ * SUBSTRING scan, the way the backend scans the payload, so a word inside
+ * another word ("tiered") cannot slip through.
+ */
+const BANNED = [
+  "confidence",
+  "probability",
+  "tier",
+  "total",
+  "1m",
+  "leverage",
+  "liquidation",
+  "scanned",
 ];
 
 function researchText(): string {
@@ -227,7 +239,7 @@ describe("createClient.research", () => {
       "Bearer dev-token",
     );
     expect(surface.version).toBe("research-surface-v1");
-    expect(surface.sample.events).toBe(9);
+    expect(surface.sample.events).toBe(11);
   });
 
   test("a body that is not a research surface is a contract error", async () => {
@@ -253,16 +265,18 @@ describe("Research surface", () => {
     await screen.findByText(/SHADOW/);
 
     // "X of Y" with the denominator named in the footnote.
-    expect(screen.getByText("4 of 9")).toBeInTheDocument();
-    expect(screen.getByText("5 of 9")).toBeInTheDocument();
-    expect(screen.getByText("resolved of emitted")).toBeInTheDocument();
-    expect(screen.getByText("open of emitted")).toBeInTheDocument();
+    expect(screen.getByText("4 of 11")).toBeInTheDocument();
+    expect(screen.getByText("7 of 11")).toBeInTheDocument();
+    expect(
+      screen.getByText("resolved of all shadow events"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("open of all shadow events")).toBeInTheDocument();
 
     // The plain counts name their scope.
     const days = screen.getByText("Days observed").closest("li");
-    expect(days?.textContent).toContain("3");
+    expect(days?.textContent).toContain("5");
     const coins = screen.getByText("Coins observed").closest("li");
-    expect(coins?.textContent).toContain("2");
+    expect(coins?.textContent).toContain("4");
     const rules = screen.getByText("Rules observed").closest("li");
     expect(rules?.textContent).toContain("2");
   });
@@ -282,15 +296,26 @@ describe("Research surface", () => {
     expect(screen.getByText("measured range unavailable")).toBeInTheDocument();
   });
 
+  test("the outcome shares are never rendered as a point proportion", async () => {
+    stubResearchFetch();
+    render(<Research apiBaseUrl={BASE_URL} serviceToken="dev-token" />);
+    await screen.findByText(/SHADOW/);
+
+    expect(screen.queryByText(/outcome shares/)).toBeNull();
+    expect(screen.queryByText(/tp 0\.50/)).toBeNull();
+    expect(researchText()).not.toMatch(/tp 0\./);
+  });
+
   test("an unavailable value renders the literal unavailable", async () => {
     stubResearchFetch();
     render(<Research apiBaseUrl={BASE_URL} serviceToken="dev-token" />);
     await screen.findByText(/SHADOW/);
 
-    // The control rule has no resolved outcome: no shares, no range.
-    expect(
-      screen.getByText("outcome shares: unavailable — no resolved events"),
-    ).toBeInTheDocument();
+    // The control rule has no resolved outcome: no range, no denominators.
+    expect(screen.getByText("measured range unavailable")).toBeInTheDocument();
+    const control = screen.getAllByText(CONTROL_ID)[0].closest("li");
+    expect(control?.textContent).toContain("days unavailable");
+    expect(control?.textContent).toContain("coins unavailable");
     // Calibration is not computable from the shadow store.
     const calibration = screen.getByText("Calibration").closest("li");
     expect(calibration?.textContent).toContain("unavailable");
@@ -359,15 +384,16 @@ describe("Research surface", () => {
     ).toBeInTheDocument();
   });
 
-  test("the coverage and validation status rows are rendered", async () => {
+  test("the coverage and validation status rows come from the API", async () => {
     stubResearchFetch();
     render(<Research apiBaseUrl={BASE_URL} serviceToken="dev-token" />);
     await screen.findByText(/SHADOW/);
 
     const coverage = screen.getByText("Coverage").closest("li");
-    expect(coverage?.textContent).toContain("9 of 13");
+    expect(coverage?.textContent).toContain("11 of 15");
+    // The counts are the API's: validation {validated: 1, rules: 2}.
     const validation = screen.getByText("Validation").closest("li");
-    expect(validation?.textContent).toContain("1 of 2");
+    expect(validation?.textContent).toContain("1 of 2 rules");
   });
 
   test("a passed gate record still renders as research, never as an action", async () => {
@@ -375,15 +401,19 @@ describe("Research surface", () => {
     render(<Research apiBaseUrl={BASE_URL} serviceToken="dev-token" />);
     await screen.findByText(/SHADOW/);
 
-    // The validated rule renders the allowed label and stays research.
-    expect(screen.getAllByText(/not actionable/).length).toBeGreaterThan(0);
-    expect(screen.getByText("gate passed — research only")).toBeInTheDocument();
+    // The validated rule keeps its own vocabulary: the gate passed, the
+    // rule stays research.
+    expect(
+      screen.getByText(/gate passed — research only/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/gate not passed — research only/),
+    ).toBeInTheDocument();
     expect(screen.queryByText("ACTIONABLE")).toBeNull();
     expect(researchText()).not.toMatch(/ACTIONABLE/);
+    // The standing "not actionable" statement stays in the SHADOW badge.
+    expect(screen.getByText(/not actionable/)).toBeInTheDocument();
     // The unvalidated rule says why, with the gate's own reason.
-    expect(
-      screen.getAllByText(/insufficient evidence/).length,
-    ).toBeGreaterThan(0);
     expect(screen.getByText("holdout events 12 < 200")).toBeInTheDocument();
   });
 
@@ -392,9 +422,9 @@ describe("Research surface", () => {
     render(<Research apiBaseUrl={BASE_URL} serviceToken="dev-token" />);
     await screen.findByText(/SHADOW/);
 
-    const text = researchText();
-    for (const pattern of BANNED_PATTERNS) {
-      expect(text).not.toMatch(pattern);
+    const text = researchText().toLowerCase();
+    for (const word of BANNED) {
+      expect(text).not.toContain(word);
     }
   });
 

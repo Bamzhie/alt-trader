@@ -21,8 +21,10 @@ Run:  python3 tests/test_ws_d_research_surface.py   -> ALL PASS, exit 0
 import hashlib
 import http.client
 import json
+import logging
 import os
 import socket
+import sqlite3
 import sys
 import tempfile
 
@@ -157,7 +159,8 @@ def main():
           payload.get("version"))
     check("payload top-level keys", set(payload) == {
         "version", "status", "reasons", "generated_ts", "provenance",
-        "sample", "rules", "calibration", "coverage"}, str(sorted(payload)))
+        "sample", "rules", "calibration", "coverage", "validation"},
+        str(sorted(payload)))
     check("status ok with events", payload["status"] == "ok", payload["status"])
     check("no reasons when ok", payload["reasons"] == [], str(payload["reasons"]))
     check("generated_ts is the injected stamp",
@@ -185,10 +188,10 @@ def main():
           sample["events"] == 5, str(sample))
     check("sample resolved", sample["resolved"] == 3, str(sample))
     check("sample open", sample["open"] == 2, str(sample))
-    check("sample days count the resolved days", sample["days"] == 3,
-          str(sample))
-    check("sample coins count the resolved coins", sample["coins"] == 3,
-          str(sample))
+    check("sample days count the distinct days of the whole sample",
+          sample["days"] == 4, str(sample))
+    check("sample coins count the distinct coins of the whole sample",
+          sample["coins"] == 5, str(sample))
     check("sample rules", sample["rules"] == 2, str(sample))
 
     rules = {r["rule_id"]: r for r in payload["rules"]}
@@ -206,8 +209,19 @@ def main():
           str(cand["events"]))
     check("rule resolved", cand["resolved"] == 3, str(cand["resolved"]))
     check("rule open", cand["open"] == 1, str(cand["open"]))
-    check("rule days", cand["days"] == 3, str(cand["days"]))
-    check("rule coins", cand["coins"] == 3, str(cand["coins"]))
+    check("rule days are the measured range's denominators",
+          cand["days"] == 3, str(cand["days"]))
+    check("rule coins are the measured range's denominators",
+          cand["coins"] == 3, str(cand["coins"]))
+    # A rule with no resolved row has no denominators: null, never a zero.
+    ctrl = rules[CONTROL]
+    check("a rule with no resolved row reports a null interval",
+          ctrl["interval"] is None, str(ctrl["interval"]))
+    check("a rule with no resolved row reports null days and coins",
+          ctrl["days"] is None and ctrl["coins"] is None, str(ctrl))
+    check("a rule with no resolved row reports null outcome shares",
+          ctrl["outcome_shares"] == {"tp": None, "sl": None, "time": None},
+          str(ctrl["outcome_shares"]))
 
     check("interval carries endpoints only",
           set(cand["interval"]) == {"lo", "hi"}, str(cand["interval"]))
@@ -256,11 +270,13 @@ def main():
           str(val["reasons"]))
 
     cal = payload["calibration"]
-    check("calibration keys", set(cal) == {"available", "buckets", "reason"},
-          str(sorted(cal)))
+    check("calibration keys", set(cal) == {"available", "buckets", "count",
+                                           "reason"}, str(sorted(cal)))
     check("calibration is unavailable with a reason",
           cal["available"] is False and cal["buckets"] == [] and cal["reason"],
           str(cal))
+    check("calibration carries the bucket count (the view never counts)",
+          cal["count"] == 0, str(cal))
 
     cov = payload["coverage"]
     check("coverage keys", set(cov) == {"attributed", "eligible", "ratio",
@@ -270,6 +286,12 @@ def main():
     check("coverage ratio", abs(cov["ratio"] - cov["attributed"] / cov["eligible"])
           < 1e-9, str(cov))
     check("coverage carries a reason", bool(cov["reason"]), str(cov))
+
+    vsum = payload["validation"]
+    check("validation summary keys", set(vsum) == {"validated", "rules"},
+          str(sorted(vsum)))
+    check("validation summary counts the rules with a passed gate record",
+          vsum == {"validated": 0, "rules": 2}, str(vsum))
 
     blob = json.dumps(payload).lower()
     for word in BANNED:
@@ -291,6 +313,9 @@ def main():
           val2[CONTROL]["status"] == "not_validated", str(val2[CONTROL]))
     check("a validated rule is still research (no action wording)",
           "actionable" not in json.dumps(payload2).lower())
+    check("the validation summary counts the passed rule",
+          payload2["validation"] == {"validated": 1, "rules": 2},
+          str(payload2["validation"]))
 
     # ---- an empty store ---------------------------------------------------
     d2 = tempfile.mkdtemp(prefix="ws-d-empty-")
@@ -312,6 +337,30 @@ def main():
           empty["coverage"]["ratio"] is None, str(empty["coverage"]))
     check("empty store coverage names the reason",
           bool(empty["coverage"]["reason"]), str(empty["coverage"]))
+    check("empty store validation summary is explicit zeros",
+          empty["validation"] == {"validated": 0, "rules": 0},
+          str(empty["validation"]))
+
+    # ---- the short-TTL cache (read-only, in memory) ----------------------
+    conn = sqlite_ro(db_path)
+    first = surface.build_cached(conn, cfg=QCFG, promo_dir=d, now=1700000000)
+    second = surface.build_cached(conn, cfg=QCFG, promo_dir=d, now=1700000000)
+    conn.close()
+    check("an unchanged store reuses the assembled surface",
+          first is second, "the surface was rebuilt")
+    # A new event changes the content fingerprint: the cache is invalidated.
+    store3 = qstore.QuantStore(db_path)
+    store3.insert_event(event(CONTROL, "FFF", 1_700_000_000 + 5 * 86400,
+                               "control"))
+    store3.commit()
+    store3.close()
+    conn = sqlite_ro(db_path)
+    third = surface.build_cached(conn, cfg=QCFG, promo_dir=d, now=1700000000)
+    conn.close()
+    check("a changed store invalidates the cache", third is not first,
+          "a stale surface was served")
+    check("the refreshed surface sees the new event",
+          third["sample"]["events"] == 6, str(third["sample"]))
 
     # ---- the route --------------------------------------------------------
     from proto import service as svc
@@ -332,7 +381,7 @@ def main():
               data.get("version") == "research-surface-v1"
               and set(data) == {"version", "status", "reasons", "generated_ts",
                                 "provenance", "sample", "rules", "calibration",
-                                "coverage"}, str(sorted(data)))
+                                "coverage", "validation"}, str(sorted(data)))
         check("route reports the validation status of the recorded gate",
               {r["rule_id"]: r["validation"]["status"]
                for r in data["rules"]}[CANDIDATE] == "validated",
@@ -370,6 +419,44 @@ def main():
     finally:
         server.shutdown()
         server.server_close()
+
+    # ---- an internal failure is logged, not a silent 503 ------------------
+    d3 = tempfile.mkdtemp(prefix="ws-d-broken-")
+    broken = os.path.join(d3, "quant.db")
+    conn = sqlite3.connect(broken)
+    # A quant_event table the surface cannot read: the route must not
+    # answer 503 without saying why in the log.
+    conn.execute("CREATE TABLE quant_event (id INTEGER PRIMARY KEY, "
+                 "rule_id TEXT)")
+    conn.commit()
+    conn.close()
+    captured = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            captured.append(record)
+
+    log = logging.getLogger("proto.service")
+    handler = _Capture()
+    log.addHandler(handler)
+    try:
+        server = svc.serve(0, token, quant_db=broken)
+        port = server.server_address[1]
+        try:
+            st, body = req(port, "/quant-research", token=token)
+        finally:
+            server.shutdown()
+            server.server_close()
+    finally:
+        log.removeHandler(handler)
+    check("an internal failure answers 503", st == 503, f"got {st}")
+    check("the internal failure is logged",
+          any(r.levelno >= logging.WARNING for r in captured),
+          str([r.getMessage() for r in captured]))
+    check("the log line names the failure and leaks no token",
+          any("research surface unavailable" in r.getMessage() for r in captured)
+          and all(token not in r.getMessage() for r in captured),
+          str([r.getMessage() for r in captured]))
 
     store.close()
 

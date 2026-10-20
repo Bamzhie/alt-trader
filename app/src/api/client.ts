@@ -124,7 +124,9 @@ function isQuantResearch(value: unknown): value is QuantResearch {
     typeof v.calibration === "object" &&
     v.calibration !== null &&
     typeof v.coverage === "object" &&
-    v.coverage !== null
+    v.coverage !== null &&
+    typeof v.validation === "object" &&
+    v.validation !== null
   );
 }
 

@@ -576,3 +576,493 @@ The other states:
 
 `task-D-brief.md` is left untracked on purpose (it is the orchestrator's
 input document, not a deliverable — the WS-A branch does the same).
+
+---
+
+# Fix round 1
+
+**Status: DONE** — all 12 findings are addressed; nothing was dropped
+silently. The three items the reviewer marked "documented, no change
+needed" are recorded in §7.1.
+
+Round-1 commit: see the last line of this file (HEAD). The round-1
+implementation is one commit on top of `5c63f6f`.
+
+## 7. The findings, one by one
+
+### 1 (Important) — the mock's event counts were impossible, and the test asserted the wrong invariant
+
+**What was wrong.** The live route counts `emitted` as the rows that are
+**still open** (`state='EMITTED'`, `proto/service.py:1464-1469`), so
+`total = emitted + resolved` must hold. The dev fixture said
+`{total: 44, emitted: 44, resolved: 17}` — impossible — and my mock test
+asserted `total == emitted`, which pinned the impossible invariant.
+
+**Changed.**
+- `app/dev/fixtures.json:12543` — `quant_status.event_counts` is now
+  `{"total": 44, "emitted": 27, "resolved": 17}` (27 + 17 = 44). The
+  research fixture's sample already matched (`events 44 / open 27 /
+  resolved 17`), so the two routes now agree.
+- `app/dev/test_mock_service.py:559` — the test now asserts the real
+  invariant: `counts["emitted"] + counts["resolved"] == counts["total"]`.
+- `app/src/pages/Research.tsx:459` — the pre-existing "Shadow events" card
+  now carries the clarification the reviewer was pointing at:
+  *"emitted counts the shadow events that are still open; resolved counts
+  the ones that finished"*. Without it the card's "Emitted 27" sat next to
+  the sample's "Open 27 of 44" and the overloaded word "emitted" (still
+  open, in `/quant-status`; "every event emitted", in the research sample)
+  made the two footnotes ambiguous. The sample's denominators were renamed
+  accordingly: **"resolved of all shadow events"** / **"open of all shadow
+  events"** (the brief's example wording "resolved of emitted" is not used
+  any more — in this contract "emitted" means still-open).
+
+**Covered by.** `app/dev/test_mock_service.py::test_quant_status_route`
+(the invariant) and `app/dev/test_mock_service.py::test_quant_research_route`
+(the payload shape).
+
+### 2 (Important) — a gate-passed rule read as "validation failed"
+
+**What was wrong.** `validation: not actionable` inverts the meaning of a
+validation status.
+
+**Changed.** The payload keeps the API's vocabulary (`validated` /
+`not_validated`, unchanged). The view now renders the status in its own
+words — `app/src/pages/Research.tsx:239-240`:
+
+```
+validation: gate passed — research only
+validation: gate not passed — research only
+```
+
+The standing "not actionable" statement stays where it belongs: in the
+SHADOW badge at the top of the view ("SHADOW — findings here are not
+actionable"). The file's header comment records the rule ("a status never
+borrows another status' label").
+
+**Covered by.** `app/tests/test_research_surface.test.tsx` — "a passed gate
+record still renders as research, never as an action" now asserts
+`/gate passed — research only/` **and** `/gate not passed — research only/`
+are rendered, that `ACTIONABLE` never appears, and that the badge still
+carries "not actionable".
+
+### 3 (Minor, house rule) — two counts were computed in the frontend
+
+**What was wrong.** `research.rules.filter(...).length` (the validated
+count) and `research.calibration.buckets.length` (the bucket count) were
+computed in the view.
+
+**Changed.** Both counts now come from the API:
+- `proto/quant/research_surface.py:356` — a new top-level
+  `"validation": {"validated": <int>, "rules": <int>}` block.
+- `proto/quant/research_surface.py:352` — `calibration.count` (the number
+  of buckets).
+- `app/src/pages/Research.tsx:155` and `:188` — the view renders
+  `research.calibration.count` and `research.validation.validated` /
+  `research.validation.rules`.
+- `app/src/api/types.ts` — `QuantResearchValidationSummary` and
+  `calibration.count`; `app/src/api/client.ts` — the shape guard now
+  requires the `validation` block (a body without it is a contract error,
+  never a partial surface).
+
+The only remaining `.length` uses in the view are boolean guards
+(`rule_ids.length > 0` → render the list or the literal "unavailable"),
+never a rendered number.
+
+**Covered by.** `app/tests/test_research_surface.test.tsx` — "the coverage
+and validation status rows come from the API" asserts "11 of 15" and
+"1 of 2 rules"; `tests/test_ws_d_research_surface.py` pins the two new
+payload blocks.
+
+### 4 (Minor, house rule) — the outcome shares were point proportions, rounded in the frontend
+
+**What was wrong.** `outcome shares of 12 resolved: tp 0.42 · sl 0.25 ·
+time 0.33` renders a proportion as a result, and `toFixed(2)` rounds it
+in the frontend.
+
+**Changed.** The shares are **not rendered any more** (the payload keeps
+them for other consumers — the brief's shape). `formatShare` and the whole
+shares line are gone from `app/src/pages/Research.tsx`; nothing in the view
+rounds a number any more.
+
+**Covered by.** `app/tests/test_research_surface.test.tsx` — "the outcome
+shares are never rendered as a point proportion" asserts that no
+`/outcome shares/` and no `tp 0.…` appears in the rendered text.
+
+### 5 (Minor) — `toFixed(4)` could render a non-zero endpoint as `0.0000`
+
+**Changed.** `app/src/pages/Research.tsx:50` — a new `formatEndpoint`:
+four decimals as before, but an endpoint that would round away falls back
+to its own digits (`String(value)`), so a non-zero endpoint is never shown
+as a zero. The label form `measured range (lo–hi)` is unchanged.
+
+**Covered by.** the existing `measured range (0.0123–0.0456)` assertion
+(existing test file + the new one) and the new "the uncertainty renders as
+interval endpoints only" test.
+
+### 6 (Minor) — a rule with 0 resolved rows reported `days: 0, coins: 0`
+
+**What was wrong.** The rule's interval is `null` (nothing to measure) but
+its days/coins said `0` — a zero standing in for "not measured".
+
+**Changed.** `proto/quant/research_surface.py:242` — a rule with no
+resolved row now reports `days: null` and `coins: null` (the type in
+`app/src/api/types.ts` is now `number | null`), and the view renders the
+literal **"days unavailable · coins unavailable"**
+(`app/src/pages/Research.tsx:227-230`).
+
+**Covered by.** `tests/test_ws_d_research_surface.py` — "a rule with no
+resolved row reports null days and coins" (and null interval / null
+shares); `app/tests/test_research_surface.test.tsx` — "an unavailable value
+renders the literal unavailable"; `app/dev/test_mock_service.py` — the
+same for the dev fixture.
+
+### 7 (Minor) — the blanket `except Exception` answered 503 with no trace
+
+**Changed.** `proto/service.py:1571` — the handler now logs before
+answering:
+
+```python
+LOG.warning("research surface unavailable: %s: %s",
+            type(exc).__name__, exc)
+```
+
+The line carries the exception type and message only — no token, no
+request body — and the service's existing redacting filter still applies.
+
+**Covered by.** `tests/test_ws_d_research_surface.py` — a store with an
+unreadable `quant_event` table: the route answers 503 **and** a
+`WARNING` record is captured on the `proto.service` logger, and the
+captured message contains neither the token nor anything else.
+
+### 8 (Minor, house rule) — the frontend banned scan was weaker than the house rule
+
+**What was wrong.** `/\btier\b/i` lets "tiered" through.
+
+**Changed.** `app/tests/test_research_surface.test.tsx` — the scan is now
+a plain-substring scan over the lower-cased text, exactly like the
+backend's payload scan: `confidence, probability, tier, total, 1m,
+leverage, liquidation, scanned` — each checked with `toContain`, so
+"tiered" (or "Total") cannot slip through. (The pre-existing
+`app/tests/test_research.test.tsx` is left untouched, as required.)
+
+**Covered by.** the new test file's "the research surface carries none of
+the banned words".
+
+### 9 (Minor) — the sample footnote was wrong
+
+**What was wrong.** The footnote claimed the sample's days/coins count
+"the resolved rows the measured range is computed on" — which is the
+*rule's* scope, not the sample's.
+
+**Changed.** The backend now makes the two scopes explicit and the
+footnote says which is which:
+- `proto/quant/research_surface.py` `_sample()` — the sample's `days` and
+  `coins` are the distinct days and coins of the **whole sample** (every
+  shadow event).
+- `app/src/pages/Research.tsx:125` — the footnote reads: *"sample days and
+  coins count every shadow event in the sample; a rule's days and coins
+  count its resolved rows — the measured range's denominators"*.
+
+**Covered by.** `tests/test_ws_d_research_surface.py` — "sample days count
+the distinct days of the whole sample" / "sample coins count the distinct
+coins of the whole sample" (4 and 5 for the fixture store), next to the
+rule-level "days are the measured range's denominators".
+
+### 10 (Minor) — the loading paragraph had no `role="status"`
+
+**Changed.** `app/src/pages/Research.tsx:405-410` — the "loading research…"
+paragraph now carries `role="status"`, like its insufficient/error
+siblings.
+
+**Covered by.** the existing test (the loading state is rendered before
+the fetch resolves) plus the unchanged existing Research test.
+
+### 11 (Minor) — the read amplification of the per-frame re-read
+
+**What was wrong.** Every `quant.shadow` frame triggers two GETs, and
+each re-ran a 1500-sample bootstrap per rule (~300 ms for 2 500 events /
+4 rules); `code_rev()` also shelled out to git inside the request.
+
+**Changed.**
+- `proto/quant/research_surface.py:72,381` — a new `build_cached()`: the
+  assembled surface is reused for `CACHE_TTL_S = 15 s`. The cache key is
+  the store's **content fingerprint** (`_content_key()`: the store's path
+  + the event/outcome counts and maxima + a digest of the promotion
+  records), so a change invalidates it immediately; the TTL is the upper
+  bound on staleness. The cache is in memory and the surface stays
+  **read-only** — nothing is written, the holdout is still never touched.
+- `proto/quant/research_surface.py:75,167` — `code_rev()` is now cached
+  for `CODE_REV_TTL_S = 300 s` (the git shell-out happens at most once per
+  five minutes, not once per request).
+- `proto/service.py:1563` — the route calls `build_cached()`.
+
+**Covered by.** `tests/test_ws_d_research_surface.py` — "an unchanged store
+reuses the assembled surface" (the same object is returned) and "a changed
+store invalidates the cache" (a new event ⇒ a new surface that sees it).
+
+### 12 (Minor, dev fidelity) — the mock's suppression reasons were invented
+
+**What was wrong.** The fixture used "cooldown from the previous event" and
+"quote volume below the cost model floor" — strings the watcher never
+emits.
+
+**Changed.** `app/dev/fixtures.json` now uses the reasons the real
+watcher writes (`proto/quant/selector.py` and `proto/quant/engine.py`):
+**`cooldown`** and **`no_vol`** — in `quant_status.suppression_top` and in
+the research fixture's per-rule `suppression` rows.
+
+**Covered by.** `app/dev/test_mock_service.py::test_quant_research_route`
+(the fixture's shape) and the mock suite's banned-word scan.
+
+## 7.1 Documented, no change needed (as the reviewer directed)
+
+- **The live store may hold legacy `ACTIONABLE` rows.** `research_surface`
+  is deliberately SHADOW-only while `proto/quant/report.py` is not, so the
+  CLI report and this view can differ on such a store. Unchanged (still
+  true, still deliberate — the view is the shadow research log and the
+  shadow-only house rule says a shadow count never includes an actionable
+  row).
+- **`provenance.rule_ids` is the REGISTERED rules**, not the rules the
+  surface reports. The view labels the list "registered rules" and the
+  sample carries its own `rules` count. Unchanged.
+- **The plan's §1.5 mentions a "data hash" in the provenance; the brief's
+  payload shape supersedes it and `code_rev` fills that slot.** Noted
+  here: there is no data hash in the payload, and `code_rev` (the short
+  git revision, or `null` → "unavailable") stands in its place. If the
+  orchestrator wants a real data hash (a digest of the bars archive), it
+  is a separate field to add — it was not in the brief's shape and it is
+  not computed here.
+
+## 8. What the Research view now shows (round 1, exact strings)
+
+Rendered from the dev fixtures (whitespace collapsed, re-indented for
+readability — the strings are verbatim):
+
+```
+Research
+SHADOW — findings here are not actionable
+watcher: healthy
+Shadow events
+  Emitted 27
+  Resolved 17
+  Shadow events 44
+  emitted counts the shadow events that are still open; resolved counts the ones that finished
+Suppression
+  quant-v1:breakout_start:rvol4:fade:T288_ks1.5_R1 — cooldown 9
+  quant-v1:residual_shock:h8:fade:T144_ks3_R1 — no_vol 4
+Sample
+  Resolved 17 of 44   resolved of all shadow events
+  Open 27 of 44       open of all shadow events
+  Days observed 10
+  Coins observed 8
+  Rules observed 3
+  sample days and coins count every shadow event in the sample; a rule's days
+  and coins count its resolved rows — the measured range's denominators
+Status
+  Calibration unavailable
+    the shadow store records outcomes, not predicted outcomes - calibration is not computed
+  Coverage 44 of 57
+    attributed events over recorded opportunities (emitted + recorded suppressions);
+    opportunities the watcher never recorded are not in the denominator
+  Validation 0 of 3 rules with a passed gate record
+Rule measurements
+  quant-v1:breakout_start:rvol4:fade:T288_ks1.5_R1   candidate
+    12 of 28 resolved · days 9 · coins 6
+    measured range (0.0042–0.0311)
+    range of measured outcomes, not a prediction
+    costs are assumed (fee + slippage); funding is not modeled; no fill model beyond next bar open
+    validation: gate not passed — research only
+    holdout events 12 < 200
+    holdout days 9 < 25
+    suppression — cooldown × 9
+  quant-v1:breakout_start:rvol4:cont:T288_ks1.5_R1   control
+    5 of 14 resolved · days 5 · coins 4
+    measured range (-0.0112–0.0094)
+    range of measured outcomes, not a prediction
+    costs are assumed (fee + slippage); funding is not modeled; no fill model beyond next bar open
+    validation: gate not passed — research only
+    holdout events 5 < 200
+    holdout days 5 < 25
+  quant-v1:residual_shock:h8:fade:T144_ks3_R1   candidate
+    0 of 2 resolved · days unavailable · coins unavailable
+    measured range unavailable
+    range of measured outcomes, not a prediction
+    costs are assumed (fee + slippage); funding is not modeled; no fill model beyond next bar open
+    validation: gate not passed — research only
+    no promotion record for this rule id and config hash
+    suppression — no_vol × 4
+Provenance
+  Config hash 9f2c1ab4de07
+  Code revision 0f1e2d3
+  Generated 2026-10-14 00:00:00 UTC
+  registered rules
+    quant-v1:breakout_start:rvol4:fade:T288_ks1.5_R1
+    quant-v1:breakout_start:rvol4:cont:T288_ks1.5_R1
+    quant-v1:residual_shock:h8:fade:T144_ks3_R1
+  feature versions
+    hurst hurst-v1
+    measure measures-v1
+    mfdfa mfdfa-v1
+    feature_store features-v1
+    pivots pivots-v1
+```
+
+What changed against round 0: the outcome-share line is gone, the
+validation line reads `gate not passed — research only` (and
+`gate passed — research only` for a rule that passed), the rule's
+denominators read `days unavailable · coins unavailable` when they cannot
+be measured, the sample's denominators are named "of all shadow events",
+and the Shadow-events card explains what "Emitted" counts.
+
+The payload shape after round 1 (additive, `version` unchanged — the
+route has not shipped, so the shape was corrected before merge):
+
+```json
+{
+  "version": "research-surface-v1",
+  "status": "ok" | "insufficient",
+  "reasons": ["…"],
+  "generated_ts": 1700000000,
+  "provenance": {"config_hash": "…|null", "code_rev": "…|null",
+                  "rule_ids": ["…"],
+                  "feature_versions": [{"name": "…", "version": "…"}]},
+  "sample": {"events": 0, "resolved": 0, "open": 0,
+             "days": 0, "coins": 0, "rules": 0},
+  "rules": [{"rule_id": "…", "role": "candidate|control|?",
+             "events": 0, "resolved": 0, "open": 0,
+             "days": 0|null, "coins": 0|null,
+             "interval": {"lo": 0.0|null, "hi": 0.0|null} | null,
+             "outcome_shares": {"tp": null, "sl": null, "time": null},
+             "cost_note": "…",
+             "suppression": [{"reason": "…", "n": 0}],
+             "validation": {"status": "not_validated|validated",
+                            "reasons": ["…"]}}],
+  "calibration": {"available": false, "buckets": [], "count": 0,
+                  "reason": "…"},
+  "coverage": {"attributed": 0, "eligible": 0, "ratio": null, "reason": "…"},
+  "validation": {"validated": 0, "rules": 0}
+}
+```
+
+## 9. Round-1 commands and their real output
+
+### `python3 tests/test_ws_d_research_surface.py`
+
+```
+  PASS  a rule with no resolved row reports null days and coins
+  PASS  the validation summary counts the passed rule
+  PASS  an unchanged store reuses the assembled surface
+  PASS  a changed store invalidates the cache
+  ...
+  PASS  an internal failure answers 503
+  PASS  the internal failure is logged
+  PASS  the log line names the failure and leaks no token
+
+ALL PASS  tests/test_ws_d_research_surface.py  (86 checks)
+```
+
+(exit code 0; 72 → 86 checks.)
+
+### `python3 tests/run_all.py`
+
+```
+PASS  test_ws_d_research_surface.py  [ALL PASS  tests/test_ws_d_research_surface.py  (86 checks)]
+PASS  test_ws_f_startup.py  [ALL PASS  tests/test_ws_f_startup.py  (91 checks)]
+
+ALL SUITES PASS (85 files)
+```
+
+(exit code 0; 85 files, 0 failures.)
+
+### The dev-mock service's own suite (port 18999 — the live service owns 18741)
+
+```
+Ran 51 tests in 1.067s
+
+OK
+```
+
+(exit code 0.)
+
+### `npm run test` (in `app/`)
+
+```
+ Test Files  14 passed (14)
+      Tests  200 passed (200)
+   Start at  01:29:09
+   Duration  26.34s (transform 3.84s, setup 7.85s, collect 19.15s, tests 41.51s, environment 64.05s, prepare 17.22s)
+```
+
+(exit code 0; 199 → 200 tests: the new file has 15.)
+
+### `npm run typecheck`
+
+```
+> alt-radar-dashboard@0.1.0 typecheck
+> tsc --noEmit
+```
+
+(exit code 0, no output.)
+
+### `npm run lint`
+
+```
+> alt-radar-dashboard@0.1.0 lint
+> eslint . --max-warnings 0
+```
+
+(exit code 0, no warnings, no output.)
+
+### `npm run build`
+
+```
+> alt-radar-dashboard@0.1.0 build
+> tsc --noEmit && vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 66 modules transformed.
+rendering chunks...
+dist/index.html                   0.44 kB │ gzip:  0.28 kB
+dist/assets/index-2Pm9sww9.css    11.81 kB │ gzip:  3.22 kB
+dist/assets/index-BxMF15B1.js    367.35 kB │ gzip: 114.47 kB
+✓ built in 9.13s
+```
+
+(exit code 0.)
+
+**One flake to report honestly.** On the first round-1 `npm run test` run,
+`tests/test_sse.test.ts > useEvents — reconnect > reconnect after close
+sends Last-Event-ID, delayed by backoff` failed with
+`expected 2 to be 1` — a timing-sensitive assertion about the SSE
+reconnect backoff in a file this workstream does not touch
+(`app/src/api/sse.ts` is on the do-not-touch list). It passed on the
+isolated re-run and on the full re-run quoted above (200/200). It is a
+pre-existing flake under load, not a regression from round 1.
+
+## 10. Round-1 concerns / notes
+
+1. **The payload grew two fields** (`calibration.count` and the top-level
+   `validation` block) and two rule fields became nullable
+   (`days`/`coins`). The version tag stays `research-surface-v1`: the
+   route has not shipped, so the shape was corrected before merge rather
+   than after. If the orchestrator prefers a `v2` tag for the changed
+   shape, that is a one-line change in `research_surface.SURFACE_VERSION`
+   plus the two test assertions.
+2. **The sample's days/coins now cover the whole sample** (every shadow
+   event) while a rule's days/coins stay the measured range's denominators
+   (its resolved rows). The two scopes are deliberately different and the
+   view's footnote says so; a reviewer reading only the payload should
+   note that the sample's `days`/`coins` are NOT the interval's
+   denominators.
+3. **The "Emitted" label of the pre-existing Shadow-events card is
+   pre-existing app wording** for a count the route defines as still-open.
+   I did not rename it (the existing test is unchanged and the label comes
+   from the `/quant-status` contract); I added the clarifying line
+   instead, and renamed the sample's denominators to "of all shadow
+   events" so the two senses of "emitted" cannot be confused.
+4. **The 15 s surface cache** trades a bounded staleness window for the
+   read amplification of the per-frame re-read. The content fingerprint
+   invalidates it the moment the store changes, so in practice the window
+   is much shorter than 15 s; a stale figure can never survive a content
+   change.

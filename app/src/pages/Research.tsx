@@ -9,15 +9,21 @@
 //     server resync re-reads them — research rows never come from the
 //     snapshot and never render through setup-table components (no <table>
 //     here at all), so shadow findings can never mix into Dashboard tables.
-//   * SHADOW labeling only. Allowed labels: `SHADOW`, `not actionable`,
-//     `insufficient evidence`, `measured range (lower–upper)` with the
-//     static caption `range of measured outcomes, not a prediction`.
-//     Uncertainty is interval endpoints only — never a point reading.
+//   * SHADOW labeling only. The view's own labels are `SHADOW`, `not
+//     actionable` (in the badge at the top), `insufficient evidence` and
+//     `measured range (lower–upper)` with the static caption `range of
+//     measured outcomes, not a prediction`. A status never borrows another
+//     status' label: a rule that passed its gate says `gate passed —
+//     research only`, it does not say "not actionable".
+//   * Uncertainty is interval endpoints only — never a point reading, and
+//     never a point proportion: the outcome shares stay in the payload,
+//     they are not rendered.
 //   * Empty (zero events) and unreadable-store (503) states render
 //     insufficient evidence — never blank.
 //   * An unavailable value renders the literal "unavailable" — never a
 //     zero, never a guess.
-//   * No frontend math: every number comes verbatim from the API.
+//   * No frontend math: every number comes verbatim from the API — even the
+//     counts of rules and buckets.
 //   * Colors come from theme tokens only — never raw hexes.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "../api/client";
@@ -33,7 +39,20 @@ import type {
 
 /** Renders interval endpoints with the exact allowed label. */
 function formatRange(lo: number, hi: number): string {
-  return `measured range (${lo.toFixed(4)}–${hi.toFixed(4)})`;
+  return `measured range (${formatEndpoint(lo)}–${formatEndpoint(hi)})`;
+}
+
+/**
+ * One interval endpoint: four decimals, but a non-zero endpoint is NEVER
+ * shown as a zero — a value that would round away falls back to its own
+ * digits instead of pretending to be 0.0000.
+ */
+function formatEndpoint(value: number): string {
+  const fixed = value.toFixed(4);
+  if (value !== 0 && Number(fixed) === 0) {
+    return String(value);
+  }
+  return fixed;
 }
 
 function hasEndpoints(promotion: QuantPromotion): boolean {
@@ -58,18 +77,14 @@ function orUnavailable(value: number | null): string {
   return value === null ? "unavailable" : String(value);
 }
 
-/** A share of the resolved rows, or the literal "unavailable". */
-function formatShare(value: number | null): string {
-  return value === null ? "unavailable" : value.toFixed(2);
-}
-
 // SampleCounts — the sample the surface describes, with its denominators.
 //
 // House rules:
 //   * "X of Y" with the denominator named in the footnote — a bare number
 //     never stands in for a denominator.
-//   * The days and coins count the resolved rows the measured range is
-//     computed on, and the footnote says so.
+//   * The sample's days and coins count EVERY shadow event in the sample;
+//     a rule's own days and coins count its resolved rows (the measured
+//     range's denominators). The footnote says which is which.
 function SampleCounts({ sample }: { sample: QuantResearchSample }) {
   return (
     <div className="rounded-xl border border-border bg-card px-4 py-3">
@@ -79,14 +94,18 @@ function SampleCounts({ sample }: { sample: QuantResearchSample }) {
           <span className="text-muted">Resolved</span>
           <span className="tabular-nums text-fg">
             {sample.resolved} of {sample.events}
-            <span className="ml-2 text-xs text-muted">resolved of emitted</span>
+            <span className="ml-2 text-xs text-muted">
+              resolved of all shadow events
+            </span>
           </span>
         </li>
         <li className="flex items-baseline justify-between gap-2">
           <span className="text-muted">Open</span>
           <span className="tabular-nums text-fg">
             {sample.open} of {sample.events}
-            <span className="ml-2 text-xs text-muted">open of emitted</span>
+            <span className="ml-2 text-xs text-muted">
+              open of all shadow events
+            </span>
           </span>
         </li>
         <li className="flex items-baseline justify-between gap-2">
@@ -103,8 +122,9 @@ function SampleCounts({ sample }: { sample: QuantResearchSample }) {
         </li>
       </ul>
       <p className="mt-2 text-xs text-muted">
-        days and coins count the resolved rows the measured range is computed
-        on
+        sample days and coins count every shadow event in the sample; a rule's
+        days and coins count its resolved rows — the measured range's
+        denominators
       </p>
     </div>
   );
@@ -115,12 +135,9 @@ function SampleCounts({ sample }: { sample: QuantResearchSample }) {
 // House rules:
 //   * A value the API could not compute renders the literal "unavailable",
 //     with the API's reason next to it — never a zero, never a guess.
-//   * A rule that passed its gate is still research: it renders
-//     "not actionable", never an action.
+//   * Every count here comes from the API: the view never counts rules or
+//     buckets itself.
 function StatusRows({ research }: { research: QuantResearch }) {
-  const validated = research.rules.filter(
-    (rule) => rule.validation.status === "validated",
-  ).length;
   const coverage =
     research.coverage.ratio === null
       ? "unavailable"
@@ -135,7 +152,7 @@ function StatusRows({ research }: { research: QuantResearch }) {
             <span className="text-muted">Calibration</span>
             <span className="text-fg">
               {research.calibration.available
-                ? `${research.calibration.buckets.length} buckets`
+                ? `${research.calibration.count} buckets`
                 : "unavailable"}
             </span>
           </div>
@@ -168,8 +185,8 @@ function StatusRows({ research }: { research: QuantResearch }) {
           <div className="flex items-baseline justify-between gap-2">
             <span className="text-muted">Validation</span>
             <span className="text-fg">
-              {validated} of {research.rules.length} rules with a passed gate
-              record
+              {research.validation.validated} of {research.validation.rules}{" "}
+              rules with a passed gate record
             </span>
           </div>
         </li>
@@ -183,9 +200,12 @@ function StatusRows({ research }: { research: QuantResearch }) {
 // House rules:
 //   * Uncertainty is interval endpoints only: `measured range (lo–hi)` with
 //     the static caption, or `measured range unavailable`. No point reading,
-//     no mean.
+//     no mean, and no point proportion: the outcome shares are not
+//     rendered.
 //   * A missing value renders the literal "unavailable" — never a zero.
-//   * A rule that passed its gate is still research: "not actionable".
+//   * The validation status keeps its own vocabulary: a rule that passed
+//     its gate says `gate passed — research only`; one that did not says
+//     `gate not passed — research only`.
 function RuleRows({ rules }: { rules: QuantResearchRule[] }) {
   return (
     <div className="rounded-xl border border-border bg-card px-4 py-3">
@@ -205,38 +225,20 @@ function RuleRows({ rules }: { rules: QuantResearchRule[] }) {
                 <span className="text-xs text-muted">{rule.role}</span>
               </div>
               <p className="mt-1 text-muted">
-                {rule.resolved} of {rule.events} resolved · {rule.days} days ·
-                {" "}
-                {rule.coins} coins
+                {rule.resolved} of {rule.events} resolved · days{" "}
+                {orUnavailable(rule.days)} · coins {orUnavailable(rule.coins)}
               </p>
               <p className="mt-1 text-fg">{range}</p>
               <p className="mt-1 text-xs text-muted">
                 range of measured outcomes, not a prediction
               </p>
-              {rule.resolved > 0 ? (
-                <p className="mt-1 text-xs text-muted">
-                  outcome shares of {rule.resolved} resolved: tp{" "}
-                  {formatShare(rule.outcome_shares.tp)} · sl{" "}
-                  {formatShare(rule.outcome_shares.sl)} · time{" "}
-                  {formatShare(rule.outcome_shares.time)}
-                </p>
-              ) : (
-                <p className="mt-1 text-xs text-muted">
-                  outcome shares: unavailable — no resolved events
-                </p>
-              )}
               <p className="mt-1 text-xs text-muted">{rule.cost_note}</p>
               <p className="mt-1 text-xs text-muted">
                 validation:{" "}
                 {rule.validation.status === "validated"
-                  ? "not actionable"
-                  : "insufficient evidence"}
+                  ? "gate passed — research only"
+                  : "gate not passed — research only"}
               </p>
-              {rule.validation.status === "validated" ? (
-                <p className="mt-1 text-xs text-muted">
-                  gate passed — research only
-                </p>
-              ) : null}
               {rule.validation.reasons.map((reason) => (
                 <p key={reason} className="mt-1 text-xs text-muted">
                   {reason}
@@ -400,7 +402,10 @@ export function Research({
             insufficient evidence — {statusError}
           </p>
         ) : (
-          <p className="rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted">
+          <p
+            role="status"
+            className="rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted"
+          >
             loading research…
           </p>
         )
@@ -450,6 +455,10 @@ export function Research({
                 </span>
               </li>
             </ul>
+            <p className="mt-2 text-xs text-muted">
+              emitted counts the shadow events that are still open; resolved
+              counts the ones that finished
+            </p>
           </div>
 
           {status.suppression_top.length > 0 ? (

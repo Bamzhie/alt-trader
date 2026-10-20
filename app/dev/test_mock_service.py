@@ -552,12 +552,11 @@ class TestSSE(unittest.TestCase):
         self.assertEqual(status, 200)
         data = body["data"]
         self.assertEqual(data["mode"], "shadow")
-        self.assertEqual(
-            set(data["event_counts"]), {"total", "emitted", "resolved"}
-        )
-        self.assertEqual(
-            data["event_counts"]["total"], data["event_counts"]["emitted"]
-        )
+        counts = data["event_counts"]
+        self.assertEqual(set(counts), {"total", "emitted", "resolved"})
+        # `emitted` counts the rows that are STILL OPEN, so the triple is
+        # always consistent: emitted + resolved == total.
+        self.assertEqual(counts["emitted"] + counts["resolved"], counts["total"])
         # Shadow counts never include an actionable row.
         self.assertEqual(data["actionable_events"], 0)
 
@@ -569,7 +568,7 @@ class TestSSE(unittest.TestCase):
         self.assertEqual(
             set(data),
             {"version", "status", "reasons", "generated_ts", "provenance",
-             "sample", "rules", "calibration", "coverage"},
+             "sample", "rules", "calibration", "coverage", "validation"},
         )
         # Uncertainty is interval endpoints only - no mean, no point reading.
         blob = json.dumps(data)
@@ -580,8 +579,13 @@ class TestSSE(unittest.TestCase):
                 self.assertEqual(set(rule["interval"]), {"lo", "hi"})
         # A value that cannot be computed is an explicit null, never a zero.
         self.assertEqual(data["calibration"]["buckets"], [])
+        self.assertEqual(data["calibration"]["count"], 0)
         self.assertFalse(data["calibration"]["available"])
         self.assertTrue(data["calibration"]["reason"])
+        for rule in data["rules"]:
+            if rule["resolved"] == 0:
+                self.assertIsNone(rule["days"])
+                self.assertIsNone(rule["coins"])
 
     def test_quant_routes_require_auth(self):
         for path in ("/quant-status", "/quant-research"):

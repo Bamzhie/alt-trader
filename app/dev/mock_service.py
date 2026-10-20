@@ -130,6 +130,7 @@ EMPTY_QUANT_RESEARCH = {
     "calibration": {
         "available": False,
         "buckets": [],
+        "count": 0,
         "reason": ("the shadow store records outcomes, not predicted outcomes "
                    "- calibration is not computed"),
     },
@@ -137,6 +138,7 @@ EMPTY_QUANT_RESEARCH = {
         "attributed": 0, "eligible": 0, "ratio": None,
         "reason": "no recorded opportunities yet - coverage is not computable",
     },
+    "validation": {"validated": 0, "rules": 0},
 }
 
 

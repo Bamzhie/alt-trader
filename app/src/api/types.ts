@@ -371,10 +371,16 @@ export interface QuantResearchRule {
   events: number;
   resolved: number;
   open: number;
-  /** Distinct days with a resolved outcome — the interval's denominator. */
-  days: number;
-  /** Distinct coins with a resolved outcome. */
-  coins: number;
+  /**
+   * Distinct days with a resolved outcome — the interval's denominator.
+   * null when the rule has no resolved row (nothing to measure).
+   */
+  days: number | null;
+  /**
+   * Distinct coins with a resolved outcome. null when the rule has no
+   * resolved row.
+   */
+  coins: number | null;
   /** The measured range's endpoints, or null when it cannot be computed. */
   interval: QuantResearchInterval | null;
   outcome_shares: QuantResearchOutcomeShares;
@@ -424,6 +430,8 @@ export interface QuantResearchCalibrationBucket {
 export interface QuantResearchCalibration {
   available: boolean;
   buckets: QuantResearchCalibrationBucket[];
+  /** How many buckets the payload carries — the view never counts. */
+  count: number;
   reason: string | null;
 }
 
@@ -433,6 +441,14 @@ export interface QuantResearchCoverage {
   eligible: number;
   ratio: number | null;
   reason: string | null;
+}
+
+/** The validation summary — the counts come from the API, never the view. */
+export interface QuantResearchValidationSummary {
+  /** Rules with a passed gate record. */
+  validated: number;
+  /** Rules the surface reports. */
+  rules: number;
 }
 
 /**
@@ -451,4 +467,5 @@ export interface QuantResearch {
   rules: QuantResearchRule[];
   calibration: QuantResearchCalibration;
   coverage: QuantResearchCoverage;
+  validation: QuantResearchValidationSummary;
 }
