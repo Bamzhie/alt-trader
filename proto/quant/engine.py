@@ -32,6 +32,7 @@ from collections import deque
 
 from . import barrier as B
 from . import risk as riskmod
+from . import roe as roemod
 from .bars import load_coin, list_coins, contiguous_runs, valid_bar
 from .config import DEFAULT, BAR_S, BARS_PER_DAY
 from .registry import REGISTERED, by_id
@@ -400,6 +401,8 @@ class Watcher:
                      "entry_assumption": "next bar open (market), no fill model",
                      "size": {k: size[k] for k in ("notional", "leverage",
                                                    "risk_frac_eff", "capped")},
+                     "roe_100": roemod.event_block(plan["tp_frac"],
+                                                   plan["stop_frac"], cost),
                      "warnings": size["warnings"] + (
                          ["RESEARCH SHADOW: no validated edge; not actionable"]
                          if mode == "SHADOW" else [])}

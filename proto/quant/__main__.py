@@ -6,6 +6,9 @@
   status     watcher / pause status
   pause / resume   manual global pause flag
   gates      evaluate promotion for the config research.json selected
+  roe        ROE feasibility: the leverage a target ROE needs, the stop's
+             cost on margin and the measured base rates (read-only, pre-
+             holdout window only)
   prereg     preregistration records: `prereg validate` / `prereg show <ID>`
              (read-only; never evaluates a holdout, never writes to data/)
   champions  champion/candidate registry and the matched comparison
@@ -24,6 +27,25 @@ from .config import DEFAULT
 def _store(path):
     from .qstore import QuantStore
     return QuantStore(path)
+
+
+def preholdout_window(bnd, horizon_days):
+    """The (first, last) day of the pre-holdout window, or None if unsafe.
+
+    `bnd` is `Splits.bounds()`.  The measured window is dev + validation; the
+    label horizon is added to its last day, and if that reaches the first day
+    of the sealed holdout the window would label holdout outcomes, so the
+    caller must refuse it.  The window is half-open (entries are sampled with
+    t < t_hi and the last label runs to t_hi + horizon), so a horizon that
+    ends exactly ON the holdout's first day reads no holdout bar and is
+    admitted; one that ends past it is refused.  With the frozen splits (val
+    ends day 77, holdout starts day 79) a 1-day horizon clears it; the check
+    exists so that a future change to the embargo cannot quietly label the
+    holdout.
+    """
+    if bnd["val"][1] + horizon_days > bnd["holdout"][0]:
+        return None
+    return bnd["dev"][0], bnd["val"][1]
 
 
 def _prereg_validate(directory):
@@ -108,6 +130,25 @@ def main(argv=None):
     ev.add_argument("--coins", default=None,
                     help="comma list of traded coins (default: all); BTC is "
                          "always loaded as the market factor")
+
+    ro = sub.add_parser("roe", help="ROE feasibility: the leverage a target "
+                        "ROE needs, the stop's cost on margin and the "
+                        "measured base rates (read-only calculator, not a "
+                        "recommendation)")
+    ro.add_argument("--data", default="data/bars")
+    ro.add_argument("--target-roe", type=float, default=1.0,
+                    help="gain at the target as a fraction of margin "
+                         "(1.0 = +100%%)")
+    ro.add_argument("--stop-roe", type=float, default=0.5,
+                    help="loss at the stop as a fraction of margin (0.5 = -50%%)")
+    ro.add_argument("--leverage", default="10,20", help="comma list")
+    ro.add_argument("--coins", default=None,
+                    help="comma list of coins (default: all except BTC)")
+    ro.add_argument("--stride", type=int, default=12,
+                    help="sample every Nth bar of every contiguous run")
+    ro.add_argument("--top", type=int, default=15,
+                    help="how many per-coin rows to print (0 = none)")
+    ro.add_argument("--out", default=None, help="optional JSON output path")
 
     pr = sub.add_parser("prereg", help="preregistration records (read-only)")
     prsub = pr.add_subparsers(dest="prereg_cmd", required=True)
@@ -233,6 +274,219 @@ def main(argv=None):
             if len(report.missing_cost_coins) > 20:
                 print(f"  ... and {len(report.missing_cost_coins) - 20} more",
                       file=sys.stderr)
+        return 0
+    if a.cmd == "roe":
+        from . import roe as roemod
+        from .bars import list_coins, load_coin
+        from .config import BAR_S as DEFAULT_BAR_S
+        from .config import BARS_PER_DAY as DEFAULT_BARS_PER_DAY
+        btc = load_coin(a.data, "BTC")
+        if not btc:
+            print("BTC bars required for the archive span")
+            return 1
+        t_min = btc["ts"][0]
+        n_days = (btc["ts"][-1] - t_min) / 86400.0
+        bnd = DEFAULT.splits.bounds(n_days)
+        # The PRE-HOLDOUT window only: dev + validation.  The archive's
+        # TIMESTAMPS are read - they are what places the split boundaries -
+        # but no entry is sampled and no outcome is labelled inside the
+        # holdout window, so no holdout outcome enters this measurement.
+        # The holdout is spent once, through the research harness, and only
+        # by a config that validation kept.
+        t_lo = t_min + bnd["dev"][0] * 86400
+        t_hi = t_min + bnd["val"][1] * 86400
+        # The label horizon is 24 h (288 bars) and is fixed here.  The guard
+        # below makes the holdout guarantee explicit rather than implicit in
+        # the split arithmetic: no label window may reach into the holdout.
+        horizon_s = DEFAULT_BARS_PER_DAY * DEFAULT_BAR_S
+        holdout_start = t_min + bnd["holdout"][0] * 86400
+        if not preholdout_window(bnd, horizon_s / 86400.0):
+            print("REFUSED: the label horizon would reach into the sealed "
+                  "holdout window", file=sys.stderr)
+            return 1
+        try:
+            levs = tuple(int(x) for x in a.leverage.split(","))
+        except ValueError:
+            print("--leverage must be a comma list of integers", file=sys.stderr)
+            return 1
+        if not levs or any(L <= 0 for L in levs):
+            print("--leverage must be a comma list of positive integers",
+                  file=sys.stderr)
+            return 1
+        if a.stride < 1:
+            print("--stride must be at least 1", file=sys.stderr)
+            return 1
+        if a.target_roe <= 0:
+            print("--target-roe must be positive", file=sys.stderr)
+            return 1
+        if a.stop_roe <= 0:
+            print("--stop-roe must be positive", file=sys.stderr)
+            return 1
+        if a.coins:
+            coins = [c.strip() for c in a.coins.split(",") if c.strip()]
+        else:
+            coins = [c for c in list_coins(a.data) if c != "BTC"]
+        if "BTC" in coins:
+            coins = [c for c in coins if c != "BTC"]
+            print("BTC is the market factor, not a traded coin: it is excluded")
+        if not coins:
+            print("no coins to measure")
+            return 1
+        kw = dict(stop_roe=a.stop_roe, leverages=levs, target_roe=a.target_roe,
+                  stride=a.stride, t_lo=t_lo, t_hi=t_hi)
+        reports = []
+        try:
+            for i, coin in enumerate(coins):
+                reports.append(roemod.coin_report(a.data, coin, **kw))
+                if (i + 1) % 50 == 0:
+                    print(f"  ... {i + 1}/{len(coins)} coins read", file=sys.stderr,
+                          flush=True)
+        except ValueError as exc:
+            print(f"this geometry is not measurable: {exc}", file=sys.stderr)
+            return 1
+        pooled = roemod.pooled_from_reports(reports)
+        # A coin is "usable" when it cleared the liquidity floor AND
+        # contributed at least one sample: the printed universe and the
+        # pooled denominators then refer to the same coins.  The coins that
+        # did not contribute are counted by REASON, so "nothing was measured"
+        # is never dressed up as "everything was illiquid".
+        usable = [r for r in reports if r and "rows" in r
+                  and any(row["rates"].get("n") for row in r["rows"])]
+        missing = [c for c, r in zip(coins, reports) if r is None]
+        untradeable = [r["coin"] for r in reports
+                       if r and "untradeable" in r]
+        costs = [r["cost_frac"] for r in usable]
+        if not usable:
+            print("nothing was measured:", file=sys.stderr)
+            if missing:
+                print(f"  no archive (or no bars in the window): "
+                      f"{', '.join(missing[:10])}"
+                      f"{' ...' if len(missing) > 10 else ''}", file=sys.stderr)
+            if untradeable:
+                print(f"  below the liquidity floor: "
+                      f"{', '.join(untradeable[:10])}"
+                      f"{' ...' if len(untradeable) > 10 else ''}", file=sys.stderr)
+            return 1
+        print(f"ROE feasibility  target +{a.target_roe:.0%} / stop "
+              f"-{a.stop_roe:.0%} on margin")
+        print(f"window: pre-holdout only - dev {bnd['dev'][0]:.0f}-"
+              f"{bnd['dev'][1]:.0f} d + validation {bnd['val'][0]:.0f}-"
+              f"{bnd['val'][1]:.0f} d of a {n_days:.1f} d archive")
+        print(f"         the holdout window (from day {bnd['holdout'][0]:.0f}) is "
+              "EXCLUDED from the measurement: no entry is sampled and no "
+              "outcome is labelled there.  The archive's timestamps are still "
+              "read - they are what places the split boundaries - but no "
+              "holdout outcome is computed.")
+        print("A calculator, not a recommendation: leverage creates no edge; no "
+              "registered rule has passed the promotion gate.\n")
+        print("assumptions")
+        print("  bars        5-minute, 24 h horizon (288 bars), entry at the "
+              "next bar open, stop-first on ties")
+        print(f"  costs       fee {DEFAULT.cost.fee_per_side:.2%}/side + tiered "
+              "slippage by trailing-24h quote volume (an assumption, not a "
+              "measurement)")
+        if costs:
+            lo_c, hi_c = min(costs), max(costs)
+            if hi_c - lo_c < 5e-5:
+                print(f"              this archive: {lo_c:.2%} round trip")
+            else:
+                print(f"              this archive: {lo_c:.2%}-{hi_c:.2%} "
+                      "round trip")
+        print("  funding     NOT modeled")
+        print(f"  sampling    every {a.stride}th bar of every contiguous run, "
+              "both sides; a label window never crosses a timestamp gap")
+        print(f"  intervals   moving-block bootstrap over "
+              f"{roemod.BLOCK_DAYS} consecutive UTC days, "
+              f"{roemod.BOOTSTRAP_B} resamples (the label window is 24 h, so "
+              "the rows of adjacent days share their price paths)")
+        print(f"  liquidity   a coin contributes only where its trailing-24h "
+              f"quote volume is at least ${DEFAULT.cost.min_qv24:,.0f}")
+        print(f"  universe    {len(usable)} of {len(coins)} coins contributed; "
+              f"{len(untradeable)} below the liquidity floor, {len(missing)} "
+              "with no archive or no bars in the window\n")
+        for L in sorted(pooled):
+            p = pooled[L]
+            pl = p["plan"]
+            print(f"leverage {L}x: the target needs a {pl['target_move']:.2%} "
+                  f"price move, the stop {pl['stop_move']:.2%} "
+                  f"(liquidation distance {pl['liq_distance']:.2%}; the stop is "
+                  f"{'inside' if pl['liq_ok'] else 'NOT inside'} the buffer)")
+            print(f"   samples {p['n']} ({p['entries']} entries, both sides) on "
+                  f"{p['coins']} coins")
+            print(f"   target touched at any time {p['touch']:.1%} | TP first "
+                  f"{p['tp']:.1%} | stop first {p['sl']:.1%} | neither "
+                  f"{p['time']:.1%}")
+            # p_null and p_breakeven are probabilities of reaching the TARGET
+            # FIRST, so they are compared with the TP-first rate - not with
+            # the TP-among-terminal rate, which has a different denominator.
+            print(f"   TP first {p['tp']:.1%} vs the cost-adjusted breakeven "
+                  f"{pl['p_breakeven']:.1%} (the rate that breaks even) and the "
+                  f"driftless null {pl['p_null']:.1%}")
+            print(f"   TP among terminal {p['tp_given_terminal']:.1%} "
+                  f"[{p['tp_ci'][0]:.1%}, {p['tp_ci'][1]:.1%}] (of the entries "
+                  "that hit a barrier)")
+            print(f"   mean ROE per trade (unconditional, after costs): "
+                  f"{p['mean_roe']:+.1%} "
+                  f"[{p['roe_ci'][0]:+.1%}, {p['roe_ci'][1]:+.1%}]\n")
+            print(f"   intervals: moving-block bootstrap over "
+                  f"{p['block_days']} consecutive UTC days, {p['bootstrap_b']} "
+                  "resamples (the label window is 24 h, so the rows of adjacent "
+                  "days share their price paths).  The width depends on the "
+                  "block length:")
+            for blk in sorted(p["ci_by_block"], key=int):
+                sb = p["ci_by_block"][blk]
+                print(f"      block {int(blk):>2} d   mean ROE "
+                      f"[{sb['roe_ci'][0]:+.1%}, {sb['roe_ci'][1]:+.1%}]"
+                      f"   TP among terminal "
+                      f"[{sb['tp_ci'][0]:.1%}, {sb['tp_ci'][1]:.1%}]")
+            print()
+        if a.top and usable:
+            usable.sort(key=lambda r: -r["qv24"])
+            print(f"per-coin rows (the {min(a.top, len(usable))} most liquid "
+                  "contributing coins, by trailing-24h quote volume)")
+            print(f"  {'coin':<10}{'qv24 $M':>9}{'cost':>8}{'lev':>5}"
+                  f"{'samples':>10}{'touch':>8}{'TP 1st':>8}{'SL 1st':>8}"
+                  f"{'TP|term':>9}{'mean ROE':>11}")
+            for r in usable[:a.top]:
+                for row in r["rows"]:
+                    s = row["rates"]
+                    if not s.get("n"):
+                        continue
+                    print(f"  {r['coin']:<10}{r['qv24'] / 1e6:>9.1f}"
+                          f"{r['cost_frac']:>8.2%}{row['leverage']:>5}"
+                          f"{s['n']:>10}{s['touch']:>8.1%}{s['tp']:>8.1%}"
+                          f"{s['sl']:>8.1%}{s['tp_given_terminal']:>9.1%}"
+                          f"{s['mean_roe']:>+11.1%}")
+            print()
+        if a.out:
+            blob = {
+                "window": {"name": "pre-holdout", "t_lo": t_lo, "t_hi": t_hi,
+                           "archive_days": n_days,
+                           "dev_days": list(bnd["dev"]),
+                           "val_days": list(bnd["val"]),
+                           "holdout_start_day": bnd["holdout"][0],
+                           "holdout_start_ts": holdout_start,
+                           "horizon_s": horizon_s,
+                           "holdout_excluded": t_hi + horizon_s <= holdout_start},
+                "target_roe": a.target_roe, "stop_roe": a.stop_roe,
+                "stride": a.stride,
+                "pooled": {str(L): {k: v for k, v in p.items() if k != "plan"}
+                           for L, p in pooled.items()},
+                "coins": [{"coin": r["coin"], "qv24": r["qv24"],
+                           "cost_frac": r["cost_frac"],
+                           "rows": [{"leverage": row["leverage"],
+                                     "plan": row["plan"],
+                                     "rates": row["rates"]}
+                                    for row in r["rows"]]}
+                          for r in usable],
+            }
+            try:
+                with open(a.out, "w") as fh:
+                    json.dump(blob, fh, indent=2, default=float)
+            except OSError as exc:
+                print(f"cannot write {a.out}: {exc}", file=sys.stderr)
+                return 1
+            print(f"JSON written to {a.out}")
         return 0
     if a.cmd == "prereg":
         from . import prereg

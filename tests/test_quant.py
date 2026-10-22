@@ -200,6 +200,32 @@ m2, lo2, hi2, _ = S.day_cluster_mean(cv, days, B=800)
 naive = 1.96 * (sum((x - m2) ** 2 for x in cv) / 1499) ** 0.5 / (1500 ** 0.5)
 check("clustering widens the interval vs naive row-level", (hi2 - lo2) / 2 > 2 * naive,
       f"{(hi2 - lo2) / 2:.3f} vs {naive:.3f}")
+# multi-day dependence: a random walk over days, so consecutive days share
+# their shocks.  A one-day cluster treats them as independent.
+walk = [0.0]
+for d in range(1, 100):
+    walk.append(walk[-1] + rng.gauss(0, 1))
+mv = [walk[i // 15] + rng.gauss(0, 0.1) for i in range(1500)]
+_mw, wlo1, whi1, _ = S.day_cluster_mean(mv, days, B=800)
+_w3, wlo3, whi3, _ = S.block_cluster_mean(mv, days, block=3, B=800)
+check("the block bootstrap is wider than the day bootstrap under multi-day dependence",
+      (whi3 - wlo3) > (whi1 - wlo1), f"{whi3 - wlo3:.3f} vs {whi1 - wlo1:.3f}")
+check("the block interval widens as the block grows",
+      S.block_cluster_mean(mv, days, block=7, B=800)[2]
+      - S.block_cluster_mean(mv, days, block=7, B=800)[1]
+      > (whi3 - wlo3))
+_b1 = S.block_cluster_mean(mv, days, block=1, B=800)
+check("a one-day block reproduces the day-cluster interval exactly",
+      abs(_b1[1] - wlo1) < 1e-12 and abs(_b1[2] - whi1) < 1e-12,
+      f"{_b1[1]},{_b1[2]} vs {wlo1},{whi1}")
+check("the block bootstrap is deterministic",
+      S.block_cluster_mean(vals, days, block=3, B=200, seed=5)
+      == S.block_cluster_mean(vals, days, block=3, B=200, seed=5))
+_st, slo, shi, snd = S.block_cluster_mean(vals, days, block=3, B=800)
+check("the block interval covers the true mean on stationary data",
+      slo < 0.2 < shi, f"{slo:.3f},{shi:.3f}")
+check("a block longer than the series is clamped, not an error",
+      S.block_cluster_mean(vals[:10], days[:10], block=99, B=50)[3] == 1)
 aj = S.aalen_johansen([1, 2, 3, 4, 5, 6], [1, 2, 0, 1, 0, 2], 2, 10)
 check("Aalen-Johansen matches the hand calculation",
       abs(aj[1][-1][1] - 7 / 18) < 1e-9 and abs(aj[2][-1][1] - 11 / 18) < 1e-9)

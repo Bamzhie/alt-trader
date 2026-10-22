@@ -4,7 +4,7 @@ Product goal: quantitative research and analysis for MEXC altcoin perpetual
 futures. Rules support quant analysis; heuristic scores are not evidence of
 edge. Read-only; no order execution. BTC is labeled market context only.
 
-Last updated: 2026-10-20 (the six research/startup workstreams are
+Last updated: 2026-10-22 (the six research/startup workstreams are
 implemented and reviewed; the pivot feature-provenance fix is merged; a
 preregistered analysis (HYD-0003) ran on dev + validation and **the
 one-shot holdout was not spent**; the Research view now shows manual-review
@@ -12,7 +12,9 @@ candidates; and `main` is **DEPLOYED** to the local user systemd service —
 the service runs `94bdf49` with a 2 s restart drain. Reports:
 `docs/implementation-reports/quant-research-2026-10-19/` (the six
 workstreams) and `docs/implementation-reports/quant-research-2026-10-20/`
-(this effort).
+(this effort). The ROE feasibility update is in the working tree and remains
+uncommitted and undeployed. The next proposed strategy study, ACC-POC, is
+recorded below as a plan only; no detector code or new evidence exists yet.
 Earlier (2026-10-19): dev-only investigation of the all-negative WS5 result —
 friction, not a signal defect; three independent audits; four pipeline and
 five funding-path fixes (including a transition-aware settlement schedule)
@@ -732,6 +734,40 @@ VERIFIED by direct archive read (2026-10-18):
 - WS7 beyond the decision log: champion/candidate persistence,
   outcome-based comparison (blocked on WS5).
 
+### Proposed strategy study: accumulation → POC breakout → retest long (ACC-POC) — PLAN ONLY
+
+This is a candidate research plan, not an implemented detector, preregistration,
+or claim of edge. It adds no result to the existing negative/insufficient
+research record, and any implementation must remain SHADOW-only until it passes
+the existing promotion gate. The sealed holdout remains untouched.
+
+The plan tests a causal sequence of accumulation range → optional manipulation
+sweep → breakout → point-of-control (POC) retest → bullish reaction/entry. It
+proposes timestamped range and POC definitions, structural stops and targets,
+distribution invalidation, and controls for breakout continuation, matched
+random entries, non-POC retests, and mirrored short/distribution setups. The
+full plan, including proposed numeric definitions and review inputs, is recorded
+in [the ACC-POC strategy plan](strategy-acc-poc-plan.md); its definitions must
+be reviewed and frozen in a new `HYD` record before outcome evaluation.
+
+**Required gates and work packages:**
+
+| Stage | Work | Exit condition |
+|---|---|---|
+| WP0 — data feasibility | Probe MEXC 1-minute availability/rate limits; cache 1m bars only around candidate ranges; compare 1m-profile (M1) with uniform and triangular 5m estimates (M2/M3). | Document which POC source is usable and how sensitive POC/VAH/VAL are to the method. Never describe OHLCV-derived volume-at-price as exchange-measured. |
+| WP1–WP3 — detector and audit | Build pure profile/range functions, a streaming accumulation state machine, and stage-count/chart-audit tooling. Preserve point-in-time feature availability and reset/replay behavior across gaps. | Causality/leak tests pass; restart replay matches batch results; annotated chart audit reports agreement and false positives/misses. |
+| WP4 — human review and freeze | Review 20–30 owner-supplied textbook examples and about 10 rejects; confirm breakout, reaction-candle, and T1/T2 definitions; freeze thresholds and a small variant family in a new `HYD` preregistration. | Definitions and comparison count are frozen before validation results are inspected. Any later change gets a new version and fresh evidence. |
+| WP5–WP6 — labels and evaluation | Add price-level outcome labels and evaluate H1 retest-vs-chase, H2 sweep-vs-no-sweep, H3 POC-vs-matched-level, and base rates against declared controls, after fee/slippage/funding costs. | Leakage/label-reference checks pass; power gate requires roughly 150+ events, 40+ coins, and 30+ days; otherwise report insufficient evidence. Dev/validation only first; holdout stays sealed. |
+| WP7–WP8 — shadow and decision | If the detector survives review, add registered SHADOW events with full stage provenance and suppression counts; record the eventual keep-collecting/reject/promote decision. | Promotion remains subject to the existing gate. Live watch-state display is a separate, off-by-default stage and has not been approved. |
+
+**Inputs still needed:** a local 1m endpoint probe; the chart examples and rejects;
+confirmation of the breakout, reaction, and target definitions; the operator's
+MEXC fee tier; and a decision on whether watch-state display should ever be a
+separate stage. The archive and rate-limit constraints must be checked before
+starting detector or profitability work. Since the public venue history does
+not include order-book history, this study cannot assume historical depth or
+spread snapshots beyond the inputs already archived.
+
 ## Stage log
 |- Stage 1 (WS1, complete): bar-archive audit library + CLI + tests (3 commits:
 |  f11b789, 0bd1938, 8073b63). Audit tool delivered AND verification gate
@@ -852,6 +888,40 @@ VERIFIED by direct archive read (2026-10-18):
 |  404 on pid 715 (deploy pending owner approval). No promotion records;
 |  all registry rules `research`. run_all.py ALL SUITES PASS (78 files).
 |  NOTE: no raw archive was ever rewritten in any stage.
+|- Stage ROE (2026-10-22, complete in the working tree): the ROE feasibility
+|  calculator (proto/quant/roe.py) + the read-only `python3 -m proto.quant
+|  roe` command, which measures the price move a target ROE needs, the
+|  stop's cost on margin, the liquidation headroom and the UNCONDITIONAL base
+|  rates of that geometry on the archive. Every SHADOW event now carries
+|  `features.roe_100` (the leverage its own target would need and what its
+|  stop then costs on margin). The command measures the PRE-HOLDOUT window
+|  only (dev 6-61 d + validation 63-77 d of the 100.9 d archive); the
+|  holdout window is EXCLUDED from the measurement (no entry is sampled and
+|  no outcome is labelled there; the archive's timestamps are still read to
+|  place the split boundaries, and the CLI refuses any window whose label
+|  horizon would reach into the holdout); nothing was promoted, no event
+|  became ACTIONABLE and no archive, gate or promotion module was touched.
+|  Measured on the current archive (116 of 582 coins liquid, 140 515 entries
+|  -> 281 030 samples): at
+|  20x the +100%/-50% target is touched in 24 h in 26.6% of entries but
+|  reached FIRST in only 18.1%, against a 33.3% cost-adjusted breakeven, for
+|  a mean -3.7% of margin per random entry; at the archive's median
+|  volatility the REGISTERED geometries need 12.9x-18.6x for +100% and their
+|  stop costs 98%-103% of the margin OUTSIDE the liquidation distance, so
+|  they cannot serve a +100% objective as defined. The intervals are
+|  MOVING-BLOCK bootstraps over consecutive UTC days (the label window is
+|  24 h, so adjacent days share their price paths); the mean ROE's interval
+|  excludes zero at every block length from 1 to 14 d. The registered rules'
+|  own result is unchanged and still negative (see the 2026-10-20 final
+|  report): the one-shot holdout was NOT spent. Report:
+|  docs/quant-roe-feasibility-2026-10-22.md. Also in this stage:
+|  proto/quant/champion.py gained `from __future__ import annotations`
+|  (the class defines a method named `list`, so `list[...]` annotations
+|  failed on Python < 3.14 and even annotation introspection fails on 3.14 -
+|  the README promises 3.10+). 86 new checks in tests/test_quant_roe.py;
+|  run_all.py ALL SUITES PASS (90 files).
+|  NOTE: no raw archive was ever rewritten, no holdout outcome was measured
+|  and no live service state was changed in this stage.
 
 ## Handoff (committed-state reference — NOT part of the stage log above)
 

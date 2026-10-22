@@ -42,6 +42,54 @@ def day_cluster_mean(values, days, B=2000, seed=1):
     return mean, lo, hi, D
 
 
+def block_cluster_mean(values, days, block=3, B=2000, seed=1):
+    """(mean, lo95, hi95, n_days) with a MOVING-BLOCK bootstrap.
+
+    ``day_cluster_mean`` resamples whole UTC days INDEPENDENTLY.  That is
+    right when one day's rows are the dependent unit, and wrong when the
+    rows of ADJACENT days are dependent too - which is the case whenever a
+    label window is longer than a day: a trade entered late on one day and a
+    trade entered early the next share the same price path.
+
+    This estimator resamples whole BLOCKS of `block` CONSECUTIVE observed
+    days (a block never spans a day with no rows: an archive gap makes a
+    block cover more calendar time, which is conservative, not optimistic),
+    so the dependence inside a block is carried into the resample.  The block
+    length
+    is a declared assumption: the interval generally widens as the block
+    grows (up to bootstrap noise), so a reader who believes the dependence
+    is longer should read the longer block.  ``block=1`` reproduces
+    ``day_cluster_mean`` exactly.
+
+    Blocks are drawn WITHOUT wrap-around: a block is always a genuine
+    consecutive stretch of the observed days, so no artificial neighbour is
+    created at the end of the series.
+    """
+    if not values:
+        return float("nan"), float("nan"), float("nan"), 0
+    ds, S, N = _by_day(values, days)
+    D = len(ds)
+    tot_s, tot_n = sum(S), sum(N)
+    mean = tot_s / tot_n
+    block = max(1, min(int(block), D))
+    starts = D - block + 1               # valid first-day positions of a block
+    n_blocks = -(-D // block)            # ceil: the resample covers ~D days
+    rng = random.Random(seed)
+    ms = []
+    for _ in range(B):
+        ss = nn = 0
+        for _ in range(n_blocks):
+            j = rng.randrange(starts)
+            for k in range(block):
+                ss += S[j + k]
+                nn += N[j + k]
+        ms.append(ss / nn)
+    ms.sort()
+    lo = ms[int(0.025 * (B - 1))]
+    hi = ms[int(0.975 * (B - 1))]
+    return mean, lo, hi, D
+
+
 def day_cluster_t(values, days):
     """Studentized mean using day-level sums (ratio estimator), for ranking."""
     if len(values) < 3:

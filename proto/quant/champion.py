@@ -61,6 +61,12 @@ promotion happened while this module was written.
 Stdlib only.  This module never promotes a rule on its own, never enables
 ACTIONABLE output, never writes a decision and never touches the holdout.
 """
+from __future__ import annotations   # the class below defines a method named
+# `list`, so the `list[...]` annotations in its body would resolve to that
+# method instead of the builtin and fail under Python < 3.14's eager
+# annotation evaluation (the README promises Python 3.10+).  With this
+# import the annotations are never evaluated at runtime.
+
 import hashlib
 import json
 import math
