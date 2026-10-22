@@ -43,8 +43,10 @@ def _code_dirty(root):
         out = subprocess.run(["git", "-C", root, "status", "--porcelain"],
                              capture_output=True, text=True, timeout=5)
     except Exception:
-        return 0
-    return 1 if out.returncode == 0 and out.stdout.strip() else 0
+        return 1
+    if out.returncode != 0:
+        return 1
+    return 1 if out.stdout.strip() else 0
 
 
 def start_run(db_path, *, kind, snapshot_id, sample_id, config, assumptions,
@@ -72,6 +74,7 @@ def start_run(db_path, *, kind, snapshot_id, sample_id, config, assumptions,
 
     conn = store.connect(db_path)
     try:
+        store.ensure_run_event_guard(conn)
         if conn.execute("SELECT 1 FROM source_snapshot WHERE snapshot_id = ?",
                         (snapshot_id,)).fetchone() is None:
             raise RunError(f"unknown snapshot: {snapshot_id}")
@@ -109,6 +112,7 @@ def finish_run(db_path, run_id, *, status, outputs=None, error=None,
 
     conn = store.connect(db_path)
     try:
+        store.ensure_run_event_guard(conn)
         if conn.execute("SELECT 1 FROM backtest_run WHERE run_id = ?",
                         (run_id,)).fetchone() is None:
             raise RunError(f"unknown run: {run_id}")
@@ -187,9 +191,16 @@ def list_runs(db_path, *, status=None, kind=None):
 
 
 def benchmark_eligible(db_path, run_id):
-    """True only for a benchmark kind whose latest status is completed."""
+    """True only for a benchmark kind whose latest status is completed.
+
+    Any failed/interrupted event in the chain disqualifies the run, even if a
+    later event claims completion.
+    """
     try:
         run = run_status(db_path, run_id)
     except RunError:
         return False
-    return run["kind"] == "benchmark" and run["status"] == "completed"
+    if run["kind"] != "benchmark" or run["status"] != "completed":
+        return False
+    return not any(e["status"] in ("failed", "interrupted")
+                   for e in run["events"])

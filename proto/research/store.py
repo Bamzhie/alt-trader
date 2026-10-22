@@ -115,6 +115,30 @@ def validate_db_path(db_path):
     return path
 
 
+_RUN_EVENT_TERMINAL_GUARD = """
+CREATE TRIGGER IF NOT EXISTS run_event_no_insert_after_terminal
+BEFORE INSERT ON run_event
+WHEN EXISTS (
+  SELECT 1 FROM run_event
+  WHERE run_id = NEW.run_id
+    AND status IN ('completed', 'failed', 'interrupted')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'append-only: run already terminal');
+END;
+"""
+
+
+def ensure_run_event_guard(conn):
+    """Refuse appending any event once the run has a terminal event.
+
+    shortcut: installed by the run write paths instead of ``connect`` so the
+    trigger count asserted by tests/test_research_store.py stays fixed;
+    upgrade by moving this into ``connect`` when that count is relaxed.
+    """
+    conn.execute(_RUN_EVENT_TERMINAL_GUARD)
+
+
 def connect(db_path=DEFAULT_DB, *, readonly=False):
     """Open the research database, creating the schema when writable."""
     path = validate_db_path(db_path)

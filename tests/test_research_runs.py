@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from proto.research import runs, store
 
+_ORIGINAL_ROOT = runs._REPO_ROOT
+
 FAILURES = []
 
 
@@ -177,6 +179,48 @@ check("interrupted status retained",
 check("interrupted benchmark not eligible",
       runs.benchmark_eligible(db_path, run3) is False)
 
+print("\n=== DB guard refuses direct terminal append ===")
+conn = store.connect(db_path)
+try:
+    conn.execute("INSERT INTO run_event VALUES (?,?,?,?,?,?,?)",
+                 (run2, 3, 999, "completed", "{}", None, None))
+    check("direct completed after failed refused", False, "insert was allowed")
+except sqlite3.IntegrityError as exc:
+    check("direct completed after failed refused",
+          "append-only" in str(exc), str(exc))
+finally:
+    conn.rollback()
+    conn.close()
+check("failed benchmark still ineligible",
+      runs.benchmark_eligible(db_path, run2) is False)
+check("refused append left the chain intact",
+      len(runs.run_status(db_path, run2)["events"]) == 2)
+
+print("\n=== eligibility rejects a chain containing a failure ===")
+tampered = os.path.join(tmp, "tampered.db")
+conn = store.connect(tampered)
+conn.execute("INSERT INTO source_snapshot VALUES (?,?,?,?,?,?,?,?)",
+             ("snap-t", "data/bars", "digest-t", 1, 1, 1, 1, 1))
+conn.execute("INSERT INTO universe VALUES (?,?,?,?,?)",
+             ("uni-t", "test", "{}", "def-t", 1))
+conn.execute("INSERT INTO sample VALUES (?,?,?,?,?,?,?,?,?)",
+             ("smp-t", "uni-t", "seed-t", 1, "sha256-rank-v1", None,
+              '["BTC"]', "coins-t", 1))
+conn.execute("INSERT INTO backtest_run VALUES (" + ",".join("?" * 18) + ")",
+             ("run-tampered", 1, "benchmark", None, None, "snap-t", "smp-t",
+              "uni-t", "seed-t", "rev", 0, "v1", "{}", "cfg-t", "{}", "asm-t",
+              "{}", None))
+conn.execute("INSERT INTO run_event VALUES (?,?,?,?,?,?,?)",
+             ("run-tampered", 1, 1, "started", None, None, None))
+conn.execute("INSERT INTO run_event VALUES (?,?,?,?,?,?,?)",
+             ("run-tampered", 2, 2, "failed", None, "boom", None))
+conn.execute("INSERT INTO run_event VALUES (?,?,?,?,?,?,?)",
+             ("run-tampered", 3, 3, "completed", "{}", None, None))
+conn.commit()
+conn.close()
+check("failed-then-completed benchmark ineligible",
+      runs.benchmark_eligible(tampered, "run-tampered") is False)
+
 print("\n=== rerun parent link ===")
 rerun_id = runs.start_run(
     db_path, kind="rerun", snapshot_id="snap-a", sample_id="smp-a",
@@ -202,6 +246,30 @@ runs.finish_run(db_path, default_id, status="completed", outputs={})
 check("completed exploratory not eligible",
       runs.benchmark_eligible(db_path, default_id) is False)
 
+print("\n=== git failure is recorded dirty, never clean ===")
+runs._REPO_ROOT = tempfile.mkdtemp()
+try:
+    dirty_id = runs.start_run(
+        db_path, kind="exploratory", snapshot_id="snap-a", sample_id="smp-a",
+        config={"version": "v-dirty"}, assumptions={},
+    )
+finally:
+    runs._REPO_ROOT = _ORIGINAL_ROOT
+dirty_run = runs.run_status(db_path, dirty_id)
+check("non-repo default dirty", dirty_run["code_dirty"] == 1,
+      dirty_run.get("code_dirty"))
+
+
+def row_counts():
+    ro = store.connect(db_path, readonly=True)
+    try:
+        return (ro.execute("SELECT COUNT(*) FROM backtest_run").fetchone()[0],
+                ro.execute("SELECT COUNT(*) FROM run_event").fetchone()[0])
+    finally:
+        ro.close()
+
+
+before_refusals = row_counts()
 raises_run_error(
     "unknown kind refused",
     lambda: runs.start_run(db_path, kind="bogus", snapshot_id="snap-a",
@@ -231,10 +299,28 @@ raises_run_error(
 raises_run_error(
     "unknown status refused",
     lambda: runs.finish_run(db_path, rerun_id, status="weird"))
+check("refused starts left no rows", row_counts() == before_refusals,
+      f"{before_refusals} -> {row_counts()}")
+
+print("\n=== read-only queries do not create a missing db ===")
+missing = os.path.join(tmp, "absent.db")
+for name, fn in (
+    ("run_status", lambda: runs.run_status(missing, "run-x")),
+    ("list_runs", lambda: runs.list_runs(missing)),
+    ("benchmark_eligible", lambda: runs.benchmark_eligible(missing, "run-x")),
+):
+    try:
+        fn()
+        check(f"{name} on missing db raises", False, "no exception")
+    except sqlite3.OperationalError:
+        check(f"{name} on missing db raises", True)
+    except Exception as exc:  # noqa: BLE001 - surface a wrong exception type
+        check(f"{name} on missing db raises", False, f"wrong error: {exc!r}")
+check("missing db not created", not os.path.exists(missing))
 
 print("\n=== list_runs ===")
 all_runs = runs.list_runs(db_path)
-check("all runs listed", len(all_runs) == 5, len(all_runs))
+check("all runs listed", len(all_runs) == 6, len(all_runs))
 check("list reports latest status",
       {r["run_id"]: r["status"] for r in all_runs}[run_id] == "completed")
 by_kind = runs.list_runs(db_path, kind="benchmark")
@@ -243,8 +329,8 @@ check("kind filter", {r["run_id"] for r in by_kind} == {run_id, run2, run3},
 by_status = runs.list_runs(db_path, status="completed")
 check("status filter", {r["run_id"] for r in by_status} == {run_id, default_id},
       [r["run_id"] for r in by_status])
-check("started filter", [r["run_id"] for r in runs.list_runs(db_path, status="started")]
-      == [rerun_id])
+check("started filter", {r["run_id"] for r in runs.list_runs(db_path, status="started")}
+      == {rerun_id, dirty_id})
 check("failed filter", [r["run_id"] for r in runs.list_runs(db_path, status="failed")]
       == [run2])
 
@@ -263,9 +349,9 @@ for table, sql in (
     else:
         check(f"{table} refused", False, "statement was allowed")
 check("identity rows intact",
-      conn.execute("SELECT COUNT(*) FROM backtest_run").fetchone()[0] == 5)
+      conn.execute("SELECT COUNT(*) FROM backtest_run").fetchone()[0] == 6)
 check("event rows intact",
-      conn.execute("SELECT COUNT(*) FROM run_event").fetchone()[0] == 9)
+      conn.execute("SELECT COUNT(*) FROM run_event").fetchone()[0] == 10)
 conn.close()
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
