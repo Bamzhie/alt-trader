@@ -89,6 +89,14 @@ for table in APPEND_ONLY:
     dele = _append_only_error(conn, f"DELETE FROM {table}")
     check(f"DELETE {table} refused", "append-only" in dele, dele)
 
+print("\n=== INSERT OR REPLACE cannot bypass triggers ===")
+repl = _append_only_error(
+    conn,
+    "INSERT OR REPLACE INTO bar VALUES "
+    "('BTC', 300, 9, 9, 9, 9, 9, 9, 'snap-1')",
+)
+check("INSERT OR REPLACE bar refused", "append-only" in repl, repl)
+
 print("\n=== sync_run is mutable (terminal status) ===")
 conn.execute("INSERT INTO sync_run (sync_id, started_ts, status, source_dir) "
              "VALUES ('sync-1', 1, 'started', 'data/bars')")
@@ -107,16 +115,22 @@ check("readonly can read", ro.execute("SELECT COUNT(*) FROM bar").fetchone()[0] 
 try:
     ro.execute("INSERT INTO bar VALUES ('ETH', 300, 1, 1, 1, 1, 1, 1, 'x')")
     check("readonly write refused", False, "write was allowed")
-except sqlite3.Error:
-    check("readonly write refused", True)
+except sqlite3.OperationalError as exc:
+    check("readonly write refused",
+          "readonly" in str(exc).lower(), str(exc))
+except sqlite3.Error as exc:
+    check("readonly write refused", False, f"wrong error: {exc}")
 ro.close()
 
 missing = os.path.join(tmp, "nope.db")
 try:
     store.connect(missing, readonly=True)
     check("readonly missing path raises", False, "no exception")
+except sqlite3.OperationalError as exc:
+    check("readonly missing path raises",
+          "unable to open" in str(exc).lower(), str(exc))
 except sqlite3.Error as exc:
-    check("readonly missing path raises", True)
+    check("readonly missing path raises", False, f"wrong error: {exc}")
 check("readonly missing path not created", not os.path.exists(missing))
 
 print("\n=== validate_db_path ===")
@@ -131,6 +145,42 @@ for rel in ("quant.db", "signals.db",
         check(f"refuse {rel}", True)
 check("allows normal path",
       store.validate_db_path(os.path.join(tmp, "ok.db")).endswith("ok.db"))
+
+print("\n=== symlink cannot escape the protected-dir guard ===")
+bars_dir = os.path.join(tmp, "real", "data", "bars")
+os.makedirs(bars_dir)
+bars_link = os.path.join(tmp, "bars_link")
+os.symlink(bars_dir, bars_link)
+try:
+    store.validate_db_path(os.path.join(bars_link, "x.db"))
+    check("refuse symlinked data/bars path", False, "allowed")
+except store.StoreError:
+    check("refuse symlinked data/bars path", True)
+
+print("\n=== writable connect refuses protected paths ===")
+for name in ("quant.db", "signals.db"):
+    protected = os.path.join(tmp, name)
+    try:
+        store.connect(protected)
+        check(f"connect refuses {name}", False, "allowed")
+    except store.StoreError:
+        check(f"connect refuses {name}", True)
+    check(f"connect did not create {name}", not os.path.exists(protected))
+
+print("\n=== second writable connect is idempotent ===")
+conn2 = store.connect(db_path)
+names2 = {r[0] for r in conn2.execute(
+    "SELECT name FROM sqlite_master WHERE type = 'table'")}
+check("same tables after reconnect", TABLES <= names2, str(TABLES - names2))
+check("user_version still 1",
+      conn2.execute("PRAGMA user_version").fetchone()[0] == 1)
+check("existing row intact",
+      conn2.execute("SELECT COUNT(*) FROM bar").fetchone()[0] == 1)
+triggers = {r[0] for r in conn2.execute(
+    "SELECT name FROM sqlite_master WHERE type = 'trigger'")}
+check("no duplicate triggers",
+      len(triggers) == len(APPEND_ONLY) * 2, str(sorted(triggers)))
+conn2.close()
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)

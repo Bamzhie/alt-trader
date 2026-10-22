@@ -8,6 +8,7 @@ This module only opens the research database, never the live ``quant.db`` /
 
 import os
 import sqlite3
+from urllib.parse import quote
 
 DEFAULT_DB = os.path.join("data", "research", "altradar-research.db")
 SCHEMA_VERSION = 1
@@ -97,8 +98,11 @@ class StoreError(Exception):
 
 
 def validate_db_path(db_path):
-    """Return the absolute path, refusing the live databases and archives."""
-    path = os.path.abspath(os.fspath(db_path))
+    """Return the resolved path, refusing the live databases and archives.
+
+    ``realpath`` follows symlinks so a link cannot hide a protected target.
+    """
+    path = os.path.realpath(os.fspath(db_path))
     if os.path.basename(path) in _PROTECTED_FILE_NAMES:
         raise StoreError(f"refusing protected database name: {path}")
     parts = path.split(os.sep)
@@ -115,7 +119,7 @@ def connect(db_path=DEFAULT_DB, *, readonly=False):
     """Open the research database, creating the schema when writable."""
     path = validate_db_path(db_path)
     if readonly:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"file:{quote(path)}?mode=ro", uri=True)
         conn.execute("PRAGMA query_only=ON")
         return conn
 
@@ -123,7 +127,9 @@ def connect(db_path=DEFAULT_DB, *, readonly=False):
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+    # REPLACE deletes conflicting rows; without recursive triggers that DELETE
+    # skips the append-only triggers and silently rewrites a frozen row.
+    conn.execute("PRAGMA recursive_triggers=ON")
     conn.executescript(_SCHEMA)
     for table in APPEND_ONLY_TABLES:
         for action in ("UPDATE", "DELETE"):
@@ -132,5 +138,6 @@ def connect(db_path=DEFAULT_DB, *, readonly=False):
                 f"BEFORE {action} ON {table} BEGIN "
                 f"SELECT RAISE(ABORT, 'append-only: {table}'); END"
             )
+    conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()
     return conn
