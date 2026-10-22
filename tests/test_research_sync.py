@@ -473,5 +473,10 @@ for name in ("prices", "funding-history", "quant"):
     check(f"refuse data/{name} source", msg is not None, "allowed")
     check(f"data/{name} source creates no db", not os.path.exists(bad_db))
 
+bare_db = os.path.join(tmp, "bad-bare", "research.db")
+msg = raises_sync(os.path.join(tmp, "data"), bare_db)
+check("refuse a bare data/ source", msg is not None, "allowed")
+check("bare data/ source creates no db", not os.path.exists(bare_db))
+
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)

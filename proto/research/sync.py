@@ -276,8 +276,8 @@ def sync_bars(source_dir, db_path=store.DEFAULT_DB):
     # The engine's only historical input is data/bars; a typo must not ingest
     # another archive into an append-only mirror.
     parts = source.split(os.sep)
-    for i, part in enumerate(parts[:-1]):
-        if part == "data" and parts[i + 1] != "bars":
+    for i, part in enumerate(parts):
+        if part == "data" and (i + 1 == len(parts) or parts[i + 1] != "bars"):
             raise SyncError(f"refusing non-bars source: {source}")
 
     conn = store.connect(db)
