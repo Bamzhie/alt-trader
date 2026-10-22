@@ -57,6 +57,13 @@ _INSERT_RUN = """INSERT INTO sync_run
    source_digest, coins_seen, bars_seen, bars_inserted, skipped_files, error)
   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"""
 
+_RUN_DONE = """UPDATE sync_run SET status = 'completed', finished_ts = ?,
+  snapshot_id = ?, source_digest = ?, coins_seen = ?, bars_seen = ?,
+  bars_inserted = ?, skipped_files = ?, error = NULL WHERE sync_id = ?"""
+
+_RUN_FAILED = """UPDATE sync_run SET status = 'failed', finished_ts = ?,
+  error = ? WHERE sync_id = ?"""
+
 
 class SyncError(Exception):
     """Raised when the source cannot be mirrored safely and completely."""
@@ -74,6 +81,13 @@ def _sha256(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+def _reason(exc):
+    """Error text without repeating the path already prefixed by the caller."""
+    if isinstance(exc, OSError) and exc.strerror:
+        return exc.strerror
+    return str(exc) or exc.__class__.__name__
+
+
 def _stable_read(path):
     """Read a file whose stat must not move across the read."""
     before = os.stat(path)
@@ -82,18 +96,19 @@ def _stable_read(path):
     after = os.stat(path)
     before_key = (before.st_size, before.st_mtime_ns)
     if before_key != (after.st_size, after.st_mtime_ns) or len(raw) != after.st_size:
-        raise _Unstable(f"{path}: changed while reading")
+        raise _Unstable("changed while reading")
     return raw, after.st_size, after.st_mtime_ns
 
 
 def _read_file(path):
     """_stable_read with the single retry the contract allows."""
+    error = None
     for _ in range(2):
         try:
             return _stable_read(path)
-        except _Unstable:
-            continue
-    raise SyncError(f"{path}: source changed while syncing")
+        except (OSError, _Unstable) as exc:
+            error = exc
+    raise SyncError(f"{path}: {_reason(error)}")
 
 
 def _parse(coin, raw):
@@ -145,32 +160,38 @@ def _parse(coin, raw):
             continue  # first wins, identical duplicate
         rows[ts] = values
 
+    if not rows:
+        raise SyncError(f"{coin}: no data rows")
     return [(ts, *rows[ts]) for ts in rows]
 
 
 def _load_rows(coin, path, expected_sha):
-    """Re-read + parse, retrying once on a gzip error or a changed file."""
+    """Re-read + parse, retrying once on a gzip error, read error or change."""
     error = None
     for _ in range(2):
         try:
             raw, _, _ = _stable_read(path)
-        except _Unstable as exc:
+        except (OSError, _Unstable) as exc:
             error = exc
             continue
         if _sha256(raw) != expected_sha:
-            error = f"{path}: changed while syncing"
+            error = "changed while syncing"
             continue
         try:
             return _parse(coin, raw)
         except (OSError, EOFError, zlib.error) as exc:  # truncated/corrupt gzip
             error = exc
             continue
-    raise SyncError(f"{path}: {error}")
+    raise SyncError(f"{path}: {_reason(error)}")
 
 
 def _enumerate(source_dir):
+    try:
+        names = sorted(os.listdir(source_dir))
+    except OSError as exc:
+        raise SyncError(f"{source_dir}: {_reason(exc)}") from exc
     files = []
-    for name in sorted(os.listdir(source_dir)):
+    for name in names:
         path = os.path.join(source_dir, name)
         if not os.path.isfile(path) or not name.endswith(".csv.gz"):
             continue
@@ -234,8 +255,8 @@ def _import(conn, source_dir, records, snapshot_id, now):
             raise SyncError(f"{coin}: conflicting values for mirrored ts {ts}")
 
         inserted += conn.execute(_INSERT_BARS, (snapshot_id,)).rowcount
-        first_ts = min(row[0] for row in rows) if rows else None
-        last_ts = max(row[0] for row in rows) if rows else None
+        first_ts = min(row[0] for row in rows)
+        last_ts = max(row[0] for row in rows)
         conn.execute(
             "INSERT INTO bar_file VALUES (?,?,?,?,?,?,?,?,?,?)",
             (coin, sha, relpath, size, mtime, len(rows), first_ts, last_ts,
@@ -246,8 +267,6 @@ def _import(conn, source_dir, records, snapshot_id, now):
 def sync_bars(source_dir, db_path=store.DEFAULT_DB):
     """Mirror every ``<COIN>.csv.gz`` under ``source_dir`` into the research DB."""
     source = os.path.realpath(os.fspath(source_dir))
-    if not os.path.isdir(source):
-        raise SyncError(f"source dir not found: {source_dir}")
     try:
         db = store.validate_db_path(db_path)
     except store.StoreError as exc:
@@ -255,38 +274,49 @@ def sync_bars(source_dir, db_path=store.DEFAULT_DB):
     if _inside(db, source):
         raise SyncError(f"refusing database inside the source dir: {db}")
 
-    records = _scan(source, _enumerate(source))
-    digest = _digest(records)
-    coins = len(records)
-
     conn = store.connect(db)
-    conn.isolation_level = None  # explicit BEGIN IMMEDIATE below
+    conn.isolation_level = None  # explicit transactions below
     try:
+        return _sync(conn, source)
+    finally:
+        conn.close()
+
+
+def _sync(conn, source):
+    """Record the attempt first, so every failure after connect is auditable."""
+    sync_id = "sync-" + uuid.uuid4().hex
+    started = _now()
+    conn.execute(_INSERT_RUN, (sync_id, started, None, "started", source,
+                               None, None, None, None, None, None, None))
+    conn.commit()
+
+    try:
+        if not os.path.isdir(source):
+            raise SyncError(f"source dir not found: {source}")
+        records = _scan(source, _enumerate(source))
+        digest = _digest(records)
+        coins = len(records)
+
         known = conn.execute(
-            "SELECT coins, bars FROM source_snapshot WHERE source_digest = ?",
+            "SELECT bars FROM source_snapshot WHERE source_digest = ?",
             (digest,)).fetchone()
         if known is not None:
-            now = _now()
-            seen = 0
+            seen = skipped = 0
             for coin, _, sha, _, _ in records:
                 row = conn.execute(
                     "SELECT row_count FROM bar_file WHERE coin = ? AND sha256 = ?",
                     (coin, sha)).fetchone()
-                seen += row[0] if row else 0
-            sync_id = "sync-" + uuid.uuid4().hex
-            conn.execute(_INSERT_RUN, (sync_id, now, now, "completed", source,
-                                       digest, digest, coins, seen, 0, coins, None))
+                if row is None:
+                    raise SyncError(f"missing provenance for {coin} {sha}")
+                skipped += 1
+                seen += row[0]
+            finished = _now()
+            conn.execute(_RUN_DONE, (finished, digest, digest, coins, seen, 0,
+                                     skipped, sync_id))
             conn.commit()
-            return _result(sync_id, "completed", digest, digest, known[0],
-                           known[1], 0, coins, now, now)
-
-        sync_id = "sync-" + uuid.uuid4().hex
-        started = _now()
-        conn.execute(_INSERT_RUN, (sync_id, started, None, "started", source,
-                                   None, digest, coins, None, None, None, None))
-        conn.commit()
-
-        try:
+            result = _result(sync_id, "completed", digest, digest, coins,
+                             known[0], 0, skipped, started, finished)
+        else:
             conn.execute("BEGIN IMMEDIATE")
             inserted, seen, skipped = _import(conn, source, records, digest, _now())
             total, min_ts, max_ts = conn.execute(
@@ -294,31 +324,26 @@ def sync_bars(source_dir, db_path=store.DEFAULT_DB):
             conn.execute(_INSERT_SNAPSHOT, (digest, source, digest, coins, total,
                                             min_ts, max_ts, _now()))
             finished = _now()
-            conn.execute(
-                "UPDATE sync_run SET status = 'completed', finished_ts = ?, "
-                "snapshot_id = ?, source_digest = ?, coins_seen = ?, "
-                "bars_seen = ?, bars_inserted = ?, skipped_files = ?, error = NULL "
-                "WHERE sync_id = ?",
-                (finished, digest, digest, coins, seen, inserted, skipped, sync_id))
+            conn.execute(_RUN_DONE, (finished, digest, digest, coins, seen,
+                                     inserted, skipped, sync_id))
             conn.commit()
-        except BaseException as exc:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            # Record the attempt; a broken DB must not hide the real error.
+            result = _result(sync_id, "completed", digest, digest, coins, total,
+                             inserted, skipped, started, finished)
+    except BaseException as exc:
+        if conn.in_transaction:
             try:
-                conn.execute(
-                    "UPDATE sync_run SET status = 'failed', finished_ts = ?, "
-                    "error = ? WHERE sync_id = ?",
-                    (_now(), str(exc) or exc.__class__.__name__, sync_id))
-                conn.commit()
+                conn.execute("ROLLBACK")
             except sqlite3.Error:
                 pass
-            raise
-
-        return _result(sync_id, "completed", digest, digest, coins, total,
-                       inserted, skipped, started, finished)
-    finally:
-        conn.close()
+        # Record the attempt; a broken DB must not hide the real error.
+        try:
+            conn.execute(_RUN_FAILED,
+                         (_now(), str(exc) or exc.__class__.__name__, sync_id))
+            conn.commit()
+        except sqlite3.Error:
+            pass
+        raise
+    return result
 
 
 def _result(sync_id, status, snapshot_id, digest, coins, bars, inserted,

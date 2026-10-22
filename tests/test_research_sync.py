@@ -207,7 +207,8 @@ print("\n=== conflicting duplicate aborts, prior rows intact ===")
 with open(btc_path, "rb") as f:
     raw = f.read()
 dup = btc_rows[0]
-raw += gzip.compress(f"{dup[0]},{dup[1]},{dup[2]},{dup[3]},999.0,{dup[5]},{dup[6]}\n"
+# Valid OHLC, differing close: rejected by the duplicate rule, not valid_bar.
+raw += gzip.compress(f"{dup[0]},{dup[1]},{dup[2]},{dup[3]},100.25,{dup[5]},{dup[6]}\n"
                      .encode(), mtime=0)
 with open(btc_path, "wb") as f:
     f.write(raw)
@@ -215,6 +216,8 @@ bad_digest = source_digest(src)
 msg = raises_sync(src, db)
 check("conflicting duplicate raises", msg is not None, "no exception")
 check("error names the coin", msg is not None and "BTC" in msg, str(msg))
+check("error is the duplicate rule",
+      msg is not None and "conflicting duplicate ts 300" in msg, str(msg))
 check("prior BTC row unchanged",
       query(db, "SELECT close FROM bar WHERE coin = 'BTC' AND ts = 300")
       == [(100.5,)],
@@ -235,6 +238,38 @@ check("no snapshot for bad digest",
             (bad_digest,))[0][0] == 0)
 check("only the original snapshot remains",
       query(db, "SELECT COUNT(*) FROM source_snapshot")[0][0] == 1)
+
+print("\n=== amount-only change hits the mirrored-value guard ===")
+amount_src = new_dir(tmp, "amount_conflict")
+amount_path = os.path.join(amount_src, "BTC.csv.gz")
+amount_rows = bars(100.0)
+write_gz(amount_path, [amount_rows])
+amount_db = os.path.join(tmp, "db_amount", "research.db")
+sync_bars(amount_src, amount_db)
+# New file bytes, no in-file duplicate, same OHLCV except one amount.
+write_gz(amount_path, [[(t, o, h, l, c, v, a + 1.0 if t == 600 else a)
+                        for t, o, h, l, c, v, a in amount_rows]])
+new_amount_digest = source_digest(amount_src)
+msg = raises_sync(amount_src, amount_db)
+check("mirrored amount conflict raises", msg is not None, "no exception")
+check("error is the mirrored-value guard",
+      msg is not None and "conflicting values for mirrored ts 600" in msg, str(msg))
+check("mirrored amount unchanged",
+      query(amount_db, "SELECT amount FROM bar WHERE coin = 'BTC' AND ts = 600")
+      == [(1111.0,)],
+      str(query(amount_db, "SELECT amount FROM bar WHERE coin='BTC' AND ts=600")))
+check("amount conflict inserted no rows",
+      query(amount_db, "SELECT COUNT(*) FROM bar")[0][0] == 3)
+check("amount conflict added no provenance",
+      query(amount_db, "SELECT COUNT(*) FROM bar_file")[0][0] == 1)
+check("amount conflict recorded one failed run",
+      query(amount_db,
+            "SELECT COUNT(*) FROM sync_run WHERE status = 'failed'")[0][0] == 1)
+check("amount conflict created no snapshot",
+      query(amount_db, "SELECT COUNT(*) FROM source_snapshot")[0][0] == 1
+      and query(amount_db,
+                "SELECT COUNT(*) FROM source_snapshot WHERE source_digest = ?",
+                (new_amount_digest,))[0][0] == 0)
 
 print("\n=== corrupt gzip records a failed run, inserts nothing ===")
 corrupt_src = new_dir(tmp, "corrupt")
@@ -261,6 +296,24 @@ check("still no bars", query(corrupt_db, "SELECT COUNT(*) FROM bar")[0][0] == 0)
 check("second failed run recorded",
       query(corrupt_db,
             "SELECT COUNT(*) FROM sync_run WHERE status = 'failed'")[0][0] == 2)
+
+print("\n=== a later corrupt file rolls back the whole import ===")
+rollback_src = new_dir(tmp, "rollback")
+write_gz(os.path.join(rollback_src, "AAA.csv.gz"), [bars(10.0)])
+with open(os.path.join(rollback_src, "BBB.csv.gz"), "wb") as f:
+    f.write(b"broken gzip bytes")
+rollback_db = os.path.join(tmp, "db_rollback", "research.db")
+msg = raises_sync(rollback_src, rollback_db)
+check("rollback sync raises", msg is not None, "no exception")
+check("rollback leaves zero bars",
+      query(rollback_db, "SELECT COUNT(*) FROM bar")[0][0] == 0)
+check("rollback leaves zero provenance",
+      query(rollback_db, "SELECT COUNT(*) FROM bar_file")[0][0] == 0)
+check("rollback leaves zero snapshots",
+      query(rollback_db, "SELECT COUNT(*) FROM source_snapshot")[0][0] == 0)
+check("rollback records one failed run",
+      query(rollback_db,
+            "SELECT COUNT(*) FROM sync_run WHERE status = 'failed'")[0][0] == 1)
 
 print("\n=== multi-member gzip parses all members, identical dup skipped ===")
 multi = new_dir(tmp, "multi")
@@ -321,6 +374,7 @@ cases = {
     "non-finite": HEADER + "300,nan,2,0.5,1,1,1\n",
     "inconsistent ohlc": HEADER + "300,10,5,20,10,1,1\n",
     "negative volume": HEADER + "300,10,11,9,10,-1,1\n",
+    "header only": HEADER,
     "empty file": "",
 }
 for i, (name, body) in enumerate(cases.items()):
@@ -337,12 +391,71 @@ check("one failed run per case",
 
 print("\n=== source enumeration guard ===")
 empty = new_dir(tmp, "empty")
-check("empty source raises", raises_sync(empty, os.path.join(tmp, "db6.db")) is not None,
+empty_db = os.path.join(tmp, "db6", "research.db")
+check("empty source raises", raises_sync(empty, empty_db) is not None, "allowed")
+check("empty source recorded failed run",
+      query(empty_db,
+            "SELECT COUNT(*) FROM sync_run WHERE status = 'failed'")[0][0] == 1,
+      str(query(empty_db, "SELECT status, error FROM sync_run")))
+
+missing = os.path.join(tmp, "never_existed")
+missing_db = os.path.join(tmp, "db_missing", "research.db")
+check("missing source raises", raises_sync(missing, missing_db) is not None,
       "allowed")
+check("missing source recorded failed run",
+      query(missing_db,
+            "SELECT COUNT(*) FROM sync_run WHERE status = 'failed'")[0][0] == 1,
+      str(query(missing_db, "SELECT status, error FROM sync_run")))
+
 badname = new_dir(tmp, "badname")
 write_gz(os.path.join(badname, "btc.csv.gz"), [bars(10.0)])
-check("bad filename raises", raises_sync(badname, os.path.join(tmp, "db7.db")) is not None,
+badname_db = os.path.join(tmp, "db7", "research.db")
+check("bad filename raises", raises_sync(badname, badname_db) is not None,
       "allowed")
+check("bad filename recorded failed run",
+      query(badname_db,
+            "SELECT COUNT(*) FROM sync_run WHERE status = 'failed'")[0][0] == 1,
+      str(query(badname_db, "SELECT status, error FROM sync_run")))
+
+print("\n=== read-side OSError / pass-1 instability become SyncError + run ===")
+import proto.research.sync as syncmod
+
+instable = new_dir(tmp, "instable")
+instable_file = os.path.join(os.path.realpath(instable), "AAA.csv.gz")
+write_gz(instable_file, [bars(10.0)])
+instable_db = os.path.join(tmp, "db8", "research.db")
+orig_read = syncmod._stable_read
+
+
+def raise_oserror(path):
+    raise FileNotFoundError(2, "No such file or directory", path)
+
+
+def raise_unstable(path):
+    raise syncmod._Unstable("changed while reading")
+
+
+try:
+    syncmod._stable_read = raise_oserror
+    msg = raises_sync(instable, instable_db)
+    syncmod._stable_read = raise_unstable
+    msg2 = raises_sync(instable, instable_db)
+finally:
+    syncmod._stable_read = orig_read
+check("read OSError raises SyncError", msg is not None, "raw OSError escaped")
+check("read OSError recorded failed run",
+      query(instable_db,
+            "SELECT COUNT(*) FROM sync_run WHERE status = 'failed'")[0][0] >= 1,
+      str(query(instable_db, "SELECT status, error FROM sync_run")))
+check("read error text has the path once", msg is not None
+      and msg.count(instable_file) == 1, str(msg))
+check("instability raises SyncError", msg2 is not None, "raw _Unstable escaped")
+check("instability recorded failed run",
+      query(instable_db,
+            "SELECT COUNT(*) FROM sync_run WHERE status = 'failed'")[0][0] == 2,
+      str(query(instable_db, "SELECT status, error FROM sync_run")))
+check("error text has the path once", msg2 is not None
+      and msg2.count(instable_file) == 1, str(msg2))
 
 print("\n=== db inside source is refused ===")
 side_db = os.path.join(src, "research.db")
