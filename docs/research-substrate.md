@@ -70,6 +70,10 @@ A failure prints `{"ok": false, "error": "..."}` on stderr and exits `1`.
 
 ```bash
 # Mirror the archive (the only command that reads data/bars; it never writes it)
+# PHASE 1: do not run this against data/bars yet. The owner has not authorized
+# the live-archive import; use a copied fixture directory for now. The tool is
+# able to perform the import once that is authorized, and `--source` refuses
+# any `data/` path other than `data/bars`.
 python3 -m proto.research sync --source data/bars --db data/research/altradar-research.db
 
 # Read-only state: schema_version, db, bars{coins,rows,min_ts,max_ts},
@@ -116,6 +120,12 @@ Notes:
 - `benchmark_completed` is a **count of eligible attempts** (kind `benchmark`,
   latest event `completed`, no failed/interrupted event). It is not a
   performance result and carries no benchmark claim.
+- A run row inserted outside the registry has no event; `status` counts it
+  under `runs.unknown` and its `recent_runs` entry has `status: null`.
+- Recovery: a `started` run or sync left by a crash is not eligible for
+  anything. Close a run with `run finish --run-id <ID> --status interrupted
+  --error "operator: process died"`; a killed sync stays `started` and a new
+  sync appends a fresh record.
 
 ## Deliberately absent
 
@@ -128,9 +138,11 @@ This slice contains none of the following, by design:
 - no benchmark result calculation, no 75% claim, no edge claim
 - no scheduler, cron entry, systemd unit, or background loop
 - no HTTP route, API handler, frontend, or TUI
-- no service deployment or restart, no live-archive import, no live backtest
-- no writes anywhere under `data/` except the single research database created
-  by an explicit `sync`/`sample`/`run` command
+- no service deployment or restart; no live-archive import performed or
+  authorized in this phase (the tool can perform it once authorized); no live
+  backtest
+- no writes anywhere under `data/` except the research database created by an
+  explicit `sync`/`sample`/`run` command
 
 Run assumptions and outputs are opaque caller-supplied JSON. The substrate
 stores them and reports status; it does not interpret them.

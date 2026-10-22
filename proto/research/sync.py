@@ -273,6 +273,12 @@ def sync_bars(source_dir, db_path=store.DEFAULT_DB):
         raise SyncError(str(exc)) from exc
     if _inside(db, source):
         raise SyncError(f"refusing database inside the source dir: {db}")
+    # The engine's only historical input is data/bars; a typo must not ingest
+    # another archive into an append-only mirror.
+    parts = source.split(os.sep)
+    for i, part in enumerate(parts[:-1]):
+        if part == "data" and parts[i + 1] != "bars":
+            raise SyncError(f"refusing non-bars source: {source}")
 
     conn = store.connect(db)
     conn.isolation_level = None  # explicit transactions below

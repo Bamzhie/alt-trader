@@ -382,8 +382,12 @@ for label, args in (
           not os.path.exists(absent))
 
 print("\n=== import isolation ===")
-forbidden = ("proto.quant.engine", "proto.quant.qstore", "proto.quant.signals",
-             "proto.daemon", "proto.service")
+forbidden = (
+    "proto.quant.engine", "proto.quant.qstore", "proto.quant.signals",
+    "proto.quant.selector", "proto.quant.__main__", "proto.app",
+    "proto.daemon", "proto.service", "proto.store", "proto.measurement",
+    "proto.watcher",
+)
 code = (
     "import proto.research, proto.research.__main__, sys; "
     f"forbidden = {forbidden!r}; "

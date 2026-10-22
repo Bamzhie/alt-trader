@@ -31,7 +31,11 @@ def _now():
 
 
 def _canonical(obj):
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    try:
+        return json.dumps(obj, sort_keys=True, separators=(",", ":"),
+                          allow_nan=False)
+    except ValueError as exc:
+        raise RunError(f"run metadata is not canonical JSON: {exc}") from exc
 
 
 def _sha256(obj):

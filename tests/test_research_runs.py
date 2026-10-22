@@ -297,6 +297,12 @@ raises_run_error(
                            sample_id="smp-a", config={"version": 7},
                            assumptions={}))
 raises_run_error(
+    "non-finite config refused",
+    lambda: runs.start_run(db_path, kind="exploratory", snapshot_id="snap-a",
+                           sample_id="smp-a",
+                           config={"version": "v1", "x": float("nan")},
+                           assumptions={}))
+raises_run_error(
     "unknown status refused",
     lambda: runs.finish_run(db_path, rerun_id, status="weird"))
 check("refused starts left no rows", row_counts() == before_refusals,

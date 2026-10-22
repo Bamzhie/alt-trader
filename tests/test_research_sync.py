@@ -463,5 +463,15 @@ msg = raises_sync(src, side_db)
 check("db inside source raises", msg is not None, "allowed")
 check("db inside source not created", not os.path.exists(side_db))
 
+print("\n=== non-bars data sources are refused ===")
+for name in ("prices", "funding-history", "quant"):
+    bad_src = os.path.join(tmp, "data", name)
+    os.makedirs(bad_src, exist_ok=True)
+    write_gz(os.path.join(bad_src, "BTC.csv.gz"), [bars(100.0)])
+    bad_db = os.path.join(tmp, "bad-" + name, "research.db")
+    msg = raises_sync(bad_src, bad_db)
+    check(f"refuse data/{name} source", msg is not None, "allowed")
+    check(f"data/{name} source creates no db", not os.path.exists(bad_db))
+
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)
