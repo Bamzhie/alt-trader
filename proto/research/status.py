@@ -58,9 +58,9 @@ def db_status(db_path=store.DEFAULT_DB):
             "       COUNT(*) "
             "FROM backtest_run r GROUP BY 1"
         ):
-            # A run always has its started event; keep an unexpected status
-            # visible rather than folding it into a known bucket.
-            counts[status] = n
+            # A run inserted outside the registry has no event; keep it visible
+            # under a string key instead of a JSON null key.
+            counts[status if status is not None else "unknown"] = n
 
         return {
             "schema_version": schema_version,

@@ -2,13 +2,15 @@
 
 Self-checking script: python3 tests/test_research_cli.py
 
-Covers: argparse help, the JSON error contract, `status` on a missing database
-(exit 1, file not created), sync -> status with matching counts and an
-unchanged database fingerprint, idempotent `sample create`, the
-start/finish/show/list run round-trip, status counts and recent runs, the
-read-only commands never creating a database, and the import isolation
-boundary. Every fixture lives under tempfile.mkdtemp(); the repository
-`data/` tree is never used.
+Covers: argparse help and the JSON error contract, `status` on a missing
+database (exit 1, file not created), refusal of production database sidecar
+names, sync -> status with matching counts and an unchanged database
+fingerprint, idempotent `sample create`, the start/finish/show/list run
+round-trip (including failed and interrupted runs), status counts and recent
+runs, a run with no event, read-only commands leaving the database directory
+untouched (including a read-only directory), the import isolation boundary,
+and a guard proving every CLI path used here is inside the test temp dir.
+No test opens or writes the repository `data/` tree.
 """
 
 import gzip
@@ -27,6 +29,11 @@ from proto.research import runs, store
 FAILURES = []
 
 BASE_TS = 1_700_000_100  # a multiple of 300, so sync accepts it
+PATH_FLAGS = {
+    "--db", "--source", "--universe-file", "--config-file",
+    "--assumptions-file", "--params-file", "--outputs-file", "--artifacts-file",
+}
+SEEN_PATHS = set()
 
 
 def check(name, cond, detail=""):
@@ -36,22 +43,28 @@ def check(name, cond, detail=""):
 
 
 def run_cli(*args):
+    """Run the CLI, recording every path argument it is given."""
+    for i, arg in enumerate(args[:-1]):
+        if arg in PATH_FLAGS:
+            SEEN_PATHS.add(os.path.realpath(args[i + 1]))
     return subprocess.run(
         [sys.executable, "-m", "proto.research", *args],
         cwd=ROOT, capture_output=True, text=True)
 
 
 def ok_json(*args):
-    """Run a command, require exit 0 and one JSON object on stdout."""
+    """Run a command, require exit 0, `ok: true`, and one JSON object."""
     label = " ".join(args)
     proc = run_cli(*args)
     check(f"exit 0: {label}", proc.returncode == 0,
           (proc.stderr or proc.stdout).strip()[:300])
     try:
-        return json.loads(proc.stdout)
+        data = json.loads(proc.stdout)
     except ValueError:
         check(f"one JSON object: {label}", False, repr(proc.stdout)[:300])
         return {}
+    check(f"ok is true: {label}", data.get("ok") is True, data)
+    return data
 
 
 def error_json(*args):
@@ -93,12 +106,18 @@ def fingerprint(path):
     return digest, stat.st_size, stat.st_mtime_ns
 
 
+def directory_state(path):
+    state = {}
+    for name in os.listdir(path):
+        stat = os.stat(os.path.join(path, name))
+        state[name] = (stat.st_size, stat.st_mtime_ns)
+    return state
+
+
 tmp = tempfile.mkdtemp()
 source = os.path.join(tmp, "bars")
 os.makedirs(source)
 db = os.path.join(tmp, "research.db")
-default_db = os.path.join(ROOT, store.DEFAULT_DB)
-default_db_before = os.path.exists(default_db)
 
 print("=== --help ===")
 proc = run_cli("--help")
@@ -117,6 +136,11 @@ except ValueError:
 check("usage error is JSON",
       usage.get("ok") is False and isinstance(usage.get("error"), str),
       proc.stderr[:300])
+no_source_db = os.path.join(tmp, "no-source.db")
+err = error_json("sync", "--db", no_source_db)
+check("sync without --source is a JSON error", err.get("ok") is False, err)
+check("sync without --source creates nothing",
+      not os.path.exists(no_source_db))
 
 print("\n=== status refuses a missing database without creating it ===")
 missing = os.path.join(tmp, "absent.db")
@@ -124,6 +148,15 @@ err = error_json("status", "--db", missing)
 check("error object shape", err.get("ok") is False
       and isinstance(err.get("error"), str) and err["error"], err)
 check("missing database not created", not os.path.exists(missing))
+
+print("\n=== production database sidecars are refused ===")
+for name in ("quant.db-wal", "quant.db-shm", "quant.db-journal",
+             "signals.db-wal", "signals.db-shm", "signals.db-journal"):
+    blocked = os.path.join(tmp, name)
+    err = error_json("status", "--db", blocked)
+    check(f"{name} refused", err.get("ok") is False
+          and "protected" in str(err.get("error", "")), err)
+    check(f"{name} not created", not os.path.exists(blocked))
 
 print("\n=== sync -> status ===")
 write_bars(source, "BTC", [BASE_TS, BASE_TS + 300, BASE_TS + 600])
@@ -198,12 +231,17 @@ outputs_file = write_json(os.path.join(tmp, "outputs.json"),
 artifacts_file = write_json(os.path.join(tmp, "artifacts.json"),
                             [{"name": "equity", "path": "runs/equity.csv"}])
 
-started = ok_json(
-    "run", "start", "--kind", "benchmark",
-    "--snapshot", synced["snapshot_id"], "--sample", sample_id,
-    "--config-file", config_file, "--assumptions-file", assumptions_file,
-    "--label", "cli-smoke", "--db", db)
-run_id = started.get("run_id")
+
+def start_run():
+    return ok_json(
+        "run", "start", "--kind", "benchmark",
+        "--snapshot", synced["snapshot_id"], "--sample", sample_id,
+        "--config-file", config_file,
+        "--assumptions-file", assumptions_file,
+        "--label", "cli-smoke", "--db", db).get("run_id")
+
+
+run_id = start_run()
 check("run id shape", isinstance(run_id, str) and run_id.startswith("run-")
       and len(run_id) == 36, run_id)
 
@@ -236,43 +274,102 @@ listed = ok_json("run", "list", "--db", db)
 check("one run listed", [r.get("run_id") for r in listed.get("runs", [])]
       == [run_id], listed)
 
-print("\n=== failed run is listed and not eligible ===")
-failed_start = ok_json(
-    "run", "start", "--kind", "benchmark",
-    "--snapshot", synced["snapshot_id"], "--sample", sample_id,
-    "--config-file", config_file, "--assumptions-file", assumptions_file,
-    "--db", db)
-failed_id = failed_start.get("run_id")
+print("\n=== failed and interrupted runs are listed and not eligible ===")
+failed_id = start_run()
 failed = ok_json("run", "finish", "--run-id", failed_id,
                  "--status", "failed", "--error", "boom", "--db", db)
 check("failed finish", failed.get("status") == "failed", failed)
 check("failed error retained", failed.get("error") == "boom", failed)
 
+interrupted_id = start_run()
+interrupted = ok_json("run", "finish", "--run-id", interrupted_id,
+                      "--status", "interrupted", "--error", "ctrl-c", "--db", db)
+check("interrupted finish", interrupted.get("status") == "interrupted",
+      interrupted)
+check("interrupted error retained", interrupted.get("error") == "ctrl-c",
+      interrupted)
+
 listed = ok_json("run", "list", "--db", db)
 by_id = {r.get("run_id"): r.get("status") for r in listed.get("runs", [])}
-check("both runs listed", by_id == {run_id: "completed", failed_id: "failed"},
-      by_id)
+check("all runs listed", by_id == {run_id: "completed", failed_id: "failed",
+                                   interrupted_id: "interrupted"}, by_id)
 only_failed = ok_json("run", "list", "--status", "failed", "--db", db)
 check("status filter", [r.get("run_id") for r in only_failed.get("runs", [])]
       == [failed_id], only_failed)
 by_kind = ok_json("run", "list", "--kind", "benchmark", "--db", db)
 check("kind filter", {r.get("run_id") for r in by_kind.get("runs", [])}
-      == {run_id, failed_id}, by_kind)
+      == {run_id, failed_id, interrupted_id}, by_kind)
 check("completed benchmark eligible",
       runs.benchmark_eligible(db, run_id) is True)
 check("failed benchmark not eligible",
       runs.benchmark_eligible(db, failed_id) is False)
+check("interrupted benchmark not eligible",
+      runs.benchmark_eligible(db, interrupted_id) is False)
 
 print("\n=== status counts after runs ===")
 view = ok_json("status", "--db", db)
 check("run counts by status",
       view.get("runs") == {"started": 0, "completed": 1, "failed": 1,
-                           "interrupted": 0}, view.get("runs"))
+                           "interrupted": 1}, view.get("runs"))
 check("benchmark_completed counts only the completed run",
       view.get("benchmark_completed") == 1, view.get("benchmark_completed"))
-check("recent_runs lists both runs",
+check("recent_runs lists every run",
       {r.get("run_id") for r in view.get("recent_runs", [])}
-      == {run_id, failed_id}, view.get("recent_runs"))
+      == {run_id, failed_id, interrupted_id}, view.get("recent_runs"))
+
+print("\n=== status tolerates a run with no event ===")
+orphan_db = os.path.join(tmp, "orphan.db")
+conn = store.connect(orphan_db)
+conn.execute("INSERT INTO source_snapshot VALUES (?,?,?,?,?,?,?,?)",
+             ("snap-o", "data/bars", "digest-o", 1, 1, 0, 0, 1))
+conn.execute("INSERT INTO universe VALUES (?,?,?,?,?)",
+             ("uni-o", "test", "{}", "def-o", 1))
+conn.execute("INSERT INTO sample VALUES (?,?,?,?,?,?,?,?,?)",
+             ("smp-o", "uni-o", "seed-o", 1, "sha256-rank-v1", None,
+              '["BTC"]', "coins-o", 1))
+conn.execute("INSERT INTO backtest_run VALUES (" + ",".join("?" * 18) + ")",
+             ("run-orphan", 1, "exploratory", None, None, "snap-o", "smp-o",
+              "uni-o", "seed-o", "rev", 0, "v1", "{}", "cfg-o", "{}", "asm-o",
+              "{}", None))
+conn.commit()
+conn.close()
+view = ok_json("status", "--db", orphan_db)
+check("no-event run is counted under unknown",
+      view.get("runs") == {"started": 0, "completed": 0, "failed": 0,
+                           "interrupted": 0, "unknown": 1}, view.get("runs"))
+check("no-event run has a null status in recent_runs",
+      view.get("recent_runs", [{}])[0].get("status", "missing") is None,
+      view.get("recent_runs"))
+
+print("\n=== read-only commands leave the database directory untouched ===")
+dir_before = directory_state(tmp)
+db_before = fingerprint(db)
+for label, args in (
+    ("status", ("status", "--db", db)),
+    ("run show", ("run", "show", "--run-id", run_id, "--db", db)),
+    ("run list", ("run", "list", "--db", db)),
+):
+    ok_json(*args)
+check("no sidecar or file changes from read-only commands",
+      directory_state(tmp) == dir_before,
+      f"{dir_before} -> {directory_state(tmp)}")
+check("database bytes unchanged by read-only commands",
+      fingerprint(db) == db_before)
+
+print("\n=== status works in a read-only directory ===")
+ro_dir = os.path.join(tmp, "readonly-dir")
+os.makedirs(ro_dir)
+ro_db = os.path.join(ro_dir, "research.db")
+ok_json("sync", "--source", source, "--db", ro_db)
+os.chmod(ro_dir, 0o500)
+try:
+    view = ok_json("status", "--db", ro_db)
+    check("status succeeds in a read-only directory",
+          view.get("schema_version") == 1, view)
+    check("read-only directory keeps only the database",
+          sorted(os.listdir(ro_dir)) == ["research.db"], os.listdir(ro_dir))
+finally:
+    os.chmod(ro_dir, 0o700)
 
 print("\n=== read-only commands never create a database ===")
 for label, args in (
@@ -288,19 +385,29 @@ print("\n=== import isolation ===")
 forbidden = ("proto.quant.engine", "proto.quant.qstore", "proto.quant.signals",
              "proto.daemon", "proto.service")
 code = (
-    "import proto.research, sys; "
+    "import proto.research, proto.research.__main__, sys; "
     f"forbidden = {forbidden!r}; "
     "found = [m for m in forbidden if m in sys.modules]; "
     "assert not found, found"
 )
 proc = subprocess.run([sys.executable, "-c", code], cwd=ROOT,
                       capture_output=True, text=True)
-check("import proto.research keeps emission modules out",
+check("importing proto.research and its CLI keeps emission modules out",
       proc.returncode == 0, proc.stderr.strip()[:300])
 
-print("\n=== repository data tree untouched ===")
-check("default research db state unchanged",
-      os.path.exists(default_db) == default_db_before, default_db)
+print("\n=== CLI tests use only temp paths ===")
+real_tmp = os.path.realpath(tmp)
+repo_data = os.path.join(os.path.realpath(ROOT), "data")
+check("every CLI path argument was recorded", bool(SEEN_PATHS), SEEN_PATHS)
+check("every CLI path is under the test temp dir",
+      all(p == real_tmp or p.startswith(real_tmp + os.sep)
+          for p in SEEN_PATHS),
+      sorted(p for p in SEEN_PATHS if not p.startswith(real_tmp + os.sep)))
+check("no CLI path targets the repository data tree",
+      not any(p == repo_data or p.startswith(repo_data + os.sep)
+              for p in SEEN_PATHS), sorted(SEEN_PATHS))
+check("the repository default database was never a CLI target",
+      os.path.realpath(os.path.join(ROOT, store.DEFAULT_DB)) not in SEEN_PATHS)
 
 print("\n" + ("ALL PASS" if not FAILURES
               else f"{len(FAILURES)} FAILED: {FAILURES}"))

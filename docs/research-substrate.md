@@ -8,8 +8,9 @@ surface, not a strategy engine.
 - Default database: `data/research/altradar-research.db`
 - Source archive: `data/bars/` — read only, never written, renamed, sorted, or
   backfilled
-- Refused paths: any database named `quant.db` or `signals.db`, and any path
-  under `data/bars/`, `data/prices/`, or `data/funding*/`
+- Refused paths: any database whose basename starts with `quant.db` or
+  `signals.db` (including `-wal`, `-shm`, and `-journal` sidecars), and any
+  path under `data/bars/`, `data/prices/`, or `data/funding*/`
 - Python 3.10+ standard library only; no new dependencies
 
 ## What it is for
@@ -45,6 +46,9 @@ Invariants enforced by the database, not by convention:
 
 - `PRAGMA user_version = 1`; the schema is created only by a writable
   `store.connect`.
+- Writable connections use `PRAGMA journal_mode=DELETE` (the SQLite default).
+  A read-only open therefore needs no `-wal`/`-shm` sidecar, creates no
+  `-journal` file, and works when the database directory is not writable.
 - Every table except `sync_run` is append-only: `UPDATE` and `DELETE` raise
   `sqlite3.IntegrityError` containing `append-only`.
 - A terminal run event cannot be appended to a run that already has one, and
@@ -105,8 +109,10 @@ Notes:
 - `run start` requires a `config` object with a non-empty `version`; config and
   assumptions are stored as canonical JSON with SHA-256 hashes. `--params-file`
   is optional (default `{}`), and `--parent <RUN_ID>` links a rerun.
-- `status`, `run show`, and `run list` open SQLite with `mode=ro`. They do not
-  create, migrate, or write the database.
+- `status`, `run show`, and `run list` open SQLite with `mode=ro` and
+  `PRAGMA query_only=ON`. They create no files (no database, no journal, no
+  WAL sidecar), change neither the database bytes nor its directory, and work
+  in a read-only directory.
 - `benchmark_completed` is a **count of eligible attempts** (kind `benchmark`,
   latest event `completed`, no failed/interrupted event). It is not a
   performance result and carries no benchmark claim.
@@ -157,7 +163,22 @@ python3 tests/run_all.py
 ```
 
 All tests build fixtures under `tempfile.mkdtemp()`; none writes to or opens a
-production database or the `data/bars/` archive. `tests/test_research_cli.py`
-also asserts that `import proto.research` does not load `proto.quant.engine`,
-`proto.quant.qstore`, `proto.quant.signals`, `proto.daemon`, or
-`proto.service`.
+production database or the `data/bars/` archive. `tests/test_research_store.py`
+asserts the DELETE journal mode and that a read-only open creates no sidecar;
+`tests/test_research_cli.py` records every CLI path argument and asserts they
+are all inside its temp directory, that no read-only command changes the
+database directory, and that `status` works in a read-only directory. It also
+asserts that importing `proto.research` and `proto.research.__main__` does not
+load `proto.quant.engine`, `proto.quant.qstore`, `proto.quant.signals`,
+`proto.daemon`, or `proto.service`.
+
+For a whole-slice no-write check, hash the protected paths before and after
+(never run a production sync):
+
+```bash
+sha256sum data/quant.db data/signals.db data/bars/*.csv.gz \
+  > /tmp/opencode/research-protected-before.sha
+# ... run the tests and inspect git status ...
+sha256sum -c /tmp/opencode/research-protected-before.sha
+git status --short   # no data/ entry may appear
+```

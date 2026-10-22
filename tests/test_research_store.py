@@ -59,8 +59,8 @@ check("all tables created", TABLES <= names, str(TABLES - names))
 version = conn.execute("PRAGMA user_version").fetchone()[0]
 check("user_version == 1", version == 1, str(version))
 check("foreign_keys on", conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1)
-check("journal_mode wal",
-      conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal")
+check("journal_mode delete",
+      conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete")
 
 print("\n=== seed one row per append-only table ===")
 snap, uni, smp, run = "snap-1", "uni-1", "smp-1", "run-1"
@@ -108,6 +108,7 @@ check("sync_run update allowed",
 conn.close()
 
 print("\n=== read-only connection ===")
+before_files = set(os.listdir(tmp))
 ro = store.connect(db_path, readonly=True)
 check("readonly query_only",
       ro.execute("PRAGMA query_only").fetchone()[0] == 1)
@@ -121,6 +122,8 @@ except sqlite3.OperationalError as exc:
 except sqlite3.Error as exc:
     check("readonly write refused", False, f"wrong error: {exc}")
 ro.close()
+check("readonly creates no sidecars", set(os.listdir(tmp)) == before_files,
+      f"{before_files} -> {set(os.listdir(tmp))}")
 
 missing = os.path.join(tmp, "nope.db")
 try:
@@ -136,8 +139,12 @@ check("readonly missing path not created", not os.path.exists(missing))
 print("\n=== validate_db_path ===")
 check("returns absolute path",
       store.validate_db_path("rel.db") == os.path.abspath("rel.db"))
-for rel in ("quant.db", "signals.db",
-            os.path.join(REPO, "data", "bars", "x.db")):
+PROTECTED = (
+    "quant.db", "signals.db",
+    "quant.db-wal", "quant.db-shm", "quant.db-journal",
+    "signals.db-wal", "signals.db-shm", "signals.db-journal",
+)
+for rel in PROTECTED + (os.path.join(REPO, "data", "bars", "x.db"),):
     try:
         store.validate_db_path(os.path.join(tmp, rel) if not os.path.isabs(rel) else rel)
         check(f"refuse {rel}", False, "allowed")
@@ -158,7 +165,7 @@ except store.StoreError:
     check("refuse symlinked data/bars path", True)
 
 print("\n=== writable connect refuses protected paths ===")
-for name in ("quant.db", "signals.db"):
+for name in PROTECTED:
     protected = os.path.join(tmp, name)
     try:
         store.connect(protected)

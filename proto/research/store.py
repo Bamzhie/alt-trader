@@ -103,7 +103,9 @@ def validate_db_path(db_path):
     ``realpath`` follows symlinks so a link cannot hide a protected target.
     """
     path = os.path.realpath(os.fspath(db_path))
-    if os.path.basename(path) in _PROTECTED_FILE_NAMES:
+    # Prefix (not equality) so SQLite sidecars such as quant.db-wal,
+    # quant.db-shm and quant.db-journal are refused too.
+    if os.path.basename(path).startswith(_PROTECTED_FILE_NAMES):
         raise StoreError(f"refusing protected database name: {path}")
     parts = path.split(os.sep)
     for i in range(len(parts) - 1):
@@ -149,7 +151,9 @@ def connect(db_path=DEFAULT_DB, *, readonly=False):
 
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.execute("PRAGMA journal_mode=WAL")
+    # DELETE (the SQLite default) keeps a ``mode=ro`` open free of writable
+    # ``-wal``/``-shm`` sidecars, so inspection works in a read-only directory.
+    conn.execute("PRAGMA journal_mode=DELETE")
     conn.execute("PRAGMA foreign_keys=ON")
     # REPLACE deletes conflicting rows; without recursive triggers that DELETE
     # skips the append-only triggers and silently rewrites a frozen row.
