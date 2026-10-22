@@ -27,7 +27,11 @@ def _sha256(text):
 
 
 def _canonical(obj):
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    try:
+        return json.dumps(
+            obj, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except ValueError as exc:
+        raise SamplingError(f"universe is not canonical JSON: {exc}") from exc
 
 
 def _read_universe(universe_file):
@@ -88,9 +92,9 @@ def record_sample(db_path, universe_file, seed, n, *, label=None):
                 (universe_id, definition["name"], canonical,
                  definition_sha256, int(time.time())))
             stored_definition = conn.execute(
-                "SELECT definition_sha256 FROM universe WHERE universe_id = ?",
-                (universe_id,)).fetchone()
-            if stored_definition is None or stored_definition[0] != definition_sha256:
+                "SELECT definition_json, definition_sha256 FROM universe "
+                "WHERE universe_id = ?", (universe_id,)).fetchone()
+            if stored_definition != (canonical, definition_sha256):
                 raise SamplingError(
                     f"universe id {universe_id} already maps to another definition")
             conn.execute(
@@ -110,6 +114,12 @@ def record_sample(db_path, universe_file, seed, n, *, label=None):
                 "VALUES (?,?,?)",
                 [(sample_id, rank, coin)
                  for rank, coin in enumerate(coins, 1)])
+            stored_ranks = conn.execute(
+                "SELECT rank, coin FROM sample_coin WHERE sample_id = ? "
+                "ORDER BY rank", (sample_id,)).fetchall()
+            if stored_ranks != list(enumerate(coins, 1)):
+                raise SamplingError(
+                    f"sample id {sample_id} already maps to different ranks")
     finally:
         conn.close()
     return load_sample(db_path, sample_id)

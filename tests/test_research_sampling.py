@@ -182,6 +182,8 @@ invalid = [
     ("empty coin list", {"name": "empty", "coins": []}, 1),
     ("non-object json", ["BTC"], 1),
     ("string json", "BTC", 1),
+    ("non-finite extra key",
+     {"name": "nan", "coins": ["BTC"], "extra": float("nan")}, 1),
 ]
 for i, (name, obj, n) in enumerate(invalid):
     path = write_json(os.path.join(tmp, f"bad{i}.json"), obj)
@@ -220,6 +222,36 @@ finally:
 check("rows intact after refused writes",
       scalar(db_path, "SELECT COUNT(*) FROM universe") == 1
       and scalar(db_path, "SELECT COUNT(*) FROM sample") == 2)
+
+print("\n=== contradictory stored ranks are refused, never served ===")
+tampered_db = os.path.join(tmp, "tampered.db")
+tampered_coins_json = json.dumps(draw, separators=(",", ":"))
+conn = store.connect(tampered_db)
+try:
+    conn.execute(
+        "INSERT INTO universe (universe_id, name, definition_json, "
+        "definition_sha256, created_ts) VALUES (?,?,?,?,?)",
+        (universe_id, definition["name"], canonical, definition_sha256, 1))
+    conn.execute(
+        "INSERT INTO sample (sample_id, universe_id, seed, n, method, label, "
+        "coins_json, coins_sha256, created_ts) VALUES (?,?,?,?,?,?,?,?,?)",
+        (sample_id, universe_id, SEED, 20, SAMPLE_METHOD, None,
+         tampered_coins_json, sha(tampered_coins_json), 1))
+    swapped = [(1, draw[1]), (2, draw[0])] + [
+        (rank, coin) for rank, coin in enumerate(draw, 1) if rank > 2]
+    conn.executemany(
+        "INSERT INTO sample_coin (sample_id, rank, coin) VALUES (?,?,?)",
+        [(sample_id, rank, coin) for rank, coin in swapped])
+    conn.commit()
+finally:
+    conn.close()
+
+check("contradictory ranks raise",
+      raises_sampling(lambda: record_sample(tampered_db, uni_path, SEED, 20)))
+check("contradictory ranks left untouched",
+      scalar(tampered_db,
+             f"SELECT coin FROM sample_coin WHERE sample_id = '{sample_id}' "
+             "AND rank = 1") == draw[1])
 
 print("\n=== load_sample is read-only and has no redraw API ===")
 missing_db = os.path.join(tmp, "absent.db")
