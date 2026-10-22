@@ -1,5 +1,11 @@
 # Quant module (`proto/quant/`)
 
+> **Legacy engine documentation.** This describes the existing shadow/rule
+> research module. It is retained for code understanding, but its rules,
+> databases, and verdicts are excluded from building and evaluating the new
+> engine. See [`quant-system-overhaul-plan.md`](quant-system-overhaul-plan.md)
+> for current requirements.
+
 Read-only decision-support engine. It places no orders, holds no keys, makes no
 network calls, and never writes to `data/signals.db` (it has its own
 `data/quant.db`). Stdlib only, like the rest of the app.

@@ -1,20 +1,56 @@
 # ALT RADAR Roadmap Status
 
+## Owner-directed system overhaul (planned, not implemented)
+
+The current target is documented in [Quant System Overhaul Plan](quant-system-overhaul-plan.md).
+It retires HYD-0003 and current rule hypotheses as governing candidate/pass
+authority while retaining their reports and all stored data. `data/bars/`
+remains the canonical collector output and must remain untouched; its current
+collector continues. The plan calls for a separate read-only-source mirror
+database synchronized from `data/bars/` every eight hours, with repeated,
+versioned backtests between syncs. No such database or batch runner is
+implemented yet. ACC-POC is planned as long-oriented guidance inside quant
+analysis only after engine readiness; the engine may adapt its calculations.
+A backtest cycle is intended to evaluate
+one selected signal per coin, tuning versioned formulas on development data,
+then measuring the 75% target on precommitted randomized samples for owner
+review. The 20 → 50 → >100
+cycle details and exact signal-selection/pass rules are not implemented or
+fully specified. Every backtest attempt must be durably recorded, including
+formula/config version, data snapshot, selected coins, assumptions, status,
+outputs, and links to detailed results; prior runs are retained when formulas
+change or runs fail. Coin samples are to be drawn reproducibly from a
+predefined representative universe using recorded seeds; samples must not be
+redrawn after seeing outcomes to chase 75%. Tune on designated development
+data, then freeze and test on unseen coins and later dates. The new engine's
+sole historical input is `data/bars/`:
+`signals.db` and `quant.db` are excluded from its training examples, features,
+candidate selection, labels, and benchmark outcomes. They remain preserved as
+legacy records for separate audit only. During development, no rule-based
+candidate generators are to run or emit signals. ACC-POC is deferred until the
+quant engine is ready; it will then serve as adaptable guidance, not a fixed
+rule the engine must follow.
+
+The overhaul supersedes the old hypotheses as the intended product direction,
+not as historical evidence: HYD-0003 reports, current DB contents, and all
+collected market data remain preserved. This is a plan only; it does not
+authorize data edits, database creation/migration, deployment, or holdout use.
+
 Product goal: quantitative research and analysis for MEXC altcoin perpetual
 futures. Rules support quant analysis; heuristic scores are not evidence of
 edge. Read-only; no order execution. BTC is labeled market context only.
 
-Last updated: 2026-10-22 (the six research/startup workstreams are
-implemented and reviewed; the pivot feature-provenance fix is merged; a
-preregistered analysis (HYD-0003) ran on dev + validation and **the
-one-shot holdout was not spent**; the Research view now shows manual-review
-candidates; and `main` is **DEPLOYED** to the local user systemd service —
-the service runs `94bdf49` with a 2 s restart drain. Reports:
+Last reconciled: 2026-10-22. The last recorded live deployment verification is
+2026-10-20 at `94bdf49` (2 s restart drain); this document does not claim a
+newer live probe. A preregistered analysis (HYD-0003) ran on dev + validation
+and **the one-shot holdout was not spent**. The Research view shows
+manual-review candidates. Reports:
 `docs/implementation-reports/quant-research-2026-10-19/` (the six
 workstreams) and `docs/implementation-reports/quant-research-2026-10-20/`
-(this effort). The ROE feasibility update is in the working tree and remains
-uncommitted and undeployed. The next proposed strategy study, ACC-POC, is
-recorded below as a plan only; no detector code or new evidence exists yet.
+(this effort). The ROE feasibility update, including moving-block interval
+sensitivity, is reported verified in the working tree but remains uncommitted
+and undeployed. ACC-POC is recorded below as a plan only; no detector code or
+new evidence exists yet.
 Earlier (2026-10-19): dev-only investigation of the all-negative WS5 result —
 friction, not a signal defect; three independent audits; four pipeline and
 five funding-path fixes (including a transition-aware settlement schedule)
@@ -25,7 +61,28 @@ venue; the WS5 evaluation report records the selected strategy's identity.
 restarted on 2026-10-20 — see "Current deployment state" below.)
 Verified against code/data/live probes/tests, not inherited summaries.
 
-## Research data readiness snapshot (2026-10-18, corrected)
+## Canonical data source and discontinued live signal-analysis path
+
+- **`data/bars/` is the canonical input for the core quant and rule-based
+  system.** Historical evaluation, replay, outcome resolution, and the ROE
+  feasibility study read the per-coin closed 5-minute bar archives. The
+  quant CLI and research harness default to this archive. It is the source
+  to extend for core rule analysis, alongside separate funding, settlement,
+  and (where available) price archives for their respective inputs.
+- **The previous per-fetch live signal-analysis path was discontinued.** It
+  repeated signal analysis on each API fetch and was too inefficient for the
+  core system. `signals.db` is therefore not the source of truth or a
+  prerequisite for historical quant/rule evaluation. Its existing signal
+  and observation rows are legacy live-observation records; do not treat
+  their shorter date span as the amount of historical market data available.
+- The quant system already consumes `data/bars/` for research and replay; the
+  remaining integration requirement is to keep future core rules and
+  evaluations on the archive-backed path and avoid reintroducing per-fetch
+  full-universe signal analysis. Any residual live scanner, dashboard, or
+  `signals.db` dependency should be reviewed separately before claiming it
+  has been removed from the app.
+
+## Research data readiness snapshot (2026-10-18, corrected; historical)
 
 VERIFIED by direct archive read (2026-10-18):
 
@@ -51,10 +108,10 @@ VERIFIED by direct archive read (2026-10-18):
 - `data/quant_research/`: absent. The harness writes its report to its own
   `--out` directory (CLI default `data/quant_research`, an output dir, never
   a bar/funding/settlement archive). No production archive is rewritten.
-- Next evidence step: the WS5 dev→val harness has been run on the current
-  bars with settlement-derived funding costs; **the one-shot holdout
-  remains SEALED** pending review of coverage, dev/validation results and
-  the frozen evaluation setup (see WS5 below).
+- Status at this snapshot: the WS5 dev→val harness had been run on the then-
+  current bars with settlement-derived funding costs; **the one-shot holdout
+  remained SEALED** pending review of coverage, dev/validation results and the
+  frozen evaluation setup (see WS5 below).
 
 ## Current deployment state (verified live 2026-10-20)
 
@@ -371,11 +428,13 @@ VERIFIED by direct archive read (2026-10-18):
   (undocumented). Operator reference in
   `docs/ws4-mark-index-history.md`; spec in
   `docs/superpowers/specs/2026-10-17-mark-index-history-design.md`.
-- Remaining (WS4 market-data history): book/spread history, OI series
-  (both OPEN-BLOCKED — no public history endpoint, see availability
-  finding below); DEPLOY + live-verify the code-delivered read routes
-  (`/settlements`, `/prices`, `/quant-status`). `/funding` is
-  LIVE-verified.
+- Remaining (WS4 market-data history): book/spread history and OI series
+  remain OPEN-BLOCKED because the public venue has no historical endpoints
+  (see availability finding below). The route deployment-pending note in the
+  original WS4 entry is superseded by the 2026-10-20 deployment record above,
+  which reports authenticated and unauthenticated route probes passing,
+  including the quant and research routes. That probe is the latest recorded
+  route verification; refresh it before treating it as current live status.
 - **Availability finding (verified against official MEXC contract docs,
   2026-10-17):** public *history* endpoints DO exist for the INDEX PRICE
   kline (`GET /api/v1/contract/kline/index_price/{symbol}`) and the FAIR
@@ -471,16 +530,17 @@ VERIFIED by direct archive read (2026-10-18):
     → `quant.shadow` frame with matching counts → below-floor `resync` →
     separation proof: zero quant tables in signals db, production `data/`
     append-only-or-untouched with no quant artifacts).
-- Remaining: WS5 becomes live-data evaluation evidence (engine on
-  production bars with funding-archive costs), a calibration record, and
-  broader WS6 display (sample-n / CI / calibration / coverage /
-  validation-status beyond the Research view's current
-  counts+suppression+measured-range). Everything in
-  `docs/quant-analytics-system-proposal.md` §3–§5 beyond the registry and
-  the shadow path (evaluation harness, Hurst/MF-DFA, competing outcomes,
-  calibrated probs, clustered uncertainty) is unbuilt.
-  - **Delivered (2026-10-20, WS-A/B/C/D/E):** the research capabilities
-    that section listed are now built and reviewed (report:
+**Reconciled WS5 status (2026-10-22):** the evaluation harness,
+Hurst/MF-DFA estimators, competing-outcome and inference libraries,
+preregistration, clustered uncertainty, and champion/candidate comparison are
+implemented. They are research capabilities, not proof of a predictive edge.
+Remaining work is evidence and integration: collect and evaluate prospective
+shadow predictions, record forecasts before their outcomes mature so
+calibration can be measured, and complete preregistered evaluations of
+candidate features and rules. No rule has passed the gate and the holdout stays
+sealed. The code does not place trades.
+  - **Delivered (2026-10-20, WS-A/B/C/D/E):** these research capabilities
+    were built and reviewed (report:
     `docs/implementation-reports/quant-research-2026-10-19/final-report.md`).
     **WS-A** `proto/quant/{structure,estimators,mfdfa,measures,feature_store}.py` —
     multi-timeframe structure with **confirmed pivots** (frame-aware
@@ -505,9 +565,8 @@ VERIFIED by direct archive read (2026-10-18):
     by independent implementers, each reviewed by a fresh reviewer, and
     integrated in dependency order; the full offline suite is **ALL SUITES
     PASS (87 files)** and the frontend gates (200 tests, typecheck, lint,
-    build) are clean. Still **unbuilt**: anything that turns a measurement
-    into a trade — the calibration record, the live-data evaluation of the
-    new features, and the 1m/venue design stage.
+    build) were clean at that delivery. These are dated verification results,
+    not a claim that the later uncommitted ROE update is deployed.
   - Delivered (2026-10-17, WS5 evaluation harness; corrected same day):
   `proto/quant/cost_attribution.py` — funding cost attribution from the
   WS4 archives at the venue's OWN settle boundaries. Venue-reported
@@ -643,12 +702,14 @@ VERIFIED by direct archive read (2026-10-18):
   as actionable; calibration is honestly `unavailable` (the shadow store
   records outcomes, not predicted outcomes). Frontend gates: 200 tests /
   14 files, typecheck, lint (0 warnings) and build all clean.
-- Remaining: representation of the new mark/index or settlement archives in
-  the view; anything beyond the Research view itself.
+- Remaining: the Research view does not yet present mark/index or settlement
+  archives as analysis inputs. Probability calibration is shown as unavailable
+  until forecasts are persisted and evaluated; richer views of calibrated,
+  evidence-gated outputs depend on that data path.
 
-### 7. Change control (candidate vs validated) — PARTIAL; PROMOTION GATE DELIVERED (evaluation only)
-- Deps: WS5 promotion gates (outcome evidence still unbuilt — the gate
-  says so explicitly rather than inventing it).
+### 7. Change control (candidate vs validated) — VERSIONING AND COMPARISON DELIVERED; NO PROMOTION
+- Deps: eligible WS5 evidence. The promotion gate does not manufacture
+  outcome evidence when the research has not established it.
 - Complete: per-episode flag/plan/episode/outcome/cost versions +
   `config_hash` + `CODE_REV` (`proto/measurement.py:32-39,100-127`);
   cohort isolation (`proto/episode_report.py:88-111`); no order-execution
@@ -661,10 +722,15 @@ VERIFIED by direct archive read (2026-10-18):
   states `outcome_evidence: "not evaluated (WS5 inputs unbuilt)"` —
   no confidence/probability language (test-enforced). 16 checks in
   `tests/test_promotion.py`.
-- Remaining: champion/candidate OBJECTS persisted in the Store,
-  decision-log ENTRIES (the log file + validator exist; no decisions
-  recorded yet), and outcome-based comparison once WS5 lands
-  (competing outcomes, calibrated probabilities — proposal §3–§5).
+- Operationally outstanding: the versioned champion/candidate registry and
+  matched outcome-comparison capability exist in `proto/quant/champion.py`,
+  but have not produced an accepted champion or a real promotion decision.
+  The repository has no populated registry or decision-chain artifact, and
+  the human-owned decision log is empty. Use these tools only after a
+  candidate has eligible, preregistered evidence.
+- The older `proto/promotion.py` cadence gate is separate from the quant
+  evidence gates in `proto/quant/gates.py`; its cadence checks alone do not
+  establish after-cost predictive edge.
 - Delivered (2026-10-15, R4, commit 47ff908): `proto/decisions.py` —
   `validate_decision` + `validate_log` (stdlib, never writes the log)
   over the human-owned append-only `docs/decisions/log.jsonl`
@@ -689,50 +755,56 @@ VERIFIED by direct archive read (2026-10-18):
   `set_champion` needs an explicit `allow_promote` opt-in. 138 checks in
   `tests/test_ws_e_champion.py`.
 
-## Outstanding (NOT in this plan — kept visible)
+## Outstanding work and current gates (reconciled 2026-10-22)
 
-- WS3 beyond R2/R3: 1m/venue-probe design stage (read-only record
-  exists); provisional-bar tier (decided against, needs per-bar markers +
-  scorer re-validation to reopen).
-- WS4 beyond delivered work: **OPEN-BLOCKED (public venue data does not
-  exist)** — OI history (only a current `holdVol` snapshot on `/ticker`)
-  and book/spread history (only current `/depth` and `/depth_commits`
-  snapshot); **DEPLOY PENDING** — `/settlements` + `/prices` + `/quant-status`
-  routes live-verify (code delivered; running service predates the commits).
-  `/funding` is live-verified. Mark/index price history is **DELIVERED in
-  code** with operator reference `docs/ws4-mark-index-history.md`; deploy
-  pending.
-- WS5 beyond delivered work: the evaluation harness **HAS now been run** on
-  the current ~97.5-day bar snapshot with venue settlement costs
-  (`python3 -m proto.quant evaluate`, no `--holdout`, `EXIT=0`). Canonical
-  run `git_rev da5f43c`; output to a temp `--out` dir, with the report and
-  preserved artifacts in `docs/implementation-reports/quant-roadmap-2026-10-18/`.
-  **The evaluated strategy:** rule `breakout_start[rvol>=4]/cont`, geometry
-  `T288_ks3_R2` (24 h, k_stop 3.0, r_tp 2.0), chosen by a
-  multiplicity-corrected max-t (`spa_max_t`) over **288** pre-declared
-  configs. The winning dev day-cluster t is **−1.06**, the corrected SPA
-  **p-value is 1.0**, and **0/288** configs had a positive dev mean.
-  Universe **dev** n=24,749 mean_r −0.0154 CI[−0.0417,+0.0142] and **val**
-  n=6,495 mean_r −0.0166 CI[−0.0468,+0.0174] (95% **day-cluster bootstrap**
-  intervals) — both straddle zero with negative point estimates: **the run
-  found no evidence of a positive edge**. Current transition-aware
-  funding-adjusted metrics are reported separately on matched denominators:
-  dev 24,736/24,749 (5 missing-coin + 8 incomplete; coverage 0.9995),
-  mean_r −0.01585, 95% day-cluster CI[−0.04191,+0.01339]; val
-  6,478/6,495 (17 incomplete; coverage 0.9974), mean_r −0.01745, CI
-  [−0.04736,+0.01666]. Funding deltas are −0.00051R / −0.00113R on the
-  matched sets. The initial pre-transition-audit figures are historical and
-  superseded by these results.
-  `missing_cost_coins=[1000BTT,RON,ZBCN]`, no leakage, all holdout keys
-  `null`. **The one-shot holdout remains SEALED.** Still owned (not started, evidence-gated): a frozen-setup
-  decision to spend the holdout once; a calibration record; estimators
-  (Hurst/MF-DFA), competing outcomes (stop/tp/time/invalidation/censor per
-  proposal §3.4), calibrated probabilities (proposal §3–§5). No rule has
-  passed promotion; all outputs are SHADOW/read-only.
-- WS6 evidence UI: sample-n / CI / calibration / coverage /
-  validation-status display (blocked on WS5 outputs).
-- WS7 beyond the decision log: champion/candidate persistence,
-  outcome-based comparison (blocked on WS5).
+- **WS3 / finer timeframes:** 1-minute venue feasibility is still an optional
+  design/probe stage, not a missing production capability. The provisional-bar
+  tier remains deliberately deferred; reopening it requires per-bar markers
+  and scorer re-validation. ACC-POC specifically needs the 1-minute POC
+  feasibility gate described below.
+- **WS4 / market history:** historical open interest and order-book/spread
+  series remain OPEN-BLOCKED on public MEXC data. A different authorized source
+  or prospective snapshot collection would be needed. The old WS4 note saying
+  `/settlements`, `/prices`, and `/quant-status` were deploy-pending is
+  superseded by the 2026-10-20 deployment and route checks in “Current
+  deployment state”; refresh those probes before claiming present-day live
+  status.
+- **WS5 / research evidence:** the harness and analysis components are
+  implemented, but evidence has not established a positive edge. HYD-0002's
+  October 18 evaluation found negative development means, corrected SPA p=1.0,
+  and no positive development mean among 288 configurations; funding-adjusted
+  dev and validation means were also negative on high-coverage matched sets.
+  HYD-0003's October 20 preregistered dev results were negative, while its
+  validation was **insufficient**: the 14-day validation window could not meet
+  the preregistered 20-day minimum. Do not change that record after the fact;
+  resolve the split/minimum mismatch in a new protocol before another
+  evaluation. **The one-shot holdout remains SEALED** until a candidate is
+  frozen and eligible under its preregistered validation criteria.
+- **Calibration / prospective evidence:** probability calibration remains
+  unavailable in the Research view because forecasts are not yet persisted
+  before their outcomes mature. Add a versioned forecast record and collect
+  prospective SHADOW outcomes before claiming calibration. No order path is
+  intended or implemented.
+- **WS6 / evidence display:** sample counts, denominators, uncertainty,
+  coverage, validation status, provenance, and insufficient-evidence reasons
+  are delivered. Remaining: expose mark/index and settlement history as
+  analysis inputs, and display calibrated estimates only after suitable
+  forecasts and outcomes exist.
+- **WS7 / change control:** champion/candidate registry, matched comparison,
+  and hash-chained decision-log code are delivered. No champion has been
+  accepted, no real promotion decision is recorded, and the repository has no
+  populated registry or decision-chain artifact. A decision requires eligible
+  evidence; the existing promotion gate remains unchanged.
+- **ROE feasibility (2026-10-22):** the calculator, event annotation,
+  multi-day block-bootstrap intervals and holdout-exclusion guard are reported
+  verified in the working tree. The code and related docs are **uncommitted
+  and undeployed**; this is an unconditional base-rate study, not evidence that
+  a rule has an edge. See `docs/quant-roe-feasibility-2026-10-22.md`.
+- **ACC-POC:** the plan is now preserved in
+  `docs/strategy-acc-poc-plan.md`, but remains **plan only**: no detector,
+  preregistration, or ACC-POC evidence exists. WP0 data feasibility and the
+  owner’s chart/definition inputs come before implementation. See the section
+  below.
 
 ### Proposed strategy study: accumulation → POC breakout → retest long (ACC-POC) — PLAN ONLY
 
@@ -923,7 +995,12 @@ spread snapshots beyond the inputs already archived.
 |  NOTE: no raw archive was ever rewritten, no holdout outcome was measured
 |  and no live service state was changed in this stage.
 
-## Handoff (committed-state reference — NOT part of the stage log above)
+## Handoff (historical committed-state snapshot as of 2026-10-15)
+
+This section records the earlier handoff only. Its “remaining” and “not
+complete” statements are superseded by the workstream status and reconciled
+outstanding-work section above; use it for the commit history, not current
+implementation status.
 
 ### Working-tree state
 - The following was a historical workspace snapshot recorded 2026-10-15,

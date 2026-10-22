@@ -1,5 +1,11 @@
 # Quant Analytics System Proposal
 
+> **Historical proposal — superseded for current requirements.** The owner-
+> directed bars-only overhaul is now specified in
+> [`quant-system-overhaul-plan.md`](quant-system-overhaul-plan.md). This file
+> is retained as background only; do not use its data sources, rule/candidate
+> flow, or validation design as instructions for the new engine.
+
 **Date:** 2026-10-13  
 **Status:** Proposal for review; no implementation authorized by this document  
 **Product focus:** Quantitative analysis of MEXC altcoin perpetuals, including the Russell Pate Fractal System as a named research model

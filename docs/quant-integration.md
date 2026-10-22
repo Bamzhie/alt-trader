@@ -1,5 +1,10 @@
 # Quant Integration (WS5 shadow path)
 
+> **Legacy integration record.** This describes the existing rule-based shadow
+> path, not the new quant-engine development phase. No legacy rule path should
+> emit candidates for the new engine. Current requirements are in
+> [`quant-system-overhaul-plan.md`](quant-system-overhaul-plan.md).
+
 Vendored research-and-shadow engine (`proto/quant/`, Task 1) wired into the
 local stream as a permanently-shadowed observer: a guarded daemon hook, a
 read-only service route plus a counts-only SSE kind, and a Research view.

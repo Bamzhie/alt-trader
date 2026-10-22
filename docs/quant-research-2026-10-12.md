@@ -1,5 +1,9 @@
 # Quant research result, 2026-10-12
 
+> **Historical research report.** This records the former rule-based study and
+> its cohort/protocol. It is not the benchmark or training dataset for the new
+> bars-only engine; see [`quant-system-overhaul-plan.md`](quant-system-overhaul-plan.md).
+
 **Question:** do volume-confirmed breakouts or BTC-residual volatility shocks
 (either direction) earn positive net R after realistic costs?
 **Answer on this archive: no.** No pre-declared configuration is positive.

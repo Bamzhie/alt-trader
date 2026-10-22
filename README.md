@@ -24,22 +24,24 @@ no order code path anywhere in this repository.
   Tauri desktop app. The scanner and API run independently under systemd;
   closing the window does not stop collection.
 
-Current status: the detector is **unvalidated** — scores measure abnormal
-activity, not edge. The quant-analytic system is the proposed next direction,
-not an implemented capability. Its current design is in
-`docs/quant-analytics-system-proposal.md`; it treats trading rules as support
-for quantitative analysis and requires backtests and hypothesis tests before
-promoting changes.
+Current status: the legacy detector is **unvalidated** — scores measure
+abnormal activity, not edge. Quant research capabilities exist, but the new
+owner-directed engine overhaul is not implemented. Its current requirements
+are in [`docs/quant-system-overhaul-plan.md`](docs/quant-system-overhaul-plan.md)
+and status in [`docs/roadmap-status.md`](docs/roadmap-status.md). During this
+development phase, no rules may emit candidates; only `data/bars/` is the new
+engine's historical input.
 
 ## Current project context
 
 - This README describes the implemented backend and desktop architecture.
 - [`app/README.md`](app/README.md) covers the React/Tauri frontend.
 - [`docs/superpowers/specs/2026-10-14-react-backend-launch-design.md`](docs/superpowers/specs/2026-10-14-react-backend-launch-design.md) records the systemd-owned backend and native desktop boundary.
-- [`docs/quant-analytics-system-proposal.md`](docs/quant-analytics-system-proposal.md) is the forward-looking quant research proposal; it is not implemented yet.
+- [`docs/quant-system-overhaul-plan.md`](docs/quant-system-overhaul-plan.md) is the authoritative target for the new bars-only quant engine.
+- [`docs/quant-analytics-system-proposal.md`](docs/quant-analytics-system-proposal.md) is an older proposal retained for history; it is superseded for current requirements.
 
-Older implementation plans, task reports, and superseded designs have been
-removed so they are not mistaken for current requirements.
+Historical implementation reports, hypotheses, and design records are retained
+as evidence; use the overhaul plan and current roadmap for active requirements.
 
 ## Requirements
 
