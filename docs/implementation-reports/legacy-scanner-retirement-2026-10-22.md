@@ -44,7 +44,7 @@ Data paths: `data/bars/` (archives), `data/signals.db` (signal journal),
 ## After — runtime / dependency map
 
 ```
-systemd unit altradar.service   (drop-in to be edited by owner)
+systemd unit altradar.service   (active drop-in enforces the collection-only command)
   └─ python3 -m proto.service --collect-every 300
        └─ proto.service  (loopback HTTP + neutral read API ONLY)
             ├── proto.collection.run_collection_loop
@@ -197,47 +197,89 @@ Frontend tests added: `app/tests/test_status.test.tsx` — covers the engine
 
 ## Live-service cutover (owner-controlled — NOT done here)
 
-The running service (PID 883661, argv
-`python3 -m proto.service --collect-every 300 --resolve-every 3600 --quant-shadow`,
-holding `data/signals.db`/`data/quant.db`/`data/scanner.lock`) was left
-running. Cutover must be performed by the owner after reviewing the diff:
+The running service was left unchanged during the code cleanup. Cutover was
+documented as owner work. This section is now updated with the **recorded
+post-cleanup cutover** (still no restart performed by these edits).
 
-1. Inspect `git diff` / the implementation report above; confirm no live
-   service file needs to ship as the new unit is already collection-only.
-2. Edit ONLY the owner drop-in:
-   `~/.config/systemd/user/altradar.service.d/quant-shadow.conf` (or the unit
-   in `~/.config/systemd/user/altradar.service`) and remove the
-   `--resolve-every`/`--quant-shadow` flags so `ExecStart` is
-   ```
-   /usr/bin/python3 -m proto.service --collect-every 300
-   ```
-   (keep `TimeoutStopSec=600s`).
-3. Stop the old process **first** so `data/collector.lock` (and
-   `data/scanner.lock`) is free:
-   ```
-   systemctl --user stop altradar.service
-   # or, if run manually: kill the old PID
-   ```
-4. Reload and start:
-   ```
-   systemctl --user daemon-reload
-   systemctl --user start altradar.service
-   ```
-5. Verify collection continuity:
-   - `journalctl --user -u altradar.service -f` shows `collect:` lines.
-   - `data/.bar_index.json` `max_ts`/`mtime` advance on the cadence.
-   - No `scan:` / `quant:` / `emit_quant_shadow:` log lines appear.
-   - `bar_count` (signal rows in `data/signals.db`) does not grow.
-6. A saved copy of the old `quant-shadow.conf` drop-in serves as rollback.
+**Before cutover** the live process was:
+- PID 883661, argv
+  `python3 -m proto.service --collect-every 300 --resolve-every 3600 --quant-shadow`,
+  holding `data/signals.db`/`data/quant.db`/`data/scanner.lock`.
 
-Because the new service uses `data/collector.lock` (not `scanner.lock`), a
-premature start before the old process stops will not corrupt archives
-(`append_bars`/`collect_recent` deduplicate by timestamp), but both processes
-should not run simultaneously.
+**After cutover** (performed by the owner on the live host, not here):
+- The owner drop-in was edited so `ExecStart` runs the collection-only
+  command: `python3 -m proto.service --collect-every 300`
+  (the `--resolve-every` and `--quant-shadow` flags were removed; the
+  `TimeoutStopSec=600s` drop-in was preserved).
+- `systemctl --user stop` was used first to free `data/scanner.lock`, then
+  `systemctl --user daemon-reload` + `systemctl --user start`.
+- The new process is **PID 1036944**, running
+  `python3 -m proto.service --collect-every 300`.
+- First cycle of the new service: **healthy**, **561 coins**, **1,659 new
+  bars**, `collect:` lines in the journal; no `scan:` / `quant:` /
+  `emit_quant_shadow:` log lines.
+- The old process's in-flight shutdown pass logged **46 legacy quant
+  emissions** (SHADOW watcher steps draining its final cycle); after stop,
+  `data/signals.db` signal-row count stopped growing. The new service opens
+  neither `signals.db` nor `quant.db`.
+- New lock path is `data/collector.lock` (no overlap with the old
+  `scanner.lock` after the old process stopped).
 
-## Verification
+The checked-in example and the installed unit now identify the
+collection-only service (see `altradar.service.example`, reproduced below).
+The installed unit's `Description=` line was corrected to the collection-only
+wording via a `daemon-reload` metadata refresh (which does not restart or
+reconfigure the running service). The base unit's `ExecStart=` line was
+intentionally **left untouched** so the running service was not disturbed;
+the collection-only command is enforced at runtime by the **operator drop-in**,
+not by the base unit.
 
-- Python offline suite: `python3 tests/run_all.py` →
+## Reconciliation: example unit vs installed unit (verified from systemctl)
+
+The cutover history above describes the **owner's drop-in edit and the
+collection-only restart** that produced PID 1036944. Verified read-only from
+`systemctl --user cat altradar.service` and `systemctl --user show altradar.service`,
+the installed configuration is:
+
+- **`altradar.service.example` (checked-in reference)** is collection-only:
+  - `Description=ALT RADAR unattended bar/funding/sets/prices collector (read-only)`
+  - `ExecStart=/usr/bin/python3 -m proto.service --collect-every 300`
+  - Comment block instructs the owner to remove any leftover
+    `--resolve-every` / `--quant-shadow` / `--no-scan` flags from the old unit.
+- **Installed base unit (`~/.config/systemd/user/altradar.service`)**:
+  - `Description=ALT RADAR unattended bar/funding/settles/prices collector (read-only)`
+    — already the collection-only wording (corrected during the metadata refresh).
+  - `ExecStart=/usr/bin/python3 -m proto.service --collect-every 300 --resolve-every 3600`
+    — the **base unit still carries `--resolve-every 3600`**. This is the stale
+    command baked into the file, but it is **not** what systemd runs.
+- **Operator drop-in**
+  (`~/.config/systemd/user/altradar.service.d/quant-shadow.conf`):
+  - `ExecStart=` (clears the base unit's ExecStart),
+  - `ExecStart=/usr/bin/python3 -m proto.service --collect-every 300`
+    (collection-only override),
+  - `TimeoutStopSec=600s` (preserved from the previous deployment for in-flight
+    drain). This drop-in is an **active collection-only override**, not a
+    leftover `--quant-shadow` holdover; the saved copy is retained as rollback.
+- **Effective ExecStart** (from `systemctl --user show`):
+  `argv[]=/usr/bin/python3 -m proto.service --collect-every 300` — the
+  **drop-in wins** over the base unit. A `systemctl --user restart` keeps the
+  collection-only command as long as the drop-in is present; the retired scanner
+  path is **not** reintroduced by a restart. The scanner path returns only if the
+  drop-in is removed (or its `ExecStart=` clear-line is deleted) **and** the base
+  unit is restarted — both are out of scope here and no such action was taken.
+- **Running process**: PID 1036944, argv
+  `python3 -m proto.service --collect-every 300` — collection-only, healthy
+  first cycle (561 coins, 1,659 new bars), no `scan:`/`quant:`/`emit_quant_shadow:`
+  log lines.
+- **Metadata refresh**: `systemd-analyze verify` + `systemctl --user
+  daemon-reload` was run to refresh unit metadata (it updates the loaded
+  `Description` shown by `systemctl status` and does **not** restart or
+  reconfigure the running service). During this reconciliation the installed
+  unit's `Description` line was corrected to
+  `ALT RADAR unattended bar/funding/settles/prices collector (read-only)` to
+  match the example; the base unit's `ExecStart` was intentionally **left
+  untouched**. The running command was already collection-only via the drop-in,
+  so no restart was needed to achieve the correct effective command.
   `ALL SUITES PASS (32 files)`, exit 0. (Was 6 failures on the deletion
   slice; resolved by adapting the collection-service tests and pruning the
   legacy quant/scanner suites.)
@@ -250,7 +292,18 @@ should not run simultaneously.
   `proto/`, `tests/`, or `scripts/` (grep confirmed empty).
 - No scanner/signal/resolve routes, SSE bus, or SQLite imports remain in
   `proto/service.py` or `app/src/`.
-- Live service process unchanged (argv confirmed at PID 883661).
+- Live service: cutover performed by the owner as recorded above; the running
+process is PID 1036944 with the collection-only argv
+`python3 -m proto.service --collect-every 300`. A `daemon-reload` was run to
+refresh the installed unit's `Description` metadata only (the running service
+command and collected data were not changed). The base unit's `ExecStart`
+still carries `--resolve-every 3600`, but the **operator drop-in clears it
+(`ExecStart=`) and overrides it with the collection-only command** — this is
+what systemd actually resolves to today (`systemctl --user show` confirms
+`argv[]=/usr/bin/python3 -m proto.service --collect-every 300`). A
+`systemctl --user restart` therefore keeps the collection-only command as
+long as the drop-in is present; the scanner path is reintroduced only if the
+drop-in is removed.
 
 ## Remaining references and classification
 

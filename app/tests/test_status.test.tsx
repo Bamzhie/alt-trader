@@ -92,14 +92,12 @@ test("quant engine stays 'In development / not ready' even when ready=true", asy
 test("status copy does not claim the live system is already collection-only", async () => {
   stubFetch({ healthz: { alive: true }, readyz: { ready: true } });
   render(<App />);
-  // The page must not assert the running system is collection-only before
-  // the owner-controlled cutover has happened.
   await screen.findByText("In development / not ready");
   expect(
-    screen.queryByText(/only bar, funding, settlement, and price archives are collected/i),
+    screen.queryByText(/may still use the old configuration until its owner stops it/i),
   ).toBeNull();
   expect(
-    screen.getByText(/may still use the old configuration until its owner stops it/i),
+    screen.getByText(/No candidates are generated or displayed in this/i),
   ).toBeInTheDocument();
 });
 

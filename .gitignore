@@ -15,6 +15,9 @@ app/node_modules/
 app/dist/
 app/src-tauri/target/
 app/src-tauri/gen/
+# frontend dev server cache (app/.gitignore also ignores, kept for clarity)
+.vite/
+node_modules/
 
 # superpowers plans are local scratch, never tracked
 docs/superpowers/plans/

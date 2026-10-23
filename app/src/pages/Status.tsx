@@ -100,10 +100,9 @@ export function StatusPage(props: StatusPageProps): ReactNode {
         <p className="mt-2 text-sm text-fg">
           In development. No candidates are generated or displayed in this
           phase — the legacy scanner and rule-based signal surfaces have been
-          removed from the new code. The currently running service on this
-          host may still use the old configuration until its owner stops it
-          and restarts with the collection-only command; that live cutover is
-          not performed by this app.
+          removed from the application and its service. The quant engine is
+          not ready; only bar, funding, settlement, and price archives are
+          collected, and real collector status is shown below.
         </p>
         {loadError && (
           <p className="mt-2 text-sm text-short">
