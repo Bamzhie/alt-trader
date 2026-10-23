@@ -11,12 +11,12 @@ import sqlite3
 from urllib.parse import quote
 
 DEFAULT_DB = os.path.join("data", "research", "altradar-research.db")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Tables whose rows must never change after insert. sync_run is deliberately
 # absent: a sync records its terminal status by update.
 APPEND_ONLY_TABLES = (
-    "source_snapshot", "bar", "bar_file", "universe", "sample",
+    "source_snapshot", "snapshot_file", "bar", "bar_file", "universe", "sample",
     "sample_coin", "backtest_run", "run_event",
 )
 
@@ -25,10 +25,22 @@ _PROTECTED_DATA_DIRS = ("bars", "prices")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS source_snapshot (
-  snapshot_id TEXT PRIMARY KEY, source_dir TEXT NOT NULL,
+  snapshot_id TEXT PRIMARY KEY, seq INTEGER NOT NULL UNIQUE,
+  source_dir TEXT NOT NULL,
   source_digest TEXT NOT NULL UNIQUE, coins INTEGER NOT NULL,
   bars INTEGER NOT NULL, min_ts INTEGER, max_ts INTEGER,
   created_ts INTEGER NOT NULL
+);
+
+-- One row per source file present in that snapshot. `coins` and `bars` on
+-- source_snapshot are the sums over this manifest, so retained mirror rows for
+-- a file that disappeared are not counted as part of a newer snapshot.
+CREATE TABLE IF NOT EXISTS snapshot_file (
+  snapshot_id TEXT NOT NULL REFERENCES source_snapshot(snapshot_id),
+  coin TEXT NOT NULL, sha256 TEXT NOT NULL, source_path TEXT NOT NULL,
+  size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, row_count INTEGER NOT NULL,
+  first_ts INTEGER, last_ts INTEGER,
+  PRIMARY KEY (snapshot_id, coin)
 );
 
 CREATE TABLE IF NOT EXISTS sync_run (
@@ -146,26 +158,47 @@ def connect(db_path=DEFAULT_DB, *, readonly=False):
     path = validate_db_path(db_path)
     if readonly:
         conn = sqlite3.connect(f"file:{quote(path)}?mode=ro", uri=True)
-        conn.execute("PRAGMA query_only=ON")
-        return conn
+        try:
+            conn.execute("PRAGMA query_only=ON")
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version != SCHEMA_VERSION:
+                # Inspection must not present another schema as current.
+                raise StoreError(
+                    f"unsupported research schema version {version} at {path}; "
+                    f"this build only reads v{SCHEMA_VERSION}")
+            return conn
+        except BaseException:
+            conn.close()
+            raise
 
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     conn = sqlite3.connect(path)
-    # DELETE (the SQLite default) keeps a ``mode=ro`` open free of writable
-    # ``-wal``/``-shm`` sidecars, so inspection works in a read-only directory.
-    conn.execute("PRAGMA journal_mode=DELETE")
-    conn.execute("PRAGMA foreign_keys=ON")
-    # REPLACE deletes conflicting rows; without recursive triggers that DELETE
-    # skips the append-only triggers and silently rewrites a frozen row.
-    conn.execute("PRAGMA recursive_triggers=ON")
-    conn.executescript(_SCHEMA)
-    for table in APPEND_ONLY_TABLES:
-        for action in ("UPDATE", "DELETE"):
-            conn.execute(
-                f"CREATE TRIGGER IF NOT EXISTS {table}_no_{action.lower()} "
-                f"BEFORE {action} ON {table} BEGIN "
-                f"SELECT RAISE(ABORT, 'append-only: {table}'); END"
-            )
-    conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-    conn.commit()
-    return conn
+    try:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version not in (0, SCHEMA_VERSION):
+            # No migration: refuse the file rather than rewrite research data.
+            raise StoreError(
+                f"unsupported research schema version {version} at {path}; "
+                f"this build only creates v{SCHEMA_VERSION}")
+        # DELETE (the SQLite default) keeps a ``mode=ro`` open free of writable
+        # ``-wal``/``-shm`` sidecars, so inspection works in a read-only directory.
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute("PRAGMA foreign_keys=ON")
+        # REPLACE deletes conflicting rows; without recursive triggers that
+        # DELETE skips the append-only triggers and silently rewrites a frozen
+        # row.
+        conn.execute("PRAGMA recursive_triggers=ON")
+        conn.executescript(_SCHEMA)
+        for table in APPEND_ONLY_TABLES:
+            for action in ("UPDATE", "DELETE"):
+                conn.execute(
+                    f"CREATE TRIGGER IF NOT EXISTS {table}_no_{action.lower()} "
+                    f"BEFORE {action} ON {table} BEGIN "
+                    f"SELECT RAISE(ABORT, 'append-only: {table}'); END"
+                )
+        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        conn.commit()
+        return conn
+    except BaseException:
+        conn.close()
+        raise

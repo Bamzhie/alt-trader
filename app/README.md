@@ -1,50 +1,37 @@
 # ALT RADAR — Dashboard (React frontend)
 
-Native desktop dashboard for the ALT RADAR MEXC perpetual-futures scanner.
+Native desktop status dashboard for the ALT RADAR data collection service.
 The production app is React + TypeScript + Tailwind inside a Tauri 2 window.
 It reads the persistent user service at `127.0.0.1:18741`; systemd owns the
-scanner/API lifecycle. Vite and the fixture mock remain available for UI
-development.
+backend lifecycle. Vite is available for UI development; there is no fixture
+mock for the live service.
 
 **Hard rules enforced everywhere in this app:**
 
-- READ-ONLY. No orders, no keys, no execution code. The only POSTs are the
-  four idempotent watcher commands (pause / resume / enable-trigger /
-  disable-trigger), and the Dashboard never issues them.
-- No confidence / probability / tier field anywhere. Evidence renders as
-  pass/fail criterion chips, never a numeric score.
-- No 1m timeframe. 5m / 15m / 1H / 4H / 1D only; `1m` is a `BAD_REQUEST`.
-- No leverage or liquidation field anywhere.
-- No TOTAL row in Market Overview — BTC + ETH only, per the mockup.
-- Timestamps are UTC-seconds integers, rendered as `YYYY-MM-DD HH:MM:SS UTC`.
-- Unavailable is an explicit `null` rendered as "unavailable" — never a zero
-  and never a guess. The 24h delta renders "unavailable" when no snapshot
-  sits at or before now-24h.
-- Wording is "eligible" / "evaluated" — never "scanned".
+- READ-ONLY. No orders, no keys, no execution code, no POST paths. The app
+  reads `/healthz`, `/readyz`, `/collector-health`, and `/bars`.
+- No candidate/score/tier/probability fields. The Status page states the
+  quant engine is in development and does not emit candidates.
+- No 1m timeframe. 5m / 15m / 1H / 4H / 1D only.
+- Unavailable is an explicit "unavailable" label — never a zero and never a
+  guess.
+- Wording is neutral collection terminology — never "scanned".
 - All colors come from `var(--*)` theme tokens (`src/theme.css`). No raw hex
-  in component code (the chart library's token fallbacks in
-  `CandleChart.tsx` are the only exception, and they resolve to real tokens
-  at runtime).
-- Tests mock `fetch` and stub no network — a loopback tripwire in
-  `tests/setup.ts` fails any test that touches a non-loopback host.
+  in component code.
+- Tests mock `fetch`; no network.
 - The backend binds `127.0.0.1` only. The native UI talks to that loopback
   service; it is not served as a browser page.
 
 ## Frontend development
 
 ```bash
-# Terminal 1 — the mock service (DEV ONLY, static fixtures, not live data)
-bash app/dev/serve.sh                 # 127.0.0.1:18741
-# PORT=18999 bash app/dev/serve.sh    # override the port
-
-# Terminal 2 — the frontend
 cd app
 npm install        # first time only
 npm run dev        # 127.0.0.1:5173, proxies /api -> 127.0.0.1:18741
 ```
 
-Open <http://127.0.0.1:5173/>. The Vite `/api` proxy targets the local mock
-or the real service.
+Open <http://127.0.0.1:5173/>. The Vite `/api` proxy targets the local
+service.
 
 **Development bearer token: `dev-token`** — used only in Vite development and
 removed from the optimized production bundle. The native app reads the
@@ -72,22 +59,23 @@ entry. On other Linux distributions, use `bash app/install-user-app.sh`
 from the repository root after building; it copies the native executable
 and icon into the user's local application directories, registers the
 application-menu entry, and updates `~/Desktop/ALT-RADAR.desktop`. Search
-the menu for **ALT RADAR** or **ALT Trader**.
+the menu for **ALT RADAR**.
 
 The app does not open a browser and does not start, stop, or supervise the
-backend. Its connection indicator tracks API liveness and the event stream;
-scanner first-sweep readiness is separate because saved data remains
-available during a scan. Chart requests return the latest 1000 closed bars
-by default (up to 5000), and recently requested bar files are cached in the
-service process until the collector updates them. If the service is down,
-the app shows systemd status and journal commands. The Rust bridge reads only
+backend. Its connection indicator tracks API liveness; the Status page shows
+real collector health only. Chart requests return the latest 1000 closed
+bars by default (up to 5000). If the service is down, the app shows
+systemd status and journal commands. The Rust bridge reads only
 `~/.config/altradar/service.token` and rejects files with group/world
 permissions or symlink targets.
 
 Other commands:
 
 ```bash
-npm run test        # vitest run — 177 tests, all mocked fetch
+npm run test        # vitest run — Status page tests, all mocked fetch
+npm run typecheck
+npm run lint
+```
 npm run typecheck   # tsc --noEmit
 npm run lint        # eslint --max-warnings 0
 npm run build       # tsc --noEmit && vite build -> dist/

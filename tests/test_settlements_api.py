@@ -126,6 +126,7 @@ def main():
     from proto import service as svc
     from proto import funding as fmod
     from proto import settlements as smod
+    from proto import collection
 
     tmp = tempfile.mkdtemp(prefix="svc-settlements-route-")
     try:
@@ -162,9 +163,10 @@ def main():
         fmod.append_funding(funding_dir, BIG_COIN,
                             [{"ts": 1000, "rate": 0.5, "cap": 0.002}])
 
-        server = svc.serve(0, TOKEN, lambda: {},
-                           store_path=db_path, data_dir=bars_dir,
-                           settlements_dir=st_dir)
+        server = svc.serve(0, TOKEN, collection.CollectionState(
+                               bars_dir, funding_dir, st_dir,
+                               os.path.join(tmp, "prices"), 300),
+                           data_dir=bars_dir, settlements_dir=st_dir)
         port = server.server_address[1]
         time.sleep(0.15)
         try:

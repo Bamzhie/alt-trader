@@ -230,7 +230,7 @@ def collect_coin(data_dir, series, coin, symbol, *, start, end, now=None):
 
 def _universe_coins():
     """Eligible coin->symbol map, same filter as the funding archive."""
-    from .scan import canon, is_synthetic
+    from .universe import canon, is_synthetic
     from . import mexc
     det = mexc.details()
     out = {}

@@ -1,36 +1,29 @@
 # ALT Trader (alt-radar)
 
-A read-only crypto perpetual-futures scanner and measurement system. It watches
-MEXC USDT perpetuals (with Bybit open-interest confirmation), surfaces early
-directional signals with full trade plans, and — most importantly — logs every
-signal, plan, and outcome so performance can be measured instead of guessed.
+A read-only crypto perpetual-futures data collection and archive system. It
+collects 5-minute MEXC USDT perpetual bars into `data/bars/` plus the
+funding, settlement, and price archives, and serves a neutral loopback API.
+It never places orders, never holds API keys, and never touches funds.
 
 **It never places orders, never holds API keys, never touches funds.** There is
 no order code path anywhere in this repository.
 
 ## What it does
 
-- **Scans** ~580 MEXC USDT perpetuals on a configurable cadence, scoring each
-  coin 0–100 on early abnormal buyer/seller activity (volume/price expansion,
-  order-book imbalance, OI/funding), with LONG / SHORT / NEUTRAL direction.
-- **Plans** every qualifying signal: direction, limit entry band, structural
-  stop, 2R/5R targets, computed leverage, size, costs, and warnings — for
-  human review only.
-- **Measures** everything it claims: signal journal, frozen plans, forward
-  outcomes (1h/4h/24h/7d), stop/TP1/TP2 first touches, and episode-based
-  cohorts with explicit denominators. No net-P&L is ever reported — the
-  system reports touch rates and hit rates, honestly labeled.
-- **Displays** live service data in a React dashboard packaged as a native
-  Tauri desktop app. The scanner and API run independently under systemd;
-  closing the window does not stop collection.
+- **Collects** 5-minute MEXC USDT perpetual bars into `data/bars/`, plus the
+  funding, settlement, and mark/index price archives that support research.
+  Collection runs continuously and unconditionally under systemd — it is not
+  gated on a scan.
+- **Serves** a neutral, read-only loopback API (`/healthz`, `/readyz`,
+  `/collector-health`, `/bars`, `/funding`, `/settlements`, `/prices`) for the
+  native dashboard.
+- **No scanning, scoring, planning, outcome resolution, or candidate
+  emission.** The legacy rule/scanner pipeline has been removed; the quant
+  engine is in development and does not yet generate or surface trading
+  candidates. This README describes the collection backend and the neutral
+  status dashboard.
 
-Current status: the legacy detector is **unvalidated** — scores measure
-abnormal activity, not edge. Quant research capabilities exist, but the new
-owner-directed engine overhaul is not implemented. Its current requirements
-are in [`docs/quant-system-overhaul-plan.md`](docs/quant-system-overhaul-plan.md)
-and status in [`docs/roadmap-status.md`](docs/roadmap-status.md). During this
-development phase, no rules may emit candidates; only `data/bars/` is the new
-engine's historical input.
+    not yet an implemented quant engine.
 
 ## Current project context
 
@@ -99,10 +92,11 @@ native launcher to the application menu and desktop:
 bash app/install-user-app.sh
 ```
 
-Search for **ALT RADAR** or **ALT Trader** in the application menu. The
-dashboard reads the existing local database and bar files. Its connection
-indicator reflects API reachability and the event stream; scanner first-sweep
-progress is separate, so a new scan does not hide data already on disk.
+Search for **ALT RADAR** in the application menu. The dashboard reads the
+local bar/archive data served by the collection-only service and shows a
+single Status page. The status page states explicitly that the quant engine
+is in development and does not emit candidates; no legacy signal surfaces are
+displayed.
 
 To troubleshoot the backend:
 
@@ -111,65 +105,48 @@ systemctl --user status altradar.service
 journalctl --user -u altradar.service -n 100 --no-pager
 ```
 
-### Legacy interfaces
+### Removed legacy interfaces
 
-The Python interfaces remain in the repository for existing users, but are
-no longer the supported desktop launch path:
+The scanner, signal journal, outcome resolution, and legacy UIs were retired
+as part of the quant-engine architecture cleanup. The following interfaces no
+longer exist:
 
 ```bash
-# Desktop GUI (tkinter)
-python3 -m gui
-
-# Desktop GUI (Qt, modern dark terminal look)
-.venv-qt/bin/python -m qtgui
-
-# Terminal UI (curses)
-python3 -m proto.app --stake 0.10 --coins 150 --interval 60
-
-# One-shot headless scan (cron/systemd/pipes)
-python3 -m proto.app --headless --iterations 1
-
-# 24h hit-rate report (flagged signals: won/lost/%won/avg + plan touches)
-python3 -m proto.report --hours 24
-python3 -m proto.report --top20 --days 7     # daily top-20 review
-
-# Unattended data collection (scan + 5m bars + hourly outcome resolution)
-python3 -m proto.daemon
-python3 -m proto.daemon --no-scan            # collector + resolver only
+# Removed: terminal scanner UI (proto.app), GUI/tkinter (gui), Qt GUI (qtgui)
+# Removed: headless scan + outcome resolver (proto.daemon), signal reports (proto.report)
 ```
 
 ### Tests
 
 ```bash
-python3 tests/run_all.py     # all 24 offline suites (no network needed)
-python3 tests/test_app.py    # live venue smoke test (needs internet)
+python3 tests/run_all.py     # offline suites (no network needed)
 ```
 
 ## How it works (30-second version)
 
-`systemd → proto.service (scanner + collector + resolver + API) → SQLite and bar archive → Tauri/React dashboard`
+`systemd → proto.service (bar/funding/settlement/price collector + neutral API) → bar archive + app/README.md`
 
-- `proto/service.py` runs as the systemd-owned backend and serves the local
-  authenticated HTTP/SSE API. It embeds the scanner, collector, and resolver.
-- `proto/scan.py`, `proto/scorer.py`, and `proto/planner.py` are the current
-  legacy signal pipeline. Its scores are not validated estimates of edge.
-- `proto/collector.py`, `proto/outcomes.py`, and `proto/measurement.py`
-  maintain bar history and outcome measurements used for research.
+- `proto/service.py` runs as the systemd-owned backend. It collects MEXC
+  bar/funding/settlement/price archives on a fixed cadence and serves the
+  loopback read API. It no longer scans, scores, resolves outcomes, or
+  emits candidates.
+- `proto/collection.py` and `proto/collector.py` perform bar collection;
+  `proto/funding.py`, `proto/settlements.py`, and `proto/prices.py`
+  maintain the archive feeds.
+- `proto/quant/` is an offline historical research toolkit (not wired into
+  the runtime); it has no live watch/emit command.
 - `app/` is the supported React frontend; `app/src-tauri/` packages it as a
-  native desktop window. It reads the existing service and does not own its
+  native desktop window. It reads the collection service and does not own its
   lifecycle.
-- The intended quant-first direction and staged validation requirements are
-  in `docs/quant-analytics-system-proposal.md`. That proposal is not yet an
-  implemented quant engine.
 
 ## Project layout
 
 ```
-proto/      scanner service, collectors, measurement, reports
+proto/      collection service, bar/funding/settlement/price collectors, universe
 app/        React frontend and Tauri native desktop shell
 tests/      offline test suites
-docs/       current quant-analysis proposal and systemd/Tauri design reference
-data/       SQLite DB + bar archive (created at runtime, git-ignored)
+docs/       quant-engine overhaul plan and design references
+data/       bar archive + SQLite DBs (created at runtime, git-ignored)
 ```
 
 ## Contributing

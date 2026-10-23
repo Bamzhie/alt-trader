@@ -261,59 +261,6 @@ try:
 finally:
     smod.collect_recent = real_recent
 
-from proto import daemon as dmod
-from proto import collector as colmod
-from proto import funding as fmod
-from proto import prices as pmod
-
-real_collect = colmod.collect_full_universe
-real_maybe = smod.maybe_collect
-real_app = dmod.App
-real_funding = fmod.collect_funding
-real_prices = pmod.maybe_collect
-sweeps = []
-colmod.collect_full_universe = lambda *a, **k: {}
-fmod.collect_funding = lambda *a, **k: {}
-# The daemon loop also consults the mark/index price hook on the collect
-# cycle; isolate it too so this test never touches a venue or the repo's
-# real data/prices dir.
-pmod.maybe_collect = lambda *a, **k: {}
-
-
-class _FakeApp:
-    def __init__(self, args):
-        pass
-
-
-dmod.App = _FakeApp
-boom_calls = []
-
-
-def _boom_maybe(*a, **k):
-    boom_calls.append(a)
-    raise RuntimeError("settlements boom")
-
-
-smod.maybe_collect = _boom_maybe
-try:
-    args = SimpleNamespace(stake=0.10, coins=150, interval=5,
-                           db=os.path.join(tmp7, "s.db"),
-                           log_threshold=24.0, use_v3=False,
-                           collect_every=0, resolve_every=10 ** 12,
-                           measure_every=10 ** 12, iterations=1,
-                           no_scan=True, quant_shadow=False)
-    dmod.run_daemon_loop(args, on_sweep=lambda e, v, **k: sweeps.append((e, v)))
-    check("daemon loop consults settlements collect",
-          boom_calls != [], "maybe_collect never called")
-    check("settlements failure never fails the sweep", sweeps != [],
-          str(sweeps))
-finally:
-    colmod.collect_full_universe = real_collect
-    smod.maybe_collect = real_maybe
-    dmod.App = real_app
-    fmod.collect_funding = real_funding
-    pmod.maybe_collect = real_prices
-
 print("\n=== case 8: bar-quality audit covers the settle grid ===")
 from proto.bar_quality import audit_archive_file
 tmp8 = tempfile.mkdtemp(prefix="settle-audit-")

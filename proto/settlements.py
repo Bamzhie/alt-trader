@@ -310,7 +310,7 @@ def collect_coin(data_dir, coin, symbol, max_pages=10):
 
 def _universe_coins():
     """Eligible coin->symbol map, same filter as the funding archive."""
-    from .scan import canon, is_synthetic
+    from .universe import canon, is_synthetic
     from . import mexc
     det = mexc.details()
     out = {}

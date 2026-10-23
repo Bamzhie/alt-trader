@@ -54,8 +54,8 @@ db_path = os.path.join(tmp, "research.db")
 
 print("=== seed minimal snapshot/universe/sample ===")
 conn = store.connect(db_path)
-conn.execute("INSERT INTO source_snapshot VALUES (?,?,?,?,?,?,?,?)",
-             ("snap-a", "data/bars", "digest-a", 2, 3, 1, 2, 100))
+conn.execute("INSERT INTO source_snapshot VALUES (?,?,?,?,?,?,?,?,?)",
+             ("snap-a", 1, "data/bars", "digest-a", 2, 3, 1, 2, 100))
 conn.execute("INSERT INTO universe VALUES (?,?,?,?,?)",
              ("uni-a", "test", "{}", "def-sha", 100))
 conn.execute("INSERT INTO sample VALUES (?,?,?,?,?,?,?,?,?)",
@@ -122,8 +122,11 @@ check("latest status completed", done["status"] == "completed")
 check("two events retained", len(done["events"]) == 2)
 check("finished ts not before start",
       done["events"][1]["ts"] >= done["created_ts"])
-check("completed benchmark eligible",
-      runs.benchmark_eligible(db_path, run_id) is True)
+check("completed benchmark is gated by sampling design",
+      runs.benchmark_eligible(db_path, run_id) is False)
+gate = runs.eligibility(db_path, run_id)
+check("eligibility reports the sampling reason",
+      gate["eligible"] is False and "sampling design" in gate["reason"], gate)
 
 print("\n=== refusal rules ===")
 raises_run_error("double finish refused",
@@ -199,8 +202,8 @@ check("refused append left the chain intact",
 print("\n=== eligibility rejects a chain containing a failure ===")
 tampered = os.path.join(tmp, "tampered.db")
 conn = store.connect(tampered)
-conn.execute("INSERT INTO source_snapshot VALUES (?,?,?,?,?,?,?,?)",
-             ("snap-t", "data/bars", "digest-t", 1, 1, 1, 1, 1))
+conn.execute("INSERT INTO source_snapshot VALUES (?,?,?,?,?,?,?,?,?)",
+             ("snap-t", 1, "data/bars", "digest-t", 1, 1, 1, 1, 1))
 conn.execute("INSERT INTO universe VALUES (?,?,?,?,?)",
              ("uni-t", "test", "{}", "def-t", 1))
 conn.execute("INSERT INTO sample VALUES (?,?,?,?,?,?,?,?,?)",

@@ -1,15 +1,22 @@
 [Unit]
-Description=ALT RADAR unattended collector+resolver (read-only, no orders)
+Description=ALT RADAR unattended bar/funding/sets/prices collector (read-only)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-# Edit both paths below to your checkout location and Python:
+# Edit the WorkingDirectory path below to your checkout location.
+# This is the collection-only service: bars + archive feeds + neutral
+# read API. It does NOT scan, score, resolve outcomes, or emit candidates.
+# During the cutover from the legacy scanner service, REMOVE any
+# --resolve-every / --quant-shadow / --no-scan flags left over from the
+# old unit so this process does not inherit a refused lock.
 WorkingDirectory=/home/YOU/alt-radar
-ExecStart=/usr/bin/python3 -m proto.service --collect-every 300 --resolve-every 3600
+ExecStart=/usr/bin/python3 -m proto.service --collect-every 300
 Restart=always
 RestartSec=60
+# Let an in-flight cycle drain before systemd sends SIGKILL.
+TimeoutStopSec=600s
 
 [Install]
 WantedBy=default.target

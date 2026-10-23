@@ -135,6 +135,7 @@ def main():
     from proto import funding as fmod
     from proto import settlements as smod
     from proto import prices as pmod
+    from proto import collection
 
     tmp = tempfile.mkdtemp(prefix="svc-prices-route-")
     try:
@@ -180,8 +181,9 @@ def main():
                                 [{"settle_ts": 28800, "settled_rate": 0.0001,
                                   "cycle_hours": 8}])
 
-        server = svc.serve(0, TOKEN, lambda: {},
-                           store_path=db_path, data_dir=bars_dir)
+        server = svc.serve(0, TOKEN, collection.CollectionState(
+                               bars_dir, funding_dir, st_dir, prices_root,
+                               300), data_dir=bars_dir)
         port = server.server_address[1]
         time.sleep(0.15)
         try:

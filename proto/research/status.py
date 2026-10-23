@@ -6,7 +6,7 @@ and registry contain - counts and identifiers - never a benchmark result:
 this slice deliberately computes no strategy number.
 """
 
-from . import runs, store
+from . import runs, store, universe
 
 _STATUSES = ("started",) + runs.TERMINAL_STATUSES
 
@@ -71,17 +71,30 @@ def db_status(db_path=store.DEFAULT_DB):
                 "min_ts": min_ts,
                 "max_ts": max_ts,
             },
-            "latest_snapshot": _one(
-                conn,
-                "SELECT * FROM source_snapshot "
-                "ORDER BY created_ts DESC, snapshot_id DESC LIMIT 1"),
+            "latest_snapshot": (
+                _one(conn,
+                     "SELECT s.* FROM source_snapshot s JOIN sync_run y "
+                     "ON y.snapshot_id = s.snapshot_id "
+                     "WHERE y.status = 'completed' "
+                     # Insertion order breaks same-second ties and, unlike
+                     # created_ts, follows a safe replay of an older snapshot.
+                     "ORDER BY y.rowid DESC LIMIT 1")
+                or _one(conn,
+                        "SELECT * FROM source_snapshot "
+                        "ORDER BY seq DESC LIMIT 1")),
             "latest_sync": _one(
                 conn,
                 "SELECT * FROM sync_run "
-                "ORDER BY started_ts DESC, sync_id DESC LIMIT 1"),
+                "ORDER BY rowid DESC LIMIT 1"),
             "runs": counts,
+            # Raw count of completed benchmark attempts. It says nothing about
+            # eligibility: the sampling gate below currently closes all of them.
             "benchmark_completed": conn.execute(
                 _BENCHMARK_COMPLETED).fetchone()[0],
+            "benchmark_eligible": (
+                0 if universe.SAMPLE_DESIGN_BLOCKED is not None else
+                conn.execute(_BENCHMARK_COMPLETED).fetchone()[0]),
+            "benchmark_gate": universe.SAMPLE_DESIGN_BLOCKED,
             "recent_runs": _rows(conn, _RECENT_RUNS),
         }
     finally:

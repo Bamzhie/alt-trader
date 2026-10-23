@@ -103,7 +103,7 @@ def collect_funding(data_dir=FUNDING_DIR, now=None):
     (the daemon loop) report it without failing their own sweep.
     """
     from . import mexc
-    from .scan import canon, is_synthetic
+    from .universe import canon, is_synthetic
 
     tk = mexc.tickers()
     det = mexc.details()

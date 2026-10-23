@@ -228,8 +228,6 @@ check("JSON serialization with allow_nan=False succeeds on all rows",
 # Finding 1: daemon + /settlements route share the configured settlements_dir
 # ---------------------------------------------------------------------------
 print("\n=== Finding 1: daemon and route share settlements_dir ===")
-from types import SimpleNamespace
-from proto import daemon as dmod
 from proto import service as svc
 
 # The daemon loop must pass settlements_dir to maybe_collect when configured.
@@ -260,33 +258,12 @@ try:
 finally:
     smod.collect_recent = real_recent
 
-# The daemon parser must accept --settlements-dir.
-parser = dmod.build_parser()
-parsed = parser.parse_args(["--settlements-dir", shared_dir, "--no-scan",
-                            "--iterations", "1"])
-check("daemon parser accepts --settlements-dir",
-      parsed.settlements_dir == shared_dir, str(parsed.settlements_dir))
-
-# The service parser (superset) must also accept it.
-svc_parser = svc.build_service_parser()
-svc_parsed = svc_parser.parse_args(["--settlements-dir", shared_dir, "--no-scan",
-                                    "--iterations", "1", "--port", "0",
-                                    "--db", "/tmp/svc-test.db"])
+# The collection-only service parser must accept --settlements-dir.
+svc_parser = svc.build_parser()
+svc_parsed = svc_parser.parse_args(["--settlements-dir", shared_dir,
+                                    "--port", "0"])
 check("service parser accepts --settlements-dir",
       svc_parsed.settlements_dir == shared_dir, str(svc_parsed.settlements_dir))
-
-# _daemon_argv_for must forward settlements_dir as --settlements-dir.
-argv = svc._daemon_argv_for(svc_parsed)
-check("_daemon_argv_for forwards --settlements-dir",
-      "--settlements-dir" in argv and shared_dir in argv, str(argv))
-
-# When settlements_dir is None (default), the daemon loop falls back to
-# the module default SETTLEMENTS_DIR, and the route falls back to the
-# sibling-default — both resolve to data/funding_settlements.
-default_parsed = parser.parse_args(["--no-scan", "--iterations", "1"])
-check("daemon parser defaults --settlements-dir to None",
-      default_parsed.settlements_dir is None,
-      str(default_parsed.settlements_dir))
 
 # The route's default sibling matches the module's SETTLEMENTS_DIR when
 # data_dir is the default data/bars.
@@ -298,23 +275,12 @@ check("route default sibling == module SETTLEMENTS_DIR for default data_dir",
 
 # NEW: when --data-dir is custom and --settlements-dir is omitted, the
 # service's _resolve_archive_dir must resolve them to the SAME sibling dir
-# so the daemon collector and the route agree.
+# so the collection loop and the route agree.
 custom_bars = os.path.join(tmp6, "custom_bars")
 resolved = svc._resolve_archive_dir(None, custom_bars, "funding_settlements")
 expected = os.path.join(os.path.dirname(custom_bars), "funding_settlements")
 check("custom --data-dir + no --settlements-dir -> sibling resolved",
       resolved == expected, f"{resolved} vs {expected}")
-
-# The route's _make_handler must also resolve to the same dir.
-handler_cls = svc._make_handler("tok", lambda: {},
-                                store_path=os.path.join(tmp6, "s.db"),
-                                data_dir=custom_bars)
-# _make_handler resolves at class-body creation time; cfg_settlements is
-# captured in the Handler closure path. We verify via the same helper.
-check("_make_handler uses _resolve_archive_dir for settlements",
-      svc._resolve_archive_dir(None, custom_bars,
-                               "funding_settlements") == expected,
-      f"resolved={resolved}")
 
 
 print()

@@ -176,7 +176,7 @@ view = ok_json("status", "--db", db)
 after = fingerprint(db)
 check("status leaves the database bytes untouched", before == after,
       f"{before} -> {after}")
-check("schema_version", view.get("schema_version") == 1,
+check("schema_version", view.get("schema_version") == 2,
       view.get("schema_version"))
 check("db path reported", os.path.realpath(view.get("db", "")) ==
       os.path.realpath(db), view.get("db"))
@@ -201,6 +201,22 @@ check("empty run counts",
 check("benchmark_completed starts at 0", view.get("benchmark_completed") == 0,
       view.get("benchmark_completed"))
 check("recent_runs empty", view.get("recent_runs") == [], view.get("recent_runs"))
+
+print("\n=== snapshot show exposes the file manifest ===")
+snap_view = ok_json("snapshot", "show", "--snapshot",
+                    synced["snapshot_id"], "--db", db)
+check("manifest coins", [f.get("coin") for f in snap_view.get("files", [])]
+      == ["BTC", "ETH"], snap_view.get("files"))
+check("manifest digests are file versions",
+      all(len(f.get("sha256", "")) == 64 for f in snap_view.get("files", [])),
+      snap_view.get("files"))
+check("manifest rows sum to the snapshot", sum(
+    f.get("row_count", 0) for f in snap_view.get("files", [])) == 5,
+    snap_view.get("files"))
+with_coin = ok_json("snapshot", "show", "--snapshot",
+                    synced["snapshot_id"], "--coin", "BTC", "--db", db)
+check("snapshot bars for one coin", len(with_coin.get("coin_bars") or []) == 3,
+      with_coin.get("coin_bars"))
 
 print("\n=== sample create is idempotent ===")
 universe_file = write_json(os.path.join(tmp, "universe.json"), {
@@ -299,8 +315,8 @@ check("status filter", [r.get("run_id") for r in only_failed.get("runs", [])]
 by_kind = ok_json("run", "list", "--kind", "benchmark", "--db", db)
 check("kind filter", {r.get("run_id") for r in by_kind.get("runs", [])}
       == {run_id, failed_id, interrupted_id}, by_kind)
-check("completed benchmark eligible",
-      runs.benchmark_eligible(db, run_id) is True)
+check("completed benchmark is gated by sampling design",
+      runs.benchmark_eligible(db, run_id) is False)
 check("failed benchmark not eligible",
       runs.benchmark_eligible(db, failed_id) is False)
 check("interrupted benchmark not eligible",
@@ -311,8 +327,13 @@ view = ok_json("status", "--db", db)
 check("run counts by status",
       view.get("runs") == {"started": 0, "completed": 1, "failed": 1,
                            "interrupted": 1}, view.get("runs"))
-check("benchmark_completed counts only the completed run",
+check("benchmark_completed counts completed attempts",
       view.get("benchmark_completed") == 1, view.get("benchmark_completed"))
+check("benchmark_eligible stays 0 behind the sampling gate",
+      view.get("benchmark_eligible") == 0, view.get("benchmark_eligible"))
+check("benchmark_gate names the missing design",
+      "sampling design" in str(view.get("benchmark_gate")),
+      view.get("benchmark_gate"))
 check("recent_runs lists every run",
       {r.get("run_id") for r in view.get("recent_runs", [])}
       == {run_id, failed_id, interrupted_id}, view.get("recent_runs"))
@@ -320,8 +341,8 @@ check("recent_runs lists every run",
 print("\n=== status tolerates a run with no event ===")
 orphan_db = os.path.join(tmp, "orphan.db")
 conn = store.connect(orphan_db)
-conn.execute("INSERT INTO source_snapshot VALUES (?,?,?,?,?,?,?,?)",
-             ("snap-o", "data/bars", "digest-o", 1, 1, 0, 0, 1))
+conn.execute("INSERT INTO source_snapshot VALUES (?,?,?,?,?,?,?,?,?)",
+             ("snap-o", 1, "data/bars", "digest-o", 1, 1, 0, 0, 1))
 conn.execute("INSERT INTO universe VALUES (?,?,?,?,?)",
              ("uni-o", "test", "{}", "def-o", 1))
 conn.execute("INSERT INTO sample VALUES (?,?,?,?,?,?,?,?,?)",
@@ -346,6 +367,8 @@ dir_before = directory_state(tmp)
 db_before = fingerprint(db)
 for label, args in (
     ("status", ("status", "--db", db)),
+    ("snapshot show", ("snapshot", "show", "--snapshot",
+                       synced["snapshot_id"], "--db", db)),
     ("run show", ("run", "show", "--run-id", run_id, "--db", db)),
     ("run list", ("run", "list", "--db", db)),
 ):
@@ -365,7 +388,7 @@ os.chmod(ro_dir, 0o500)
 try:
     view = ok_json("status", "--db", ro_db)
     check("status succeeds in a read-only directory",
-          view.get("schema_version") == 1, view)
+          view.get("schema_version") == 2, view)
     check("read-only directory keeps only the database",
           sorted(os.listdir(ro_dir)) == ["research.db"], os.listdir(ro_dir))
 finally:
@@ -373,6 +396,7 @@ finally:
 
 print("\n=== read-only commands never create a database ===")
 for label, args in (
+    ("snapshot show", ("snapshot", "show", "--snapshot", "snap-missing")),
     ("run show", ("run", "show", "--run-id", "run-missing")),
     ("run list", ("run", "list")),
 ):

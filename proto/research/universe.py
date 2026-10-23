@@ -16,6 +16,17 @@ from . import store
 
 SAMPLE_METHOD = "sha256-rank-v1"
 
+# Benchmark eligibility is gated on sampling design, not only reproducibility.
+# `sha256-rank-v1` gives a reproducible draw from a predeclared universe; it
+# does not make that universe, or the draw, representative. The 75% benchmark
+# stays closed until a reviewed design covers liquidity, volatility and
+# market-condition coverage and replaces this reason with None.
+SAMPLE_DESIGN_BLOCKED = (
+    "blocked: no approved sampling design for liquidity, volatility, or "
+    "market-condition coverage; sha256-rank-v1 is reproducible but not "
+    "representative"
+)
+
 _COIN_RE = re.compile(r"[A-Z0-9]+")
 
 class SamplingError(Exception):

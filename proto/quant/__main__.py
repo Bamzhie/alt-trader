@@ -1,10 +1,7 @@
 """CLI:  python3 -m proto.quant <command>
 
   research   chronological research harness (dev -> validation -> holdout-once)
-  watch      run the watcher on collected bars (SHADOW events only)
-  report     measurement report for logged events
-  status     watcher / pause status
-  pause / resume   manual global pause flag
+  report     historical measurement report for logged quant events
   gates      evaluate promotion for the config research.json selected
   roe        ROE feasibility: the leverage a target ROE needs, the stop's
              cost on margin and the measured base rates (read-only, pre-
@@ -14,6 +11,9 @@
   champions  champion/candidate registry and the matched comparison
              (list | compare -- it cannot promote and never writes a
              decision)
+
+This is an offline historical research toolkit. It is not wired into the
+live service and has no live watch/emit command.
 """
 import argparse
 import json
@@ -105,16 +105,8 @@ def main(argv=None):
     r.add_argument("--coins", default=None)
     r.add_argument("--holdout", action="store_true")
 
-    w = sub.add_parser("watch")
-    w.add_argument("--data", default="data/bars")
-    w.add_argument("--db", default="data/quant.db")
-    w.add_argument("--every", type=int, default=300)
-    w.add_argument("--once", action="store_true")
-    w.add_argument("--equity", type=float, default=1000.0)
-
-    for name in ("report", "status", "pause", "resume"):
-        p = sub.add_parser(name)
-        p.add_argument("--db", default="data/quant.db")
+    p = sub.add_parser("report")
+    p.add_argument("--db", default="data/quant.db")
 
     g = sub.add_parser("gates")
     g.add_argument("--research", default="data/quant_research/research.json")
@@ -185,40 +177,12 @@ def main(argv=None):
             "--data", a.data, "--out", a.out,
             *(("--coins", a.coins) if a.coins else ()),
             *(("--holdout",) if a.holdout else ())) if x])
-    if a.cmd == "watch":
-        from .engine import Watcher
-        st = _store(a.db)
-        wt = Watcher(a.data, st, equity=a.equity)
-        try:
-            while True:
-                res = wt.step()
-                print(time.strftime("%H:%M:%S"), json.dumps(res), flush=True)
-                if a.once:
-                    break
-                time.sleep(a.every)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            st.close()
-        return 0
-    if a.cmd in ("report", "status", "pause", "resume"):
+    if a.cmd == "report":
         st = _store(a.db)
         try:
-            if a.cmd == "report":
-                from . import report
-                promo_dir = os.path.dirname(a.db) or "."
-                print(report.render(report.build(st, DEFAULT, promo_dir)))
-            elif a.cmd == "status":
-                print(json.dumps({"config_hash": DEFAULT.config_hash(),
-                                  "pause": st.get_meta("pause"),
-                                  "auto_pause": st.get_meta("auto_pause"),
-                                  "auto_pause_reason": st.get_meta("auto_pause_reason"),
-                                  "events": st.conn.execute(
-                                      "SELECT COUNT(*) FROM quant_event").fetchone()[0]},
-                                 indent=2))
-            else:
-                st.set_meta("pause", "1" if a.cmd == "pause" else "0")
-                print("global pause", "ON" if a.cmd == "pause" else "OFF")
+            from . import report
+            promo_dir = os.path.dirname(a.db) or "."
+            print(report.render(report.build(st, DEFAULT, promo_dir)))
         finally:
             st.close()
         return 0

@@ -2,6 +2,7 @@
 
   sync            mirror data/bars into the research database (reads the
                   source, never writes it)
+  snapshot show   read-only snapshot row plus its exact file manifest
   status          read-only counts, latest snapshot/sync, run summary
   sample create   record a frozen deterministic sample from a universe file
   run start       insert a run identity and its `started` event before any
@@ -63,6 +64,16 @@ def _parser():
     _database(p)
 
     _database(sub.add_parser("status", help="read-only database summary"))
+
+    p = sub.add_parser("snapshot", help="reconstructable source snapshots")
+    snapshot_sub = p.add_subparsers(dest="snapshot_cmd", required=True)
+    show_snapshot = snapshot_sub.add_parser(
+        "show", help="snapshot row and file manifest (read-only)")
+    show_snapshot.add_argument("--snapshot", required=True)
+    show_snapshot.add_argument(
+        "--coin", default=None,
+        help="also return the exact bars this snapshot used for one coin")
+    _database(show_snapshot)
 
     p = sub.add_parser("sample", help="frozen universe samples")
     sample_sub = p.add_subparsers(dest="sample_cmd", required=True)
@@ -133,6 +144,11 @@ def main(argv=None):
     try:
         if a.cmd == "sync":
             result = sync.sync_bars(a.source, a.db)
+        elif a.cmd == "snapshot":
+            result = sync.load_snapshot(a.db, a.snapshot)
+            if a.coin is not None:
+                result["coin_bars"] = sync.load_snapshot_bars(
+                    a.db, a.snapshot, a.coin)
         elif a.cmd == "status":
             result = status.db_status(a.db)
         elif a.cmd == "sample":

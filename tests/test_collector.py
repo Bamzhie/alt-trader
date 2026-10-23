@@ -69,12 +69,12 @@ def test_collect_full_universe_covers_every_coin():
     budget=None (uncapped), bars fetched and persisted per coin."""
     print("=== test_collect_full_universe_covers_every_coin ===")
     from proto import mexc as mexcmod
-    from proto import scan as scanmod
+    from proto import universe as unimod
     N = 200                      # venue universe; the scan rotation caps at 150
     tdir = tempfile.mkdtemp()
     uni_calls = []
     started = threading.Barrier(8)
-    orig = (scanmod.build_universe, mexcmod.klines)
+    orig = (unimod.build_universe, mexcmod.klines)
 
     def fake_build_universe(stake, budget=150, store=None):
         uni_calls.append((stake, budget))
@@ -85,12 +85,12 @@ def test_collect_full_universe_covers_every_coin():
         return [{"ts": 1700000000, "o": 1.0, "h": 1.1, "l": 0.9, "c": 1.0,
                  "vol": 10.0, "amount": 10.0}]
 
-    scanmod.build_universe = fake_build_universe
+    unimod.build_universe = fake_build_universe
     mexcmod.klines = fake_klines
     try:
         counts = col.collect_full_universe(tdir, limit_per_coin=1)
     finally:
-        scanmod.build_universe, mexcmod.klines = orig
+        unimod.build_universe, mexcmod.klines = orig
 
     check("build_universe called uncapped: stake=inf, budget=None",
           uni_calls == [(float("inf"), None)], str(uni_calls))

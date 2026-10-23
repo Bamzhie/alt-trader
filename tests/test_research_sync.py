@@ -18,6 +18,8 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from proto.research import store
+from proto.research import status
+from proto.research import sync
 from proto.research.sync import SyncError, sync_bars
 from proto.quant.bars import load_coin
 
@@ -477,6 +479,181 @@ bare_db = os.path.join(tmp, "bad-bare", "research.db")
 msg = raises_sync(os.path.join(tmp, "data"), bare_db)
 check("refuse a bare data/ source", msg is not None, "allowed")
 check("bare data/ source creates no db", not os.path.exists(bare_db))
+
+print("\n=== snapshots are reconstructable after later syncs ===")
+hist = new_dir(tmp, "history")
+a_path = os.path.join(hist, "AAA.csv.gz")
+b_path = os.path.join(hist, "BBB.csv.gz")
+a_old = bars(100.0)
+write_gz(a_path, [a_old])
+write_gz(b_path, [bars(50.0)])
+hist_db = os.path.join(tmp, "db-history", "research.db")
+s1 = sync_bars(hist, hist_db)
+snap1 = sync.load_snapshot(hist_db, s1["snapshot_id"])
+check("snapshot 1 seq", snap1["seq"] == 1, str(snap1["seq"]))
+check("snapshot 1 manifest coins", [f["coin"] for f in snap1["files"]]
+      == ["AAA", "BBB"], str(snap1["files"]))
+check("snapshot 1 manifest digests",
+      all(f["sha256"] == file_sha(os.path.join(hist, f["coin"] + ".csv.gz"))
+          for f in snap1["files"]), str(snap1["files"]))
+check("snapshot 1 counts manifest rows", snap1["bars"] == 6, str(snap1["bars"]))
+check("snapshot 1 bars for AAA", sync.load_snapshot_bars(
+    hist_db, s1["snapshot_id"], "AAA") == a_old)
+
+# AAA grows, CCC appears, BBB disappears.
+a_new = bars(100.0, n=5)
+write_gz(a_path, [a_new])
+write_gz(os.path.join(hist, "CCC.csv.gz"), [bars(200.0)])
+os.remove(b_path)
+s2 = sync_bars(hist, hist_db)
+snap2 = sync.load_snapshot(hist_db, s2["snapshot_id"])
+check("snapshot 2 seq", snap2["seq"] == 2, str(snap2["seq"]))
+check("snapshot 2 excludes the disappeared file",
+      [f["coin"] for f in snap2["files"]] == ["AAA", "CCC"], str(snap2["files"]))
+check("snapshot 2 bars count present files only", snap2["bars"] == 8,
+      str(snap2["bars"]))
+check("snapshot 2 manifest has AAA's new version",
+      [f["sha256"] for f in snap2["files"] if f["coin"] == "AAA"]
+      == [file_sha(a_path)], str(snap2["files"]))
+check("snapshot 1 manifest is unchanged",
+      sync.load_snapshot(hist_db, s1["snapshot_id"])["files"] == snap1["files"])
+check("snapshot 1 still reconstructs the old AAA rows",
+      sync.load_snapshot_bars(hist_db, s1["snapshot_id"], "AAA") == a_old)
+check("snapshot 1 still reconstructs the removed BBB rows",
+      sync.load_snapshot_bars(hist_db, s1["snapshot_id"], "BBB") == bars(50.0))
+check("snapshot 2 excludes retained BBB bars", not any(
+    f["coin"] == "BBB" for f in snap2["files"]))
+try:
+    sync.load_snapshot_bars(hist_db, s2["snapshot_id"], "BBB")
+    check("removed coin is not part of snapshot 2", False, "returned rows")
+except sync.SyncError:
+    check("removed coin is not part of snapshot 2", True)
+check("snapshot 2 has AAA's grown version",
+      sync.load_snapshot_bars(hist_db, s2["snapshot_id"], "AAA") == a_new)
+check("mirror still retains BBB as evidence",
+      query(hist_db, "SELECT COUNT(*) FROM bar WHERE coin = 'BBB'")[0][0] == 3)
+replay = sync_bars(hist, hist_db)
+check("replay reuses snapshot 2", replay["snapshot_id"] == s2["snapshot_id"])
+check("replay does not duplicate the manifest",
+      query(hist_db, "SELECT COUNT(*) FROM snapshot_file WHERE snapshot_id = ?",
+            (s2["snapshot_id"],))[0][0] == 2)
+try:
+    sync.load_snapshot(hist_db, "snap-missing")
+    check("unknown snapshot refused", False, "returned")
+except sync.SyncError:
+    check("unknown snapshot refused", True)
+
+print("\n=== a source that loses mirrored rows is refused ===")
+write_gz(a_path, [bars(100.0, n=2)])  # drops previously mirrored timestamps
+before_rows = query(hist_db, "SELECT COUNT(*) FROM bar")
+before_snaps = query(hist_db, "SELECT COUNT(*) FROM source_snapshot")
+msg = raises_sync(hist, hist_db)
+check("dropped rows raise", msg is not None, "allowed")
+check("dropped rows do not change the mirror",
+      query(hist_db, "SELECT COUNT(*) FROM bar") == before_rows)
+check("dropped rows do not add a snapshot",
+      query(hist_db, "SELECT COUNT(*) FROM source_snapshot") == before_snaps)
+
+print("\n=== a shrunken file version is refused ===")
+write_gz(a_path, [bars(100.0, n=5)])
+sync_bars(hist, hist_db)
+write_gz(a_path, [bars(100.0, n=5)[:-1]])  # subsets the current version
+before_snaps = query(hist_db, "SELECT COUNT(*) FROM source_snapshot")
+msg = raises_sync(hist, hist_db)
+check("shrunken version raises", msg is not None, "allowed")
+check("shrunken version adds no snapshot",
+      query(hist_db, "SELECT COUNT(*) FROM source_snapshot") == before_snaps)
+
+print("\n=== reverting to a recorded state is refused when the mirror moved on ===")
+# Restore the exact snapshot-1 file set: AAA old, BBB back, CCC removed.
+write_gz(a_path, [a_old])
+write_gz(b_path, [bars(50.0)])
+os.remove(os.path.join(hist, "CCC.csv.gz"))
+before_snaps = query(hist_db, "SELECT COUNT(*) FROM source_snapshot")
+msg = raises_sync(hist, hist_db)
+check("full-digest revert raises", msg is not None, "allowed")
+check("full-digest revert adds no snapshot",
+      query(hist_db, "SELECT COUNT(*) FROM source_snapshot") == before_snaps)
+check("full-digest revert leaves the mirror intact",
+      query(hist_db, "SELECT COUNT(*) FROM bar") == before_rows)
+
+print("\n=== a safe replay of a recorded state is accepted ===")
+replay_dir = new_dir(tmp, "replay")
+write_gz(os.path.join(replay_dir, "AAA.csv.gz"), [a_old])
+write_gz(os.path.join(replay_dir, "BBB.csv.gz"), [bars(50.0)])
+replay_db = os.path.join(tmp, "db-replay", "research.db")
+r1 = sync_bars(replay_dir, replay_db)
+os.remove(os.path.join(replay_dir, "BBB.csv.gz"))
+r2 = sync_bars(replay_dir, replay_db)
+write_gz(os.path.join(replay_dir, "BBB.csv.gz"), [bars(50.0)])
+r3 = sync_bars(replay_dir, replay_db)
+check("returning to a recorded file set reuses its snapshot",
+      r3["snapshot_id"] == r1["snapshot_id"], f"{r3['snapshot_id']} vs {r1['snapshot_id']}")
+check("no extra snapshot for the replay",
+      query(replay_db, "SELECT COUNT(*) FROM source_snapshot")[0][0] == 2)
+check("a replayed snapshot still reconstructs both coins",
+      sync.load_snapshot_bars(replay_db, r3["snapshot_id"], "BBB") == bars(50.0))
+view = status.db_status(replay_db)
+check("latest_snapshot follows the last completed sync",
+      view["latest_snapshot"]["snapshot_id"] == r3["snapshot_id"],
+      f"{view['latest_snapshot']['snapshot_id']} vs {r3['snapshot_id']}")
+
+print("\n=== a reappearing coin is snapshotted at its new version ===")
+reappear = new_dir(tmp, "reappear")
+ra = os.path.join(reappear, "AAA.csv.gz")
+rb = os.path.join(reappear, "BBB.csv.gz")
+write_gz(ra, [bars(100.0)])
+write_gz(rb, [bars(50.0)])
+re_db = os.path.join(tmp, "db-reappear", "research.db")
+q1 = sync_bars(reappear, re_db)
+os.remove(rb)
+q2 = sync_bars(reappear, re_db)
+write_gz(rb, [bars(50.0, n=4)])
+q3 = sync_bars(reappear, re_db)
+check("reappearing coin is in the new manifest",
+      [f["coin"] for f in sync.load_snapshot(re_db, q3["snapshot_id"])["files"]]
+      == ["AAA", "BBB"])
+check("reappearing coin keeps its old rows and adds the new one",
+      sync.load_snapshot_bars(re_db, q3["snapshot_id"], "BBB") == bars(50.0, n=4))
+try:
+    sync.load_snapshot_bars(re_db, q2["snapshot_id"], "BBB")
+    check("the disappeared snapshot excludes BBB", False, "returned rows")
+except sync.SyncError:
+    check("the disappeared snapshot excludes BBB", True)
+check("the original snapshot still has three rows",
+      len(sync.load_snapshot_bars(re_db, q1["snapshot_id"], "BBB")) == 3)
+
+print("\n=== symlinked bar files are refused ===")
+links = new_dir(tmp, "links")
+write_gz(os.path.join(links, "AAA.csv.gz"), [bars(100.0)])
+os.symlink(os.path.join(links, "AAA.csv.gz"),
+           os.path.join(links, "BBB.csv.gz"))
+links_db = os.path.join(tmp, "db-links", "research.db")
+msg = raises_sync(links, links_db)
+check("symlink to a file inside the source refused", msg is not None, "allowed")
+check("inside symlink created no snapshot",
+      query(links_db, "SELECT COUNT(*) FROM source_snapshot")[0][0] == 0)
+
+outside = new_dir(tmp, "outside")
+write_gz(os.path.join(outside, "EVIL.csv.gz"), [bars(999.0)])
+os.remove(os.path.join(links, "BBB.csv.gz"))
+os.symlink(os.path.join(outside, "EVIL.csv.gz"),
+           os.path.join(links, "BBB.csv.gz"))
+links2_db = os.path.join(tmp, "db-links2", "research.db")
+msg = raises_sync(links, links2_db)
+check("symlink to a file outside the source refused", msg is not None, "allowed")
+check("outside symlink created no snapshot",
+      query(links2_db, "SELECT COUNT(*) FROM source_snapshot")[0][0] == 0)
+check("outside symlink ingested no bars",
+      query(links2_db, "SELECT COUNT(*) FROM bar")[0][0] == 0)
+
+# Defense in depth: even if enumeration were bypassed or raced, the open itself
+# must refuse a symlink instead of following it.
+try:
+    sync._read_file(os.path.join(links, "BBB.csv.gz"))
+    check("direct open refuses a symlink", False, "followed it")
+except sync.SyncError:
+    check("direct open refuses a symlink", True)
 
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILED: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)

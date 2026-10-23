@@ -114,8 +114,12 @@ def raw_request(port, raw):
 
 def main():
     from proto import service as svc
+    from proto import collection
 
-    server = svc.serve(0, TOKEN, lambda: {})
+    state = collection.CollectionState("data/bars", "data/funding",
+                                       "data/funding_settlements",
+                                       "data/prices", 300)
+    server = svc.serve(0, TOKEN, state)
     port = server.server_address[1]
     check("server binds loopback only",
           server.server_address[0] == "127.0.0.1",
@@ -142,19 +146,19 @@ def main():
         check("GET /healthz echoes allowlisted Origin",
               st == 200 and cors == "http://localhost:1420", str(cors))
 
-        st, _, _ = req(port, "GET", "/snapshot")
-        check("GET /snapshot no token -> 401", st == 401, f"got {st}")
+        st, _, _ = req(port, "GET", "/collector-health")
+        check("GET /collector-health no token -> 401", st == 401, f"got {st}")
 
-        st, _, _ = req(port, "GET", "/snapshot", token="wrong-token")
-        check("GET /snapshot bad token -> 401", st == 401, f"got {st}")
+        st, _, _ = req(port, "GET", "/collector-health", token="wrong-token")
+        check("GET /collector-health bad token -> 401", st == 401, f"got {st}")
 
-        st, _, cors = req(port, "GET", "/snapshot", token="wrong-token",
+        st, _, cors = req(port, "GET", "/collector-health", token="wrong-token",
                           origin="http://localhost:1420")
         check("401 echoes allowlisted Origin",
               st == 401 and cors == "http://localhost:1420", str(cors))
 
-        st, _, _ = req(port, "GET", "/snapshot", token=TOKEN)
-        check("GET /snapshot good token -> 200", st == 200, f"got {st}")
+        st, _, _ = req(port, "GET", "/collector-health", token=TOKEN)
+        check("GET /collector-health good token -> 200", st == 200, f"got {st}")
 
         # -- origin / host policy (authed routes) -------------------------
         st, _, _ = req(port, "POST", "/commands/pause", token=TOKEN,
@@ -162,27 +166,27 @@ def main():
         check("POST /commands/pause bad Origin -> 403", st == 403,
               f"got {st}")
 
-        st, _, _ = req(port, "GET", "/snapshot", token=TOKEN,
+        st, _, _ = req(port, "GET", "/collector-health", token=TOKEN,
                        origin="http://localhost:1420")
-        check("GET /snapshot allowlisted Origin -> 200", st == 200,
+        check("GET /collector-health allowlisted Origin -> 200", st == 200,
               f"got {st}")
 
-        raw = (f"GET /snapshot HTTP/1.1\r\nHost: evil.example\r\n"
+        raw = (f"GET /collector-health HTTP/1.1\r\nHost: evil.example\r\n"
                f"Authorization: Bearer {TOKEN}\r\n"
                f"Connection: close\r\n\r\n").encode()
         st, _ = raw_request(port, raw)
-        check("GET /snapshot mismatched Host -> 403", st == 403,
+        check("GET /collector-health mismatched Host -> 403", st == 403,
               f"got {st}")
 
         # -- CORS preflight -----------------------------------------------
-        st, _, cors = req(port, "OPTIONS", "/snapshot",
+        st, _, cors = req(port, "OPTIONS", "/collector-health",
                           origin="http://localhost:1420", preflight=True)
         check("preflight allowlisted origin -> 2xx", 200 <= st < 300,
               f"got {st}")
         check("preflight echoes allowlisted origin",
               cors == "http://localhost:1420", str(cors))
 
-        st, _, _ = req(port, "OPTIONS", "/snapshot",
+        st, _, _ = req(port, "OPTIONS", "/collector-health",
                        origin="https://evil.example", preflight=True)
         check("preflight foreign origin -> 403", st == 403, f"got {st}")
 

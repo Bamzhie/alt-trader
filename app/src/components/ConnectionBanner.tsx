@@ -1,18 +1,23 @@
-// ConnectionBanner — surfaces the SSE connection lifecycle.
+// ConnectionBanner — surfaces whether this desktop shell can reach the
+// loopback service.
 //
 // House rules:
-//   * "starting" shows while the local API event stream is connecting.
+//   * "starting" shows while the first liveness probe is in flight.
 //   * "connected" renders nothing at all.
-//   * "error" shows a contained fallback: the shell stays usable, the
-//     message states the condition and that a retry is in progress.
+//   * "error" shows a contained fallback: the shell stays usable and the
+//     message names the systemd unit to inspect.
 //   * Colors come from theme tokens only — never raw hexes.
-import type { ConnectionState } from "../store/dashboard";
+import type { ReactNode } from "react";
+
+export type ConnectionState = "starting" | "connected" | "error";
 
 export interface ConnectionBannerProps {
   connection: ConnectionState;
 }
 
-export function ConnectionBanner({ connection }: ConnectionBannerProps) {
+export function ConnectionBanner({
+  connection,
+}: ConnectionBannerProps): ReactNode {
   if (connection === "connected") return null;
 
   const isError = connection === "error";
@@ -27,7 +32,7 @@ export function ConnectionBanner({ connection }: ConnectionBannerProps) {
       }
     >
       {isError
-        ? "Connection error: ALT RADAR service unavailable — retrying. Check: systemctl --user status altradar.service; journalctl --user -u altradar.service -n 100 --no-pager"
+        ? "Connection error: ALT RADAR service unavailable. Check: systemctl --user status altradar.service; journalctl --user -u altradar.service -n 100 --no-pager"
         : "connecting to ALT RADAR service…"}
     </div>
   );

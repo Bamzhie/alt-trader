@@ -326,7 +326,7 @@ def collect_full_universe(data_dir="data/bars", limit_per_coin=200,
     ``counts.errors`` and every other coin still lands.  ``stop_event``
     (WS-F) stops the cycle between coins so a SIGTERM drains promptly.
     """
-    from .scan import build_universe
+    from .universe import build_universe, LIMITER
     from . import mexc
     uni = build_universe(float("inf"), budget=None)
     index = get_index(data_dir)
@@ -337,9 +337,7 @@ def collect_full_universe(data_dir="data/bars", limit_per_coin=200,
         if stop_event is not None and stop_event.is_set():
             return (coin, None, "stopped")
         try:
-            # Share the scan/measurement request cap so collector workers
-            # cannot create an unbounded venue burst.
-            from .scan import LIMITER
+            # Venue-wide request cap shared with the other collectors.
             LIMITER.acquire()
             bars = mexc.klines(sym, "5m", limit=limit_per_coin)
         except Exception as e:

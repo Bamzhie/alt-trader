@@ -130,6 +130,7 @@ def check_envelope(name, body, ok):
 def main():
     from proto import service as svc
     from proto import funding as fmod
+    from proto import collection
 
     tmp = tempfile.mkdtemp(prefix="svc-funding-route-")
     try:
@@ -164,8 +165,11 @@ def main():
                    "wb") as f:
             f.write(b"not a gzip at all")
 
-        server = svc.serve(0, TOKEN, lambda: {},
-                           store_path=db_path, data_dir=bars_dir)
+        server = svc.serve(0, TOKEN, collection.CollectionState(
+                               bars_dir, funding_dir,
+                               os.path.join(tmp, "funding_settlements"),
+                               os.path.join(tmp, "prices"), 300),
+                           data_dir=bars_dir)
         port = server.server_address[1]
         time.sleep(0.15)
         try:

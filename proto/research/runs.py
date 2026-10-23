@@ -13,7 +13,7 @@ import time
 import uuid
 
 from proto.quant.prereg import git_rev
-from proto.research import store
+from proto.research import store, universe
 
 RUN_KINDS = ("exploratory", "tuning", "benchmark", "rerun")
 TERMINAL_STATUSES = ("completed", "failed", "interrupted")
@@ -194,17 +194,32 @@ def list_runs(db_path, *, status=None, kind=None):
         conn.close()
 
 
-def benchmark_eligible(db_path, run_id):
-    """True only for a benchmark kind whose latest status is completed.
+def eligibility(db_path, run_id):
+    """Return ``{"eligible": bool, "reason": str | None}`` for the gate.
 
-    Any failed/interrupted event in the chain disqualifies the run, even if a
-    later event claims completion.
+    A run must be a benchmark, end ``completed`` with no failed/interrupted
+    event, and pass the sampling gate. That gate is global today: no sample
+    design is approved, so every run is ineligible and the reason says why.
+    ``reason`` is ``None`` only when the run is eligible. Per-sample approval
+    is not implemented; deciding it is part of the missing design.
     """
     try:
         run = run_status(db_path, run_id)
     except RunError:
-        return False
-    if run["kind"] != "benchmark" or run["status"] != "completed":
-        return False
-    return not any(e["status"] in ("failed", "interrupted")
-                   for e in run["events"])
+        return {"eligible": False, "reason": "unknown run"}
+    if run["kind"] != "benchmark":
+        return {"eligible": False, "reason": "not a benchmark run"}
+    if run["status"] != "completed":
+        return {"eligible": False,
+                "reason": f"latest status is {run['status']!r}"}
+    if any(e["status"] in ("failed", "interrupted") for e in run["events"]):
+        return {"eligible": False,
+                "reason": "run has a failed or interrupted event"}
+    # Deliberately last: a completed benchmark still needs a sampling design.
+    return {"eligible": universe.SAMPLE_DESIGN_BLOCKED is None,
+            "reason": universe.SAMPLE_DESIGN_BLOCKED}
+
+
+def benchmark_eligible(db_path, run_id):
+    """True only when every gate in :func:`eligibility` passes."""
+    return eligibility(db_path, run_id)["eligible"]

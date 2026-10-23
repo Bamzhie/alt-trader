@@ -17,12 +17,12 @@ from proto.research import store
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TABLES = {
-    "source_snapshot", "sync_run", "bar", "bar_file", "universe",
-    "sample", "sample_coin", "backtest_run", "run_event",
+    "source_snapshot", "snapshot_file", "sync_run", "bar", "bar_file",
+    "universe", "sample", "sample_coin", "backtest_run", "run_event",
 }
 APPEND_ONLY = (
-    "bar", "bar_file", "source_snapshot", "universe", "sample",
-    "sample_coin", "backtest_run", "run_event",
+    "bar", "bar_file", "source_snapshot", "snapshot_file", "universe",
+    "sample", "sample_coin", "backtest_run", "run_event",
 )
 
 FAILURES = []
@@ -49,7 +49,7 @@ db_path = os.path.join(tmp, "research.db")
 print("=== defaults ===")
 check("DEFAULT_DB path", store.DEFAULT_DB == os.path.join(
     "data", "research", "altradar-research.db"), store.DEFAULT_DB)
-check("SCHEMA_VERSION == 1", store.SCHEMA_VERSION == 1, str(store.SCHEMA_VERSION))
+check("SCHEMA_VERSION == 2", store.SCHEMA_VERSION == 2, str(store.SCHEMA_VERSION))
 
 print("\n=== connect creates schema ===")
 conn = store.connect(db_path)
@@ -57,15 +57,17 @@ names = {r[0] for r in conn.execute(
     "SELECT name FROM sqlite_master WHERE type = 'table'")}
 check("all tables created", TABLES <= names, str(TABLES - names))
 version = conn.execute("PRAGMA user_version").fetchone()[0]
-check("user_version == 1", version == 1, str(version))
+check("user_version == 2", version == 2, str(version))
 check("foreign_keys on", conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1)
 check("journal_mode delete",
       conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete")
 
 print("\n=== seed one row per append-only table ===")
 snap, uni, smp, run = "snap-1", "uni-1", "smp-1", "run-1"
-conn.execute("INSERT INTO source_snapshot VALUES (?,?,?,?,?,?,?,?)",
-             (snap, "data/bars", "digest-1", 1, 2, 100, 200, 1))
+conn.execute("INSERT INTO source_snapshot VALUES (?,?,?,?,?,?,?,?,?)",
+             (snap, 1, "data/bars", "digest-1", 1, 2, 100, 200, 1))
+conn.execute("INSERT INTO snapshot_file VALUES (?,?,?,?,?,?,?,?,?)",
+             (snap, "BTC", "sha-1", "BTC.csv.gz", 10, 20, 2, 100, 200))
 conn.execute("INSERT INTO bar VALUES (?,?,?,?,?,?,?,?,?)",
              ("BTC", 300, 1.0, 2.0, 0.5, 1.5, 10.0, 15.0, snap))
 conn.execute("INSERT INTO bar_file VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -174,13 +176,35 @@ for name in PROTECTED:
         check(f"connect refuses {name}", True)
     check(f"connect did not create {name}", not os.path.exists(protected))
 
+print("\n=== a different schema version is refused, not migrated ===")
+old = os.path.join(tmp, "old.db")
+raw = sqlite3.connect(old)
+raw.execute("PRAGMA user_version=1")
+raw.execute("CREATE TABLE marker (x)")
+raw.commit()
+raw.close()
+try:
+    store.connect(old)
+    check("refuse schema v1", False, "allowed")
+except store.StoreError:
+    check("refuse schema v1", True)
+raw = sqlite3.connect(old)
+check("old database not migrated",
+      raw.execute("PRAGMA user_version").fetchone()[0] == 1)
+raw.close()
+try:
+    store.connect(old, readonly=True)
+    check("read-only refuses schema v1", False, "allowed")
+except store.StoreError:
+    check("read-only refuses schema v1", True)
+
 print("\n=== second writable connect is idempotent ===")
 conn2 = store.connect(db_path)
 names2 = {r[0] for r in conn2.execute(
     "SELECT name FROM sqlite_master WHERE type = 'table'")}
 check("same tables after reconnect", TABLES <= names2, str(TABLES - names2))
-check("user_version still 1",
-      conn2.execute("PRAGMA user_version").fetchone()[0] == 1)
+check("user_version still 2",
+      conn2.execute("PRAGMA user_version").fetchone()[0] == 2)
 check("existing row intact",
       conn2.execute("SELECT COUNT(*) FROM bar").fetchone()[0] == 1)
 triggers = {r[0] for r in conn2.execute(

@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from . import collector as colmod
 from . import mexc
 from .mexc import INTERVALS
-from .scan import build_universe
+from .universe import build_universe
 
 INTERVAL = "5m"
 CHUNK = 2000          # venue per-request cap; one chunk ≈ 6.9 days of 5m

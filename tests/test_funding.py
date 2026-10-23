@@ -71,10 +71,10 @@ check("on-disk order still append order",
 print("\n=== case 3: collect_funding from one tickers() request ===")
 tmp3 = tempfile.mkdtemp(prefix="funding-collect-")
 from proto import mexc as mexmod
-from proto import scan as scanmod
+from proto import universe as unimod
 
 real_tk, real_det = mexmod.tickers, mexmod.details
-real_canon, real_syn = scanmod.canon, scanmod.is_synthetic
+real_canon, real_syn = unimod.canon, unimod.is_synthetic
 
 
 def _fake_tickers():
@@ -103,13 +103,13 @@ def _fake_is_synthetic(coin, detail_row):
 
 mexmod.tickers = _fake_tickers
 mexmod.details = _fake_details
-scanmod.canon = _fake_canon
-scanmod.is_synthetic = _fake_is_synthetic
+unimod.canon = _fake_canon
+unimod.is_synthetic = _fake_is_synthetic
 try:
     counts = fmod.collect_funding(tmp3, now=1792000000)
 finally:
     mexmod.tickers, mexmod.details = real_tk, real_det
-    scanmod.canon, scanmod.is_synthetic = real_canon, real_syn
+    unimod.canon, unimod.is_synthetic = real_canon, real_syn
 
 check("one archive per non-synthetic USDT perp",
       sorted(os.listdir(tmp3)) == ["ADA.csv.gz", "BTC.csv.gz",

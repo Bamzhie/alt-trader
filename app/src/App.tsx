@@ -1,69 +1,56 @@
-// App — the shell: sidebar, top bar, connection banner, and state routing.
+// App — the neutral shell: top bar, connection banner, and a single Status page.
 //
 // House rules:
-//   * Routing is a tiny `usePage` hook holding the current page key — no
-//     router dependency, no URL.
-//   * Connection state is read from the Zustand store (never fetched here);
-//     the shell issues no requests of its own on mount.
+//   * One page; no state-routing router needed.
+//   * Connection state is probed live from the service on mount; the shell
+//     shows a banner while unreachable and the Status page while connected.
 //   * Colors come from theme tokens only — never raw hexes.
-import { useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { createClient, type ApiClient } from "./api/client";
 import { ConnectionBanner } from "./components/ConnectionBanner";
-import { Sidebar } from "./components/Sidebar";
-import type { Page as PageKey } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
-import { Dashboard } from "./pages/Dashboard";
-import { Research } from "./pages/Research";
-import { StubPage } from "./pages/StubPage";
-import { Watchlist } from "./pages/Watchlist";
-import { useDashboardStore } from "./store/dashboard";
-
-export type Page = PageKey;
-
-/** Current shell page plus its setter — the whole "router". */
-function usePage(initial: Page): { page: Page; setPage(p: Page): void } {
-  const [page, setPage] = useState<Page>(initial);
-  return { page, setPage };
-}
+import { StatusPage } from "./pages/Status";
 
 export interface AppProps {
   apiBaseUrl?: string;
   serviceToken?: string;
 }
 
+type ConnectionState = "starting" | "connected" | "error";
+
+function useConnectionState(client: ApiClient): ConnectionState {
+  const [state, setState] = useState<ConnectionState>("starting");
+  useEffect(() => {
+    let mounted = true;
+    const ping = async () => {
+      const alive = await client.healthz();
+      if (!mounted) return;
+      setState(alive ? "connected" : "error");
+    };
+    void ping();
+    const id = setInterval(ping, 5000);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+  }, [client]);
+  return state;
+}
+
 export default function App({
   apiBaseUrl = "/api",
   serviceToken = import.meta.env.DEV ? "dev-token" : "",
-}: AppProps = {}) {
-  const { page, setPage } = usePage("dashboard");
-  const connection = useDashboardStore((s) => s.connection);
+}: AppProps = {}): ReactNode {
+  const client = createClient({ baseUrl: apiBaseUrl, token: serviceToken });
+  const connection = useConnectionState(client);
 
   return (
-    <div className="flex min-h-screen bg-bg text-fg">
-      <Sidebar page={page} onNavigate={setPage} connection={connection} />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar />
-        <ConnectionBanner connection={connection} />
-        <main className="min-w-0 flex-1">
-          {page === "dashboard" ? (
-            <Dashboard apiBaseUrl={apiBaseUrl} serviceToken={serviceToken} />
-          ) : page === "watchlist" ? (
-            <Watchlist apiBaseUrl={apiBaseUrl} serviceToken={serviceToken} />
-          ) : page === "analysis" ? (
-            <Research apiBaseUrl={apiBaseUrl} serviceToken={serviceToken} />
-          ) : (
-            <StubPage
-              name={
-                {
-                  watchlist: "Watchlist",
-                  signals: "Signals",
-                  trades: "Trades",
-                  settings: "Settings",
-                }[page]
-              }
-            />
-          )}
-        </main>
-      </div>
+    <div className="flex min-h-screen flex-col bg-bg text-fg">
+      <TopBar />
+      <ConnectionBanner connection={connection} />
+      <main className="min-w-0 flex-1">
+        <StatusPage client={client} connection={connection} />
+      </main>
     </div>
   );
 }

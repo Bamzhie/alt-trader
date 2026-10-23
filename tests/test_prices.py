@@ -321,71 +321,12 @@ try:
 finally:
     pmod.collect_recent = real_recent
 
-from types import SimpleNamespace
-from proto import daemon as dmod
-from proto import collector as colmod
-from proto import funding as fmod
-from proto import settlements as smod
 from proto import service as svc
 
-real_collect = colmod.collect_full_universe
-real_funding = fmod.collect_funding
-real_settle = smod.maybe_collect
-real_app = dmod.App
-real_price_maybe = pmod.maybe_collect
-colmod.collect_full_universe = lambda *a, **k: {}
-fmod.collect_funding = lambda *a, **k: {}
-smod.maybe_collect = lambda *a, **k: {}
-sweeps = []
-
-
-class _FakeApp:
-    def __init__(self, args):
-        pass
-
-
-dmod.App = _FakeApp
-boom = []
-
-
-def _boom(*a, **k):
-    boom.append(a)
-    raise RuntimeError("prices boom")
-
-
-pmod.maybe_collect = _boom
-try:
-    args = SimpleNamespace(stake=0.10, coins=150, interval=5,
-                           db=os.path.join(tmp7, "s.db"),
-                           log_threshold=24.0, use_v3=False,
-                           collect_every=0, resolve_every=10 ** 12,
-                           measure_every=10 ** 12, iterations=1,
-                           no_scan=True, quant_shadow=False,
-                           settlements_dir=None, prices_dir=None)
-    dmod.run_daemon_loop(args, on_sweep=lambda e, v, **k: sweeps.append((e, v)))
-    check("daemon loop consults prices collect", boom != [],
-          "maybe_collect never called")
-    check("prices failure never fails the sweep", sweeps != [], str(sweeps))
-finally:
-    colmod.collect_full_universe = real_collect
-    fmod.collect_funding = real_funding
-    smod.maybe_collect = real_settle
-    pmod.maybe_collect = real_price_maybe
-    dmod.App = real_app
-
-parser = dmod.build_parser()
-parsed = parser.parse_args(["--prices-dir", "/tmp/p", "--no-scan",
-                            "--iterations", "1"])
-check("daemon parser accepts --prices-dir", parsed.prices_dir == "/tmp/p",
-      str(parsed.prices_dir))
-sparsed = svc.build_service_parser().parse_args(
-    ["--prices-dir", "/tmp/p", "--no-scan", "--iterations", "1",
-     "--port", "0", "--db", "/tmp/svc-test.db"])
+sparsed = svc.build_parser().parse_args(
+    ["--prices-dir", "/tmp/p", "--data-dir", "/tmp/custom_bars"])
 check("service parser accepts --prices-dir", sparsed.prices_dir == "/tmp/p",
       str(sparsed.prices_dir))
-argv = svc._daemon_argv_for(sparsed)
-check("_daemon_argv_for forwards --prices-dir",
-      "--prices-dir" in argv and "/tmp/p" in argv, str(argv))
 custom = "/tmp/custom_bars"
 check("custom --data-dir resolves prices sibling",
       svc._resolve_archive_dir(None, custom, "prices")
